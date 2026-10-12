@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { apiFetch } from "./api";
+import { apiFetch, isAuthError } from "./api";
 
 type Tab = "telegram" | "strategy" | "risk" | "market" | "system" | "account";
 
@@ -11,24 +11,38 @@ export function SettingsPage() {
   const [market, setMarket] = useState<any>(null);
   const [system, setSystem] = useState<any>(null);
   const [msg, setMsg] = useState("");
+  const [loading, setLoading] = useState(true);
 
   async function loadAll() {
-    const [t, s, r, m, sys] = await Promise.all([
-      apiFetch("/api/gui/settings/telegram"),
-      apiFetch("/api/gui/settings/strategy"),
-      apiFetch("/api/gui/settings/risk"),
-      apiFetch("/api/gui/settings/market"),
-      apiFetch("/api/gui/settings/system"),
-    ]);
-    setTelegram(t);
-    setStrategy(s);
-    setRisk(r);
-    setMarket(m);
-    setSystem(sys);
+    setLoading(true);
+    setMsg("");
+    const tasks = [
+      ["telegram", "/api/gui/settings/telegram", setTelegram],
+      ["strategy", "/api/gui/settings/strategy", setStrategy],
+      ["risk", "/api/gui/settings/risk", setRisk],
+      ["market", "/api/gui/settings/market", setMarket],
+      ["system", "/api/gui/settings/system", setSystem],
+    ] as const;
+    const errors: string[] = [];
+    await Promise.all(
+      tasks.map(async ([label, path, setter]) => {
+        try {
+          const data = await apiFetch(path);
+          setter(data);
+        } catch (e) {
+          if (!isAuthError(e)) errors.push(`${label}: ${e instanceof Error ? e.message : "خطا"}`);
+        }
+      })
+    );
+    if (errors.length) setMsg(errors.join(" • "));
+    setLoading(false);
   }
 
   useEffect(() => {
-    loadAll().catch((e) => setMsg(String(e)));
+    loadAll().catch((e) => {
+      setMsg(String(e));
+      setLoading(false);
+    });
   }, []);
 
   async function saveTelegram(e: React.FormEvent) {
@@ -65,6 +79,7 @@ export function SettingsPage() {
   return (
     <div className="settings-wrap">
       <h2>تنظیمات</h2>
+      {loading && <p className="hint">در حال بارگذاری تنظیمات…</p>}
       {msg && <p className="hint">{msg}</p>}
       <nav className="settings-tabs">
         {tabs.map((t) => (
@@ -72,6 +87,9 @@ export function SettingsPage() {
             {t.label}
           </button>
         ))}
+        <button type="button" className="secondary" onClick={() => loadAll()}>
+          بارگذاری مجدد
+        </button>
       </nav>
 
       {tab === "telegram" && telegram && (

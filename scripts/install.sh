@@ -6,7 +6,7 @@ INSTALL_DIR="${INSTALL_DIR:-/opt/tradeonbu}"
 REPO="${TRADEONBU_REPO:-https://github.com/mr-BigJay/TradeOnBU.git}"
 BRANCH="${TRADEONBU_BRANCH:-cursor/ict-lifecycle-system-2ec7}"
 STATE_FILE="${INSTALL_DIR}/.install_state"
-LOG_FILE="${INSTALL_DIR}/install.log"
+LOG_FILE="${TRADEONBU_LOG_FILE:-/var/log/tradeonbu/install.log}"
 TTY="${TRADEONBU_TTY:-/dev/tty}"
 
 log() { echo "[install] $*" | tee -a "${LOG_FILE}" 2>/dev/null || echo "[install] $*"; }
@@ -79,15 +79,23 @@ check_dns() {
 
 check_ports() {
   if command -v ss >/dev/null; then
-    ss -tln | grep -q ':80 ' && log "Port 80 listener detected (expected for Caddy)"
-    ss -tln | grep -q ':443 ' && log "Port 443 listener detected (expected for Caddy)"
+    if ss -tln | grep -q ':80 '; then
+      log "Port 80 listener detected (expected for Caddy)"
+    else
+      log "Port 80 is free (OK before first Caddy start)"
+    fi
+    if ss -tln | grep -q ':443 '; then
+      log "Port 443 listener detected (expected for Caddy)"
+    else
+      log "Port 443 is free (OK before first Caddy start)"
+    fi
   fi
 }
 
 install_system_packages() {
   log "Ensuring system packages (git, curl, openssl, python3)..."
   apt-get update -qq
-  apt-get install -y git curl openssl ca-certificates python3 dnsutils iproute2
+  apt-get install -y git curl openssl ca-certificates python3 dnsutils iproute2 rsync
 }
 
 install_docker() {
@@ -116,16 +124,26 @@ install_docker() {
 }
 
 clone_repo() {
-  mkdir -p "$INSTALL_DIR"
   if [[ -d "${INSTALL_DIR}/.git" ]]; then
     log "Updating existing repository..."
     git -C "$INSTALL_DIR" fetch origin "$BRANCH"
     git -C "$INSTALL_DIR" checkout "$BRANCH"
     git -C "$INSTALL_DIR" pull --ff-only origin "$BRANCH" || log "Pull skipped — using current checkout"
-  else
-    log "Cloning repository..."
-    git clone --branch "$BRANCH" --depth 1 "$REPO" "$INSTALL_DIR"
+    return
   fi
+  if [[ -d "$INSTALL_DIR" ]] && [[ -n "$(ls -A "$INSTALL_DIR" 2>/dev/null)" ]]; then
+    log "Non-empty ${INSTALL_DIR} without .git — cloning to temp checkout"
+    local tmp
+    tmp="$(mktemp -d /tmp/tradeonbu-clone.XXXXXX)"
+    git clone --branch "$BRANCH" --depth 1 "$REPO" "$tmp"
+    mkdir -p "$INSTALL_DIR"
+    rsync -a --exclude data --exclude .env --exclude backups "$tmp/" "$INSTALL_DIR/"
+    rm -rf "$tmp"
+    return
+  fi
+  mkdir -p "$INSTALL_DIR"
+  log "Cloning repository..."
+  git clone --branch "$BRANCH" --depth 1 "$REPO" "$INSTALL_DIR"
 }
 
 write_env() {
@@ -252,7 +270,8 @@ main() {
   load_helpers
   require_root
   check_os || die "Unsupported OS — Ubuntu/Debian required"
-  mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true
+  mkdir -p "$(dirname "$LOG_FILE")"
+  mkdir -p "$INSTALL_DIR/data" 2>/dev/null || true
   prompt_inputs
   check_dns
   check_ports

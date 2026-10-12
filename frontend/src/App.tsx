@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { apiFetch, fetchMe, getApiKey, login, logout, setApiKey, setCsrf } from "./api";
+import { apiFetch, fetchMe, getApiKey, isAuthError, login, logout, setApiKey, setCsrf } from "./api";
 import { ChartPanel } from "./ChartPanel";
 import { SettingsPage } from "./SettingsPage";
 
@@ -82,51 +82,93 @@ export default function App() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [loginErr, setLoginErr] = useState("");
+  const [authBoot, setAuthBoot] = useState<"loading" | "done">("loading");
   const [authed, setAuthed] = useState(false);
   const [sessionUser, setSessionUser] = useState<string | null>(null);
   const [page, setPage] = useState<"dashboard" | "settings">("dashboard");
   const [onboarding, setOnboarding] = useState<Record<string, boolean>>({});
+  const [bootError, setBootError] = useState<string | null>(null);
+  const [dashError, setDashError] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
 
   const selected = useMemo(
     () => signals.find((s) => s.public_id === selectedId) ?? signals[0] ?? null,
     [signals, selectedId]
   );
 
+  const signalLevels = useMemo(
+    () =>
+      selected
+        ? { entry: selected.entry_price, sl: selected.stop_loss, tp: selected.take_profit }
+        : null,
+    [selected]
+  );
+
   const refresh = useCallback(async () => {
-    const [t, s, r] = await Promise.all([
-      apiFetch("/api/trend/current"),
-      apiFetch("/api/signals"),
-      apiFetch("/api/settings/runtime"),
-    ]);
-    setTrend(t);
-    setSignals(s);
-    setSettings(r);
-    if (!selectedId && s.length) setSelectedId(s[0].public_id);
+    setRefreshing(true);
+    setDashError(null);
+    const errors: string[] = [];
+    let authLost = false;
+
+    const loadOne = async <T,>(label: string, path: string, apply: (v: T) => void) => {
+      try {
+        const data = await apiFetch(path);
+        apply(data);
+      } catch (e) {
+        if (isAuthError(e)) authLost = true;
+        else errors.push(`${label}: ${e instanceof Error ? e.message : "خطا"}`);
+      }
+    };
+
+    await loadOne<Trend>("روند بازار", "/api/trend/current", setTrend);
+    await loadOne<Signal[]>("سیگنال‌ها", "/api/signals", (s) => {
+      setSignals(s);
+      if (!selectedId && s.length) setSelectedId(s[0].public_id);
+    });
+    await loadOne<RuntimeSettings>("تنظیمات", "/api/settings/runtime", setSettings);
+
+    if (authLost) {
+      setAuthed(false);
+      setSessionUser(null);
+    } else if (errors.length) {
+      setDashError(errors.join(" • "));
+    }
+    setRefreshing(false);
   }, [selectedId]);
 
   useEffect(() => {
-    fetchMe()
-      .then((m) => {
-        if (m.authenticated) {
-          setAuthed(true);
-          setSessionUser(m.username);
-          if (m.csrf_token) setCsrf(m.csrf_token);
-          setOnboarding(m.onboarding || {});
-        } else if (getApiKey()) setAuthed(true);
-      })
-      .catch(() => undefined);
+    let cancelled = false;
+    (async () => {
+      const m = await fetchMe();
+      if (cancelled) return;
+      if (m.authenticated) {
+        setAuthed(true);
+        setSessionUser(m.username ?? null);
+        if (m.csrf_token) setCsrf(m.csrf_token);
+        setOnboarding(m.onboarding || {});
+      } else if (getApiKey()) {
+        setAuthed(true);
+      }
+      if (m.error) setBootError(m.error);
+      setAuthBoot("done");
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
-    if (!authed) return;
-    refresh().catch(() => setAuthed(false));
-    const id = setInterval(() => refresh().catch(() => undefined), 15000);
+    if (!authed || authBoot !== "done") return;
+    refresh().catch(() => undefined);
+    const id = setInterval(() => refresh().catch(() => undefined), 20000);
     return () => clearInterval(id);
-  }, [refresh, authed]);
+  }, [refresh, authed, authBoot]);
 
   useEffect(() => {
     if (!selected || !authed) return;
-    apiFetch(`/api/signals/${selected.public_id}/events`).then(setEvents);
+    apiFetch(`/api/signals/${selected.public_id}/events`)
+      .then(setEvents)
+      .catch(() => setEvents([]));
   }, [selected, authed]);
 
   useEffect(() => {
@@ -181,12 +223,28 @@ export default function App() {
     await refresh();
   }
 
+  if (authBoot === "loading") {
+    return (
+      <div className="login-wrap">
+        <div className="card" style={{ maxWidth: 420, margin: "12vh auto", textAlign: "center" }}>
+          <h1>TradeOnBU</h1>
+          <p className="hint">در حال بررسی نشست…</p>
+        </div>
+      </div>
+    );
+  }
+
   if (!authed) {
     return (
       <div className="login-wrap">
         <div className="card" style={{ maxWidth: 420, margin: "10vh auto" }}>
           <h1>TradeOnBU</h1>
           <p>ورود مدیر — معاملات کاغذی (Paper Only)</p>
+          {bootError && (
+            <p className="stale">
+              {bootError} — می‌توانید با نام کاربری وارد شوید.
+            </p>
+          )}
           <label>نام کاربری</label>
           <input value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" />
           <label style={{ marginTop: 8 }}>رمز عبور</label>
@@ -331,6 +389,16 @@ export default function App() {
       </aside>
 
       <main className="main">
+        {dashError && (
+          <div className="card banner-warn">
+            <strong>برخی داده‌ها بارگذاری نشد</strong>
+            <p className="hint">{dashError}</p>
+            <button type="button" className="secondary" style={{ width: "auto" }} onClick={() => refresh()}>
+              تلاش مجدد
+            </button>
+          </div>
+        )}
+        {refreshing && <p className="hint">به‌روزرسانی داشبورد…</p>}
         {page === "settings" ? (
           <SettingsPage />
         ) : (
@@ -378,15 +446,7 @@ export default function App() {
           </div>
         </div>
 
-        <ChartPanel
-          symbol={trend?.symbol || "BTCUSDT"}
-          direction={selected?.direction}
-          signalLevels={
-            selected
-              ? { entry: selected.entry_price, sl: selected.stop_loss, tp: selected.take_profit }
-              : null
-          }
-        />
+        <ChartPanel symbol={trend?.symbol || "BTCUSDT"} direction={selected?.direction} signalLevels={signalLevels} />
 
         <SignalTable
           title="Waiting Signals"

@@ -287,11 +287,17 @@ if frontend_dist.exists():
 
     @app.get("/")
     async def spa_index():
-        return FileResponse(frontend_dist / "index.html")
+        return FileResponse(
+            frontend_dist / "index.html",
+            headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+        )
 
     @app.get("/assets/{rest:path}")
     async def spa_assets(rest: str):
         path = frontend_dist / "assets" / rest
         if not path.is_file():
             raise HTTPException(404)
-        return FileResponse(path)
+        return FileResponse(
+            path,
+            headers={"Cache-Control": "public, max-age=31536000, immutable"},
+        )

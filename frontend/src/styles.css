@@ -34,6 +34,11 @@
   font-size: 0.9rem;
 }
 
+.banner-warn {
+  border-color: #6a4a10;
+  background: #1a1508;
+}
+
 body {
   margin: 0;
 }
