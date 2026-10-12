@@ -75,35 +75,39 @@ class TelegramNotifier:
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.post(url, json=payload)
             if resp.status_code >= 400:
-                logger.error("Telegram error: %s", resp.text)
+                logger.error("Telegram error %s: %s", resp.status_code, resp.text)
                 return None
             data = resp.json()
+            if not data.get("ok"):
+                logger.error("Telegram API not ok: %s", data)
+                return None
             return data.get("result", {}).get("message_id")
 
-    async def notify_new_setup(self, signal: Signal) -> None:
+    async def notify_new_setup(self, signal: Signal) -> int | None:
         msg_id = await self.send_message(
             self._format_signal(signal, "New ICT Setup Detected", "Use buttons below to approve paper monitoring.\n"),
             reply_markup=self._inline_keyboard(signal.public_id),
         )
         if msg_id is not None:
             signal.telegram_message_id = msg_id
+        return msg_id
 
-    async def notify_entry_activated(self, signal: Signal) -> None:
-        await self.send_message(
+    async def notify_entry_activated(self, signal: Signal) -> int | None:
+        return await self.send_message(
             self._format_signal(signal, "Simulated Entry Activated", f"Fill: {signal.fill_price}\n")
         )
 
-    async def notify_outcome(self, signal: Signal) -> None:
-        await self.send_message(self._format_signal(signal, f"Trade Outcome: {signal.status}"))
+    async def notify_outcome(self, signal: Signal) -> int | None:
+        return await self.send_message(self._format_signal(signal, f"Trade Outcome: {signal.status}"))
 
-    async def notify_missed_entry(self, signal: Signal) -> None:
-        await self.send_message(self._format_signal(signal, "Setup Cancelled: Missed Entry"))
+    async def notify_missed_entry(self, signal: Signal) -> int | None:
+        return await self.send_message(self._format_signal(signal, "Setup Cancelled: Missed Entry"))
 
-    async def notify_expired(self, signal: Signal) -> None:
-        await self.send_message(self._format_signal(signal, "Setup Expired"))
+    async def notify_expired(self, signal: Signal) -> int | None:
+        return await self.send_message(self._format_signal(signal, "Setup Expired"))
 
-    async def notify_time_exit(self, signal: Signal) -> None:
-        await self.send_message(self._format_signal(signal, "Time Exit"))
+    async def notify_time_exit(self, signal: Signal) -> int | None:
+        return await self.send_message(self._format_signal(signal, "Time Exit"))
 
-    async def notify_bias_change(self, symbol: str, old_bias: str, new_bias: str) -> None:
-        await self.send_message(f"*Market Bias Change*\n{symbol}: {old_bias} → {new_bias}\n_Paper mode only._")
+    async def notify_bias_change(self, symbol: str, old_bias: str, new_bias: str) -> int | None:
+        return await self.send_message(f"*Market Bias Change*\n{symbol}: {old_bias} → {new_bias}\n_Paper mode only._")

@@ -140,5 +140,17 @@ class _FakeMarket:
     async def fetch_kline_bundle(self, symbol, interval, limit=200):
         return complete_bundle(closed=[_bar(100, 101, 99, 100, 1_700_000_000_000)], interval="5m")
 
+    async def fetch_historical_closed(self, symbol, interval, from_ms, max_bars=500):
+        bundle = await self.fetch_kline_bundle(symbol, interval, 200)
+        closed = [c for c in bundle.closed if c.time_ms >= from_ms]
+        return KlineBundle(
+            closed=closed,
+            forming=bundle.forming,
+            gaps_detected=bundle.gaps_detected,
+            gaps_remaining=bundle.gaps_remaining,
+            data_complete=bundle.data_complete,
+            interval=interval,
+        )
+
     def is_quote_stale(self, quote):
         return False

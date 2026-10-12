@@ -17,7 +17,6 @@ from app.services.signal_lifecycle import SignalLifecycleService
 from app.services.signal_monitor import SignalMonitorService
 from app.services.system_state import release_worker_lock, try_acquire_worker_lock
 from app.services.notification_outbox import NotificationOutboxService
-from app.services.telegram_bot import TelegramBotService
 from app.services.telegram_notifier import TelegramNotifier
 from app.services.trend_engine import TrendEngine
 
@@ -35,7 +34,6 @@ class BotWorker:
         self.monitor = SignalMonitorService(self.market, self.lifecycle, self.paper)
         self.outbox = NotificationOutboxService()
         self.telegram = TelegramNotifier(self.settings)
-        self.telegram_bot = TelegramBotService(self.settings)
         self._last_bias: str | None = None
         self._owner = f"worker-{uuid.uuid4().hex[:8]}"
 
@@ -93,8 +91,6 @@ class BotWorker:
                         logger.info("Created signal %s", sig.public_id)
                 await session.commit()
                 await self.outbox.flush_pending(session)
-                if self.telegram_bot.polling_enabled:
-                    await self.telegram_bot.poll_once()
         finally:
             async with SessionLocal() as lock_session:
                 await release_worker_lock(lock_session, self._owner)

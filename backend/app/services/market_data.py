@@ -101,6 +101,67 @@ class MarketDataService:
         candles.sort(key=lambda c: c.time_ms)
         return candles
 
+    async def fetch_historical_closed(
+        self,
+        symbol: str,
+        interval: str,
+        from_ms: int,
+        max_bars: int = 500,
+    ) -> KlineBundle:
+        """Closed candles from from_ms through now, with gap backfill in that span."""
+        now_ms = self._now_ms()
+        step = interval_ms(interval)
+        if from_ms > now_ms:
+            from_ms = now_ms
+
+        merged: dict[int, Candle] = {}
+        end_time: int | None = None
+        for _ in range(12):
+            batch = await self._fetch_klines_window(symbol, interval, limit=200, end_time_ms=end_time)
+            if not batch:
+                break
+            for c in batch:
+                if c.time_ms >= from_ms - step:
+                    merged[c.time_ms] = c
+            oldest = batch[0].time_ms
+            if oldest <= from_ms or len(batch) < 200:
+                break
+            end_time = oldest
+            if len(merged) >= max_bars:
+                break
+
+        candles = sorted(merged.values(), key=lambda c: c.time_ms)
+        gaps_detected = detect_gaps(candles, interval)
+        for missing_start in gaps_detected[:12]:
+            if missing_start < from_ms - step:
+                continue
+            older = await self._fetch_klines_window(
+                symbol,
+                interval,
+                limit=200,
+                end_time_ms=missing_start + step,
+            )
+            for c in older:
+                merged[c.time_ms] = c
+        candles = sorted(merged.values(), key=lambda c: c.time_ms)
+
+        in_range = [c for c in candles if c.time_ms >= from_ms]
+        gaps_remaining = detect_gaps(in_range, interval) if len(in_range) >= 2 else []
+        closed, forming = split_closed_and_forming(candles, interval, now_ms)
+        closed = [c for c in closed if c.time_ms >= from_ms]
+
+        if in_range and in_range[0].time_ms > from_ms + step:
+            gaps_remaining = [from_ms] + gaps_remaining
+
+        return KlineBundle(
+            closed=closed,
+            forming=forming,
+            gaps_detected=gaps_detected,
+            gaps_remaining=gaps_remaining,
+            data_complete=len(gaps_remaining) == 0 and (not in_range or in_range[0].time_ms <= from_ms),
+            interval=interval,
+        )
+
     async def fetch_kline_bundle(self, symbol: str, interval: str, limit: int = 200) -> KlineBundle:
         now_ms = self._now_ms()
         candles = await self._fetch_klines_window(symbol, interval, limit)

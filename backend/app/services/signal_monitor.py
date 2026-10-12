@@ -5,13 +5,21 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.candle_utils import candle_close_ms
+from app.domain.candle_utils import candle_close_ms, interval_ms
 from app.domain.time_utils import ensure_utc
 from app.domain.candles import Candle
 from app.models import Signal, SignalStatus
 from app.services.execution_model import ExecutionModel, ExitOutcome
 from app.services.market_data import MarketDataService
 from app.services.signal_lifecycle import SignalLifecycleService
+
+MONITORABLE = frozenset(
+    {
+        SignalStatus.WAITING_FOR_ENTRY.value,
+        SignalStatus.ACTIVE.value,
+        SignalStatus.DATA_ERROR.value,
+    }
+)
 
 
 class SignalMonitorService:
@@ -26,7 +34,6 @@ class SignalMonitorService:
         self.paper = paper or ExecutionModel()
 
     def _monitor_from_ms(self, signal: Signal) -> int | None:
-        """Earliest closed-bar open time eligible for entry/exit monitoring."""
         if signal.entry_monitor_from_ms is not None:
             return signal.entry_monitor_from_ms
         if not signal.telegram_approval_required:
@@ -36,6 +43,35 @@ class SignalMonitorService:
             approved = ensure_utc(signal.telegram_approved_at)
             return int(approved.timestamp() * 1000) if approved else None
         return None
+
+    def _prior_status(self, signal: Signal) -> str:
+        if signal.status != SignalStatus.DATA_ERROR.value:
+            return signal.status
+        prior = signal.analysis.get("pre_data_error_status")
+        if prior in (SignalStatus.WAITING_FOR_ENTRY.value, SignalStatus.ACTIVE.value):
+            return prior
+        return SignalStatus.WAITING_FOR_ENTRY.value
+
+    async def _enter_data_error(self, session: AsyncSession, signal: Signal, note: str) -> None:
+        if signal.status == SignalStatus.DATA_ERROR.value:
+            return
+        signal.analysis = {
+            **signal.analysis,
+            "pre_data_error_status": signal.status,
+        }
+        await self.lifecycle.transition(
+            session,
+            signal,
+            SignalStatus.DATA_ERROR.value,
+            "INCOMPLETE_MARKET_DATA",
+            note=note,
+        )
+
+    async def _recover_data_error(self, session: AsyncSession, signal: Signal) -> None:
+        if signal.status != SignalStatus.DATA_ERROR.value:
+            return
+        prior = self._prior_status(signal)
+        await self.lifecycle.transition(session, signal, prior, "DATA_RECOVERED", note=f"Resumed {prior}")
 
     def _eligible_closed_bars(self, signal: Signal, closed: list[Candle], interval: str = "5m") -> list[Candle]:
         cursor = signal.last_processed_candle_ms or 0
@@ -105,16 +141,14 @@ class SignalMonitorService:
         if signal.telegram_approval_required and signal.telegram_approved is not True:
             return await self.process_waiting_unapproved(session, signal, quote_price, now, data_stale)
 
+        if signal.status == SignalStatus.ACTIVE.value or signal.fill_price is not None:
+            return events
+
         if data_stale:
             await self.lifecycle.log_event(
                 session, signal, "DATA_STALE_SKIP", signal.status, signal.status, note="Stale quote"
             )
             return events
-
-        if signal.status == SignalStatus.DATA_ERROR.value:
-            await self.lifecycle.transition(
-                session, signal, SignalStatus.WAITING_FOR_ENTRY.value, "DATA_RECOVERED", note="Recovered"
-            )
 
         expires = ensure_utc(signal.pending_expires_at)
         if expires and now >= expires:
@@ -174,9 +208,6 @@ class SignalMonitorService:
             )
             return events
 
-        if signal.status == SignalStatus.DATA_ERROR.value:
-            await self.lifecycle.transition(session, signal, SignalStatus.ACTIVE.value, "DATA_RECOVERED", note="Recovered")
-
         activation_ms = signal.entry_activation_candle_ms or (
             int(signal.activated_at.timestamp() * 1000) if signal.activated_at else 0
         )
@@ -221,14 +252,13 @@ class SignalMonitorService:
             events.append("TIME_EXIT")
         return events
 
+    async def _history_from_ms(self, signal: Signal) -> int:
+        cursor = signal.last_processed_candle_ms or 0
+        monitor_from = self._monitor_from_ms(signal) or 0
+        return max(cursor, monitor_from)
+
     async def monitor_open_signals(self, session: AsyncSession, settings_row) -> dict[str, list[str]]:
-        result = await session.execute(
-            select(Signal).where(
-                Signal.status.in_(
-                    [SignalStatus.WAITING_FOR_ENTRY.value, SignalStatus.ACTIVE.value, SignalStatus.DATA_ERROR.value]
-                )
-            )
-        )
+        result = await session.execute(select(Signal).where(Signal.status.in_(MONITORABLE)))
         signals = list(result.scalars().all())
         if not signals:
             return {}
@@ -236,36 +266,33 @@ class SignalMonitorService:
         symbol = signals[0].symbol
         quote = await self.market.fetch_live_price(symbol)
         stale = self.market.is_quote_stale(quote)
-        bundle = await self.market.fetch_kline_bundle(symbol, "5m", 200)
-        history_ok = bundle.data_complete
 
         out: dict[str, list[str]] = {}
         for sig in signals:
-            if not history_ok:
+            from_ms = await self._history_from_ms(sig)
+            bundle = await self.market.fetch_historical_closed(sig.symbol, "5m", from_ms)
+            if not bundle.data_complete:
                 await self.lifecycle.log_event(
                     session,
                     sig,
                     "INCOMPLETE_HISTORY_SKIP",
                     sig.status,
                     sig.status,
-                    note="5m gap backfill incomplete — monitoring paused",
+                    note=f"Cannot reconstruct 5m history from {from_ms}",
                 )
-                if sig.status != SignalStatus.DATA_ERROR.value:
-                    await self.lifecycle.transition(
-                        session,
-                        sig,
-                        SignalStatus.DATA_ERROR.value,
-                        "INCOMPLETE_MARKET_DATA",
-                        note="Gap backfill incomplete",
-                    )
+                await self._enter_data_error(session, sig, "Gap backfill incomplete for signal cursor")
                 continue
+
+            if sig.status == SignalStatus.DATA_ERROR.value:
+                await self._recover_data_error(session, sig)
+
             bars = self._eligible_closed_bars(sig, bundle.closed, bundle.interval)
-            if sig.status in (SignalStatus.WAITING_FOR_ENTRY.value, SignalStatus.DATA_ERROR.value):
+            if sig.status == SignalStatus.ACTIVE.value:
+                evs = await self.process_active(session, sig, bars, quote.price, stale)
+            else:
                 evs = await self.process_waiting(
                     session, sig, settings_row.max_missed_entry_pct, quote.price, bars, stale
                 )
-            else:
-                evs = await self.process_active(session, sig, bars, quote.price, stale)
             if evs:
                 out[sig.public_id] = evs
         await session.commit()

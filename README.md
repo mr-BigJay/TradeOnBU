@@ -2,6 +2,13 @@
 
 Rule-based ICT analysis, Telegram inline approval, real Bitunix candlestick charts, and full paper-trading lifecycle. **No live Bitunix orders.**
 
+## Pre-deployment reliability (2.2.1)
+
+- Creation-boundary approval precheck via 1m candles inside the partial 5m bar at signal creation.
+- `pre_data_error_status` preserved through DATA_ERROR; per-signal `fetch_historical_closed` from `last_processed_candle_ms`.
+- Notification outbox marks `sent` only when Telegram returns a `message_id`.
+- Single Telegram poll consumer (FastAPI lifespan loop only; worker does not poll).
+
 ## Phase 2.2 final reliability
 
 - **Telegram approval:** Production precheck loads real 5m/1m candles from signal creation through approval; rejects expired, terminal, and late (entry already touched) setups. Approvals during a forming 5m bar use 1m granularity and set `entry_monitor_from_ms` to the next 5m open (documented in signal events / `analysis.approval_policy`).

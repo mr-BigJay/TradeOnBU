@@ -42,17 +42,12 @@ class NotificationOutboxService:
         await session.flush()
         return row
 
-    async def _send(self, signal: Signal, event_type: str) -> bool:
+    async def _send(self, signal: Signal, event_type: str) -> tuple[bool, int | None]:
+        if not self.notifier.enabled:
+            return False, None
         if event_type == "NEW":
-            msg_id = await self.notifier.send_message(
-                self.notifier._format_signal(
-                    signal, "New ICT Setup Detected", "Use buttons below to approve paper monitoring.\n"
-                ),
-                reply_markup=self.notifier._inline_keyboard(signal.public_id),
-            )
-            if msg_id:
-                signal.telegram_message_id = msg_id
-            return msg_id is not None or not self.notifier.enabled
+            msg_id = await self.notifier.notify_new_setup(signal)
+            return msg_id is not None, msg_id
         handlers = {
             "ACTIVE": lambda: self.notifier.notify_entry_activated(signal),
             "MISSED_ENTRY": lambda: self.notifier.notify_missed_entry(signal),
@@ -63,11 +58,9 @@ class NotificationOutboxService:
         }
         fn = handlers.get(event_type)
         if not fn:
-            return True
-        if not self.notifier.enabled:
-            return True
-        await fn()
-        return True
+            return True, None
+        msg_id = await fn()
+        return msg_id is not None, msg_id
 
     async def flush_pending(self, session: AsyncSession, limit: int = 50) -> int:
         rows = (
@@ -92,13 +85,17 @@ class NotificationOutboxService:
                 continue
             row.attempts += 1
             try:
-                ok = await self._send(sig, row.event_type)
+                ok, msg_id = await self._send(sig, row.event_type)
                 if ok:
                     row.status = "sent"
                     row.sent_at = datetime.now(timezone.utc)
+                    if msg_id is not None:
+                        row.telegram_message_id = msg_id
                     sent += 1
                 else:
-                    row.last_error = "telegram API returned failure"
+                    row.last_error = (
+                        "telegram disabled" if not self.notifier.enabled else "telegram API returned no message_id"
+                    )
             except Exception as exc:
                 row.last_error = str(exc)
                 logger.exception("Outbox send failed %s", row.dedupe_key)

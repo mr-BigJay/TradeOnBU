@@ -20,9 +20,10 @@ from tests.helpers.market_fakes import EmptyCompleteMarket, PrecheckTouchMarket,
 
 @pytest.mark.asyncio
 async def test_approval_rejects_closed_bar_entry_touch(session):
-    touch_ms = 1_700_000_000_000
+    created_ms = 1_700_000_060_000
+    touch_ms = 1_700_000_090_000
     sig = make_signal(
-        created_at=datetime.fromtimestamp((touch_ms - 600_000) / 1000, tz=timezone.utc),
+        created_at=datetime.fromtimestamp(created_ms / 1000, tz=timezone.utc),
     )
     session.add(sig)
     await session.commit()
@@ -181,6 +182,9 @@ async def test_incomplete_history_sets_data_error(session):
                 interval="5m",
             )
 
+        async def fetch_historical_closed(self, symbol, interval, from_ms, max_bars=500):
+            return await self.fetch_kline_bundle(symbol, interval, 200)
+
         def is_quote_stale(self, q):
             return False
 
@@ -191,6 +195,7 @@ async def test_incomplete_history_sets_data_error(session):
     await monitor.monitor_open_signals(session, runtime)
     await session.refresh(sig)
     assert sig.status == SignalStatus.DATA_ERROR.value
+    assert sig.analysis.get("pre_data_error_status") == SignalStatus.WAITING_FOR_ENTRY.value
 
 
 def test_live_quote_stale_by_receipt_age():

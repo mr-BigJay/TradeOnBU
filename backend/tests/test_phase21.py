@@ -97,8 +97,9 @@ async def test_late_approval_after_entry_touched(session):
     sig = make_signal(telegram_approved=None)
     session.add(sig)
     await session.commit()
-    bar = Candle(open=100, high=101, low=99, close=100, time_ms=1_700_000_000_000)
-    sig.created_at = datetime.fromtimestamp((bar.time_ms - 600_000) / 1000, tz=timezone.utc)
+    created_ms = 1_700_000_060_000
+    bar = Candle(open=100, high=101, low=99, close=100, time_ms=1_700_000_090_000)
+    sig.created_at = datetime.fromtimestamp(created_ms / 1000, tz=timezone.utc)
     await session.commit()
     svc = TelegramApprovalService(market=PrecheckTouchMarket(bar))
     _, err = await svc.approve(session, sig.public_id, 111)
@@ -195,6 +196,20 @@ async def test_paper_lifecycle_deterministic(session):
         async def fetch_kline_bundle(self, symbol, interval, limit=200):
             bar = Candle(open=100, high=100.5, low=99.5, close=100.2, time_ms=1_700_000_300_000)
             return complete_bundle(closed=[bar], interval="5m")
+
+        async def fetch_historical_closed(self, symbol, interval, from_ms, max_bars=500):
+            bundle = await self.fetch_kline_bundle(symbol, interval, 200)
+            closed = [c for c in bundle.closed if c.time_ms >= from_ms]
+            from app.services.market_data import KlineBundle
+
+            return KlineBundle(
+                closed=closed,
+                forming=None,
+                gaps_detected=[],
+                gaps_remaining=[],
+                data_complete=True,
+                interval=interval,
+            )
 
         def is_quote_stale(self, q):
             return False
