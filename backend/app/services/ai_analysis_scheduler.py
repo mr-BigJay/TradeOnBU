@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db import SessionLocal
 from app.models import AiAnalysisSettings, SystemState
 from app.services.siwc.credentials import get_credential_row
 from app.services.siwc.oauth import has_plan_scope
@@ -42,7 +43,7 @@ async def scheduling_allowed(session: AsyncSession) -> tuple[bool, str | None]:
     return True, None
 
 
-async def try_acquire_analysis_lock(session: AsyncSession, owner: str, ttl_seconds: int = 900) -> bool:
+async def _try_acquire_analysis_lock(session: AsyncSession, owner: str, ttl_seconds: int) -> bool:
     await get_system_state(session)
     now_ms = int(_utc_now().timestamp() * 1000)
     until_ms = now_ms + ttl_seconds * 1000
@@ -53,7 +54,6 @@ async def try_acquire_analysis_lock(session: AsyncSession, owner: str, ttl_secon
             or_(
                 SystemState.ai_analysis_lock_until_ms.is_(None),
                 SystemState.ai_analysis_lock_until_ms <= now_ms,
-                SystemState.ai_analysis_lock_owner == owner,
             )
         )
         .values(
@@ -62,19 +62,48 @@ async def try_acquire_analysis_lock(session: AsyncSession, owner: str, ttl_secon
         )
     )
     result = await session.execute(stmt)
-    await session.flush()
     if result.rowcount == 0:
         return False
     state = (await session.execute(select(SystemState).where(SystemState.id == 1))).scalar_one_or_none()
     return bool(state and state.ai_analysis_lock_owner == owner and (state.ai_analysis_lock_until_ms or 0) > now_ms)
 
 
-async def release_analysis_lock(session: AsyncSession, owner: str) -> None:
+async def _release_analysis_lock(session: AsyncSession, owner: str) -> bool:
     state = (await session.execute(select(SystemState).where(SystemState.id == 1))).scalar_one_or_none()
     if state and state.ai_analysis_lock_owner == owner:
         state.ai_analysis_lock_owner = None
         state.ai_analysis_lock_until_ms = 0
-        await session.flush()
+        return True
+    return False
+
+
+async def acquire_analysis_lock(owner: str, ttl_seconds: int = 900) -> bool:
+    async with SessionLocal() as session:
+        ok = await _try_acquire_analysis_lock(session, owner, ttl_seconds)
+        if ok:
+            await session.commit()
+            return True
+        await session.rollback()
+        return False
+
+
+async def release_analysis_lock(owner: str) -> bool:
+    async with SessionLocal() as session:
+        released = await _release_analysis_lock(session, owner)
+        if released:
+            await session.commit()
+            return True
+        await session.rollback()
+        return False
+
+
+async def is_analysis_lock_held() -> bool:
+    async with SessionLocal() as session:
+        state = (await session.execute(select(SystemState).where(SystemState.id == 1))).scalar_one_or_none()
+        if not state or not state.ai_analysis_lock_owner:
+            return False
+        now_ms = int(_utc_now().timestamp() * 1000)
+        return (state.ai_analysis_lock_until_ms or 0) > now_ms
 
 
 async def should_run_scheduled(session: AsyncSession) -> bool:

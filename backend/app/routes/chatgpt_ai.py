@@ -12,9 +12,9 @@ from app.db import get_db
 from app.models import AiAnalysisRun, AiAnalysisSettings, SiwcConnectSession
 from app.routes.auth import require_dashboard_access
 from app.services.ai_analysis_scheduler import get_or_create_settings, scheduling_allowed
-from app.services.ai_ict_analysis import run_ai_analysis
+from app.services.ai_analysis_executor import execute_ai_analysis_with_lock
 from app.services.siwc.connect_flow import new_connect_secret
-from app.services.siwc.credentials import disconnect, get_access_token, get_credential_row, save_credentials
+from app.services.siwc.credentials import disconnect, get_access_token, get_credential_row
 from app.services.siwc.host_id import load_or_create_host_id
 from app.services.siwc.oauth import (
     DEFAULT_REDIRECT,
@@ -33,18 +33,6 @@ class SettingsBody(BaseModel):
     unattended_consent: bool = False
     interval_minutes: int = Field(default=60, ge=15, le=240)
     preferred_model: str | None = None
-
-
-class CredentialImportBody(BaseModel):
-    """Protected SIWC credential bundle from local OAuth (self-hosted VM transfer)."""
-    email: str | None = None
-    subject: str
-    client_id: str
-    scopes: list[str] = Field(default_factory=list)
-    access_token: str
-    refresh_token: str | None = None
-    id_token: str
-    expires_in: int | None = 3600
 
 
 @router.get("/status")
@@ -122,34 +110,6 @@ async def connect_begin(session: AsyncSession = Depends(get_db), _=Depends(requi
     }
 
 
-@router.post("/connect/import")
-async def connect_import(body: CredentialImportBody, session: AsyncSession = Depends(get_db), _=Depends(require_dashboard_access)):
-    if not has_plan_scope(body.scopes):
-        raise HTTPException(403, "ChatGPT plan usage scope not granted in imported bundle")
-    existing = await get_credential_row(session)
-    if existing and existing.subject and existing.subject != body.subject:
-        raise HTTPException(409, "Imported ChatGPT account does not match existing connection")
-    host_id = load_or_create_host_id()
-    token_response = {
-        "access_token": body.access_token,
-        "refresh_token": body.refresh_token,
-        "scope": " ".join(body.scopes),
-        "expires_in": body.expires_in,
-        "id_token": body.id_token,
-    }
-    await save_credentials(
-        session,
-        email=body.email,
-        subject=body.subject,
-        client_id=body.client_id,
-        ext_agent_host_id=host_id,
-        token_response=token_response,
-        id_token=body.id_token,
-    )
-    await session.commit()
-    return {"ok": True, "email": body.email}
-
-
 @router.post("/disconnect")
 async def disconnect_route(session: AsyncSession = Depends(get_db), _=Depends(require_dashboard_access)):
     await disconnect(session)
@@ -193,10 +153,12 @@ async def put_settings(body: SettingsBody, session: AsyncSession = Depends(get_d
 
 
 @router.post("/analyze-now")
-async def analyze_now(session: AsyncSession = Depends(get_db), _=Depends(require_dashboard_access)):
-    run = await run_ai_analysis(session, trigger="manual")
-    await session.commit()
-    await session.refresh(run)
+async def analyze_now(_=Depends(require_dashboard_access)):
+    outcome = await execute_ai_analysis_with_lock(trigger="manual")
+    if outcome.status == "busy":
+        raise HTTPException(409, "AI analysis already running")
+    run = outcome.run
+    assert run is not None
     if run.status == "failed":
         raise HTTPException(502, run.error_detail or run.error_code or "failed")
     return {"ok": True, "run_id": run.id, "status": run.status, "decision": run.decision}

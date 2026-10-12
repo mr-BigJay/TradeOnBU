@@ -359,6 +359,8 @@ async def test_telegram_delivery_on_success(session):
                     run = await run_ai_analysis(session, trigger="test")
     assert run.telegram_sent is True
     inst.send_message.assert_awaited()
+    args = inst.send_message.await_args[0][0]
+    assert "NO TRADE" in args or "تحلیل" in args
 
 
 @pytest.mark.asyncio

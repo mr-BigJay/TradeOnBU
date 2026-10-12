@@ -16,6 +16,7 @@ from app.services.execution_model import ExecutionModel
 from app.services.market_data import MarketDataService
 from app.services.siwc.credentials import get_access_token
 from app.services.siwc.responses_client import OpenAIResponsesError, list_models, stream_response
+from app.services.ai_telegram_format import format_ai_telegram_message
 from app.services.telegram_notifier import TelegramNotifier
 
 REQUIRED_INTERVALS = ("4h", "15m", "5m", "1m")
@@ -171,8 +172,12 @@ async def run_ai_analysis(
 
         notifier = TelegramNotifier()
         if notifier.enabled and run.report_fa:
-            header = f"*تحلیل ICT هوش مصنوعی (Paper)*\nDecision: `{run.decision}`\n\n"
-            msg_id = await notifier.send_message(header + run.report_fa[:3500])
+            msg = format_ai_telegram_message(
+                decision=run.decision,
+                report_fa=run.report_fa,
+                validation=validation,
+            )
+            msg_id = await notifier.send_message(msg)
             run.telegram_sent = msg_id is not None
     except MarketContextError as exc:
         run.status = "failed"

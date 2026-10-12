@@ -81,24 +81,9 @@ async def lifespan(app: FastAPI):
         get_telegram_coordinator().start()
 
         async def _ai_scheduled_tick() -> None:
-            from app.services.ai_analysis_scheduler import (
-                release_analysis_lock,
-                should_run_scheduled,
-                try_acquire_analysis_lock,
-            )
-            from app.services.ai_ict_analysis import run_ai_analysis
+            from app.services.ai_analysis_executor import execute_scheduled_if_due
 
-            owner = "ai_scheduler"
-            async with SessionLocal() as session:
-                if not await should_run_scheduled(session):
-                    return
-                if not await try_acquire_analysis_lock(session, owner, ttl_seconds=900):
-                    return
-                try:
-                    await run_ai_analysis(session, trigger="scheduled")
-                    await session.commit()
-                finally:
-                    await release_analysis_lock(session, owner)
+            await execute_scheduled_if_due()
 
         scheduler.add_job(
             _ai_scheduled_tick,
