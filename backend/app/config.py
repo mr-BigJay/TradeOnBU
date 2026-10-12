@@ -77,8 +77,13 @@ def get_effective_settings() -> Settings:
     from app.services.settings_runtime import overlay_get
 
     base = get_settings().model_copy()
+    enabled = overlay_get("telegram_enabled", "")
+    if enabled.lower() == "false":
+        base.telegram_bot_token = ""
+        base.telegram_chat_id = ""
+        base.telegram_allowed_user_ids = ""
     token = overlay_get("telegram_bot_token")
-    if token:
+    if token and enabled.lower() != "false":
         base.telegram_bot_token = token
     chat = overlay_get("telegram_chat_id")
     if chat:

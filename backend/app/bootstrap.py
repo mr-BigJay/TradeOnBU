@@ -13,7 +13,12 @@ class ConfigSecurityError(RuntimeError):
 def validate_settings(settings: Settings) -> None:
     if os.getenv("SKIP_CONFIG_GUARD") == "1":
         return
+
     if os.getenv("SESSION_AUTH_ENABLED") == "1":
+        if os.getenv("SESSION_COOKIE_SECURE") != "1" and os.getenv("ALLOW_INSECURE_SESSION") != "1":
+            raise ConfigSecurityError("SESSION_COOKIE_SECURE=1 is required when SESSION_AUTH_ENABLED=1")
+        if not (os.getenv("INTERNAL_SERVICE_KEY") or "").strip() or len(os.getenv("INTERNAL_SERVICE_KEY", "")) < 32:
+            raise ConfigSecurityError("INTERNAL_SERVICE_KEY must be set (min 32 chars) for production session auth")
         return
 
     if not settings.dashboard_api_key or len(settings.dashboard_api_key) < 16:
@@ -23,7 +28,7 @@ def validate_settings(settings: Settings) -> None:
     if settings.dashboard_api_key == settings.admin_api_key:
         raise ConfigSecurityError("DASHBOARD_API_KEY and ADMIN_API_KEY must differ")
 
-    if settings.telegram_bot_token and os.getenv("SESSION_AUTH_ENABLED") != "1":
+    if settings.telegram_bot_token:
         allow = settings.allowed_telegram_users()
         if not allow:
             raise ConfigSecurityError("TELEGRAM_ALLOWED_USER_IDS must be set when Telegram is enabled")

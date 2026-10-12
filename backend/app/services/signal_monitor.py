@@ -94,11 +94,12 @@ class SignalMonitorService:
         events: list[str],
     ) -> list[str]:
         outcome = ExitOutcome.TP if status == SignalStatus.TP_HIT.value else ExitOutcome.SL
-        fill = signal.fill_price or self.paper.open_fill(signal.entry_price, signal.direction, signal.entry_type)
-        exit_fill = self.paper.close_fill(raw_exit, signal.direction, outcome)
+        paper = ExecutionModel.for_signal(signal)
+        fill = signal.fill_price or paper.open_fill(signal.entry_price, signal.direction, signal.entry_type)
+        exit_fill = paper.close_fill(raw_exit, signal.direction, outcome)
         signal.exit_price = exit_fill
         signal.exit_reason = status
-        signal.estimated_net_pnl_usdt = self.paper.net_pnl(signal.direction, fill, exit_fill)
+        signal.estimated_net_pnl_usdt = paper.net_pnl(signal.direction, fill, exit_fill)
         await self.lifecycle.transition(
             session,
             signal,
@@ -303,11 +304,12 @@ class SignalMonitorService:
 
         active_expires = ensure_utc(signal.active_expires_at)
         if active_expires and now >= active_expires:
-            fill = signal.fill_price or self.paper.open_fill(signal.entry_price, signal.direction, signal.entry_type)
-            exit_fill = self.paper.close_fill(quote_price, signal.direction, ExitOutcome.TIME)
+            paper = ExecutionModel.for_signal(signal)
+            fill = signal.fill_price or paper.open_fill(signal.entry_price, signal.direction, signal.entry_type)
+            exit_fill = paper.close_fill(quote_price, signal.direction, ExitOutcome.TIME)
             signal.exit_price = exit_fill
             signal.exit_reason = SignalStatus.TIME_EXIT.value
-            signal.estimated_net_pnl_usdt = self.paper.net_pnl(signal.direction, fill, exit_fill)
+            signal.estimated_net_pnl_usdt = paper.net_pnl(signal.direction, fill, exit_fill)
             await self.lifecycle.transition(
                 session,
                 signal,

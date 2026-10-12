@@ -4,16 +4,24 @@ Rule-based ICT analysis, Telegram inline approval, real Bitunix candlestick char
 
 ## Phase 3 — One-command install (Ubuntu/Debian)
 
-Production install (interactive — domain, admin username/password only):
+Production install (interactive — domain, admin username/password only). **Use the bootstrap entry point** so helper scripts are downloaded before install runs:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mr-BigJay/TradeOnBU/cursor/ict-lifecycle-system-2ec7/scripts/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/mr-BigJay/TradeOnBU/cursor/ict-lifecycle-system-2ec7/scripts/bootstrap-install.sh | sudo bash
 ```
+
+Alternative (same flow, explicit temp file):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mr-BigJay/TradeOnBU/cursor/ict-lifecycle-system-2ec7/scripts/bootstrap-install.sh -o /tmp/tradeonbu-bootstrap.sh && sudo bash /tmp/tradeonbu-bootstrap.sh
+```
+
+**Not yet verified on a live Ubuntu host with real DNS/SSL in this environment** — run the bootstrap command on your server and confirm the HTTPS success banner before treating install as production-ready.
 
 Install path: `/opt/tradeonbu` • HTTPS via **Caddy** (Let's Encrypt) • Session login (Argon2id) • Settings in dashboard (Persian RTL).
 
 Ops scripts: `scripts/update.sh`, `backup.sh`, `restore.sh`, `uninstall.sh`  
-CLI recovery: `docker compose exec tradeonbu python3 -m app.cli reset-password --username USER --password NEW`
+CLI recovery: `printf '%s' 'NewSecurePass123' | docker compose exec -T tradeonbu python3 -m app.cli reset-password --username USER --password-stdin`
 
 **Tested in dev:** 64 pytest passed, frontend build OK. **Requires Ubuntu host:** DNS, ports 80/443, real ACME certificate, end-to-end HTTPS login.
 

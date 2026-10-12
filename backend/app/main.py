@@ -39,7 +39,8 @@ from app.services.paper_execution import PaperExecutionEngine
 from app.services.runtime_settings import get_runtime_settings
 from app.services.signal_lifecycle import SignalLifecycleService
 from app.services.telegram_approval import TelegramApprovalService
-from app.services.telegram_bot import TelegramBotService
+from app.services.job_scheduler import bind_scheduler, reschedule_ict_scan
+from app.services.telegram_coordinator import get_telegram_coordinator
 from app.services.telegram_notifier import TelegramNotifier
 from app.services.trend_engine import TrendEngine
 from app.worker import BotWorker
@@ -48,18 +49,6 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 worker = BotWorker()
 scheduler = AsyncIOScheduler()
-telegram_bot = TelegramBotService()
-
-
-async def _telegram_poll_loop() -> None:
-    while True:
-        try:
-            await telegram_bot.poll_once()
-        except Exception:
-            logger.exception("Telegram polling error")
-        await asyncio.sleep(2)
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     validate_settings(settings)
@@ -68,21 +57,26 @@ async def lifespan(app: FastAPI):
     async with SessionLocal() as session:
         try:
             await refresh_settings_cache(session)
+            from app.services.runtime_settings import get_runtime_settings
+
+            runtime = await get_runtime_settings(session)
+            scan_seconds = runtime.scan_interval_seconds
         except Exception:
             logger.exception("Settings cache refresh skipped")
+            scan_seconds = settings.scan_interval_seconds
     if not os.getenv("DISABLE_APP_BACKGROUND"):
+        bind_scheduler(scheduler)
         scheduler.add_job(
             worker.run_cycle,
             "interval",
-            seconds=settings.scan_interval_seconds,
+            seconds=scan_seconds,
             id="ict_scan",
             max_instances=1,
             coalesce=True,
         )
         scheduler.start()
         asyncio.create_task(worker.run_cycle())
-        if telegram_bot.polling_enabled:
-            asyncio.create_task(_telegram_poll_loop())
+        get_telegram_coordinator().start()
     yield
     scheduler.shutdown(wait=False)
 
@@ -265,7 +259,9 @@ async def telegram_webhook(secret: str, request: Request):
         raise HTTPException(403, "Invalid Telegram secret token header")
     payload = await request.json()
     if "callback_query" in payload or "message" in payload:
-        await telegram_bot.handle_update(payload)
+        from app.services.telegram_bot import TelegramBotService
+
+        await TelegramBotService().handle_update(payload)
     return {"ok": True}
 
 

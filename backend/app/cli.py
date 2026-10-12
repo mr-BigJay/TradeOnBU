@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import os
 import sys
 from datetime import datetime, timezone
+from getpass import getpass
 
 from sqlalchemy import select
 
@@ -14,6 +14,21 @@ from app.db import SessionLocal, init_db
 from app.models import InstallationMeta, User
 from app.services.passwords import hash_password, password_strength_ok
 from app.services.session_auth import create_admin_user
+
+
+def _read_password(args: argparse.Namespace, flag: str = "password") -> str:
+    if getattr(args, "password_stdin", False):
+        data = sys.stdin.read()
+        if not data:
+            raise SystemExit("No password on stdin")
+        return data.rstrip("\n")
+    if getattr(args, flag, None):
+        raise SystemExit("Do not pass passwords on the command line; use --password-stdin")
+    pw = getpass("New password: ")
+    confirm = getpass("Confirm password: ")
+    if pw != confirm:
+        raise SystemExit("Passwords do not match")
+    return pw
 
 
 async def cmd_create_admin(username: str, password: str, domain: str | None) -> None:
@@ -58,18 +73,20 @@ def main() -> None:
 
     ca = sub.add_parser("create-admin")
     ca.add_argument("--username", required=True)
-    ca.add_argument("--password", required=True)
     ca.add_argument("--domain", default=None)
+    ca.add_argument("--password-stdin", action="store_true", help="Read password from stdin (recommended)")
 
     rp = sub.add_parser("reset-password")
     rp.add_argument("--username", required=True)
-    rp.add_argument("--password", required=True)
+    rp.add_argument("--password-stdin", action="store_true")
 
     args = parser.parse_args()
     if args.cmd == "create-admin":
-        asyncio.run(cmd_create_admin(args.username, args.password, args.domain))
+        password = _read_password(args)
+        asyncio.run(cmd_create_admin(args.username, password, args.domain))
     elif args.cmd == "reset-password":
-        asyncio.run(cmd_reset_password(args.username, args.password))
+        password = _read_password(args)
+        asyncio.run(cmd_reset_password(args.username, password))
 
 
 if __name__ == "__main__":

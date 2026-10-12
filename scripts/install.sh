@@ -7,46 +7,70 @@ REPO="${TRADEONBU_REPO:-https://github.com/mr-BigJay/TradeOnBU.git}"
 BRANCH="${TRADEONBU_BRANCH:-cursor/ict-lifecycle-system-2ec7}"
 STATE_FILE="${INSTALL_DIR}/.install_state"
 LOG_FILE="${INSTALL_DIR}/install.log"
+TTY="${TRADEONBU_TTY:-/dev/tty}"
 
 log() { echo "[install] $*" | tee -a "${LOG_FILE}" 2>/dev/null || echo "[install] $*"; }
 die() { log "ERROR: $*"; exit 1; }
 
-# shellcheck source=scripts/install_lib.sh
-source "$(dirname "$0")/install_lib.sh" 2>/dev/null || true
+load_helpers() {
+  if [[ -n "${TRADEONBU_INSTALL_LIB:-}" && -f "$TRADEONBU_INSTALL_LIB" ]]; then
+    # shellcheck source=/dev/null
+    source "$TRADEONBU_INSTALL_LIB"
+  elif [[ -f "$(dirname "$0")/install_lib.sh" ]]; then
+    # shellcheck source=scripts/install_lib.sh
+    source "$(dirname "$0")/install_lib.sh"
+  else
+    die "Missing install_lib.sh. Use: curl -fsSL .../scripts/bootstrap-install.sh | sudo bash"
+  fi
+  declare -F validate_domain >/dev/null 2>&1 || die "install_lib.sh is incomplete (validate_domain missing)"
+  declare -F check_os >/dev/null 2>&1 || die "install_lib.sh is incomplete (check_os missing)"
+}
 
 require_root() {
   if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
-    die "Run with sudo: curl -fsSL ... | sudo bash"
+    die "Run as root (e.g. curl -fsSL .../bootstrap-install.sh | sudo bash)"
   fi
 }
 
-check_os || die "Unsupported OS — Ubuntu/Debian required"
+require_tty() {
+  if [[ ! -r "$TTY" ]]; then
+    die "Interactive terminal required (/dev/tty). Run: curl -fsSL .../bootstrap-install.sh -o /tmp/tradeonbu-install.sh && sudo bash /tmp/tradeonbu-install.sh"
+  fi
+}
 
 prompt_inputs() {
   if [[ -f "$STATE_FILE" ]]; then
     # shellcheck source=/dev/null
     source "$STATE_FILE"
     log "Resuming previous install (domain=${DOMAIN:-unset})"
+    ADMIN_USER="${ADMIN_USER:-admin}"
     return
   fi
-  read -rp "Domain name (e.g. trade.example.com): " DOMAIN
+  require_tty
+  read -rp "Domain name (e.g. trade.example.com): " DOMAIN <"$TTY"
   validate_domain "$DOMAIN" || die "Invalid domain format"
-  read -rp "Administrator username: " ADMIN_USER
-  read -srp "Administrator password: " ADMIN_PASS; echo
-  read -srp "Confirm password: " ADMIN_PASS2; echo
+  read -rp "Administrator username: " ADMIN_USER <"$TTY"
+  read -srp "Administrator password: " ADMIN_PASS <"$TTY"
+  echo <"$TTY"
+  read -srp "Confirm password: " ADMIN_PASS2 <"$TTY"
+  echo <"$TTY"
   [[ "$ADMIN_PASS" == "$ADMIN_PASS2" ]] || die "Passwords do not match"
   [[ ${#ADMIN_PASS} -ge 10 ]] || die "Password too short (min 10)"
+  unset ADMIN_PASS2
 }
 
 check_dns() {
   log "Checking DNS for ${DOMAIN}..."
   local resolved
-  resolved=$(getent ahosts "$DOMAIN" | awk '/STREAM/ {print $1; exit}')
+  resolved=$(getent ahostsv4 "$DOMAIN" 2>/dev/null | awk 'NR==1 {print $1}')
+  if [[ -z "$resolved" ]]; then
+    resolved=$(getent ahostsv6 "$DOMAIN" 2>/dev/null | awk 'NR==1 {print $1}')
+  fi
   [[ -n "$resolved" ]] || die "DNS lookup failed for ${DOMAIN}"
   local pub
-  pub=$(curl -fsS --max-time 5 https://api.ipify.org 2>/dev/null || curl -fsS --max-time 5 ifconfig.me 2>/dev/null || true)
+  pub=$(curl -fsS --max-time 8 https://api.ipify.org 2>/dev/null || curl -fsS --max-time 8 ifconfig.me 2>/dev/null || true)
   if [[ -n "$pub" && "$resolved" != "$pub" ]]; then
-    log "WARNING: ${DOMAIN} resolves to ${resolved} but this server public IP appears ${pub}"
+    log "WARNING: ${DOMAIN} -> ${resolved} but server public IP appears ${pub}"
     log "Fix DNS A/AAAA before expecting a valid certificate."
   else
     log "DNS resolves to ${resolved}"
@@ -60,21 +84,31 @@ check_ports() {
   fi
 }
 
+install_system_packages() {
+  log "Ensuring system packages (git, curl, openssl, python3)..."
+  apt-get update -qq
+  apt-get install -y git curl openssl ca-certificates python3 dnsutils iproute2
+}
+
 install_docker() {
   if command -v docker >/dev/null && docker compose version >/dev/null 2>&1; then
     log "Docker already installed"
     return
   fi
   log "Installing Docker Engine..."
-  apt-get update -qq
   apt-get install -y ca-certificates curl gnupg
   install -m 0755 -d /etc/apt/keyrings
-  curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg 2>/dev/null || \
+  if [[ -f /etc/os-release ]]; then
+    # shellcheck source=/dev/null
+    . /etc/os-release
+  fi
+  if [[ "${ID:-ubuntu}" == "debian" ]]; then
     curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+  else
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+  fi
   chmod a+r /etc/apt/keyrings/docker.gpg
-  # shellcheck source=/dev/null
-  . /etc/os-release
-  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/${ID} ${VERSION_CODENAME} stable" \
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/${ID:-ubuntu} ${VERSION_CODENAME} stable" \
     > /etc/apt/sources.list.d/docker.list
   apt-get update -qq
   apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
@@ -99,11 +133,11 @@ write_env() {
   if [[ -f "$env_file" && -f "$STATE_FILE" ]]; then
     log "Preserving existing .env"
     grep -q '^DOMAIN=' "$env_file" || echo "DOMAIN=${DOMAIN}" >> "$env_file"
+    sed -i '/^SKIP_CONFIG_GUARD=/d' "$env_file" 2>/dev/null || true
     return
   fi
-  local secret_key session_secret
+  local secret_key
   secret_key=$(openssl rand -hex 32)
-  session_secret=$(openssl rand -hex 32)
   cat >"$env_file" <<EOF
 DOMAIN=${DOMAIN}
 ACME_EMAIL=admin@${DOMAIN}
@@ -111,11 +145,12 @@ DATABASE_URL=sqlite+aiosqlite:////app/data/tradeonbu.db
 DATA_DIR=/app/data
 SESSION_AUTH_ENABLED=1
 SESSION_COOKIE_SECURE=1
-SKIP_CONFIG_GUARD=1
 INTERNAL_SERVICE_KEY=${secret_key}
+DASHBOARD_PUBLIC_URL=https://${DOMAIN}
+CORS_ALLOWED_ORIGINS=https://${DOMAIN}
 EOF
   chmod 600 "$env_file"
-  log "Generated restricted .env (no Telegram/trading params — configure in dashboard)"
+  log "Generated restricted .env (Telegram/trading configured in dashboard only)"
 }
 
 start_stack() {
@@ -140,10 +175,15 @@ wait_healthy() {
 
 create_admin() {
   cd "$INSTALL_DIR"
-  docker compose exec -T tradeonbu python3 -m app.cli create-admin \
+  if [[ -z "${ADMIN_PASS:-}" ]]; then
+    log "Administrator already exists or resume mode — skipping create-admin"
+    return
+  fi
+  printf '%s' "$ADMIN_PASS" | docker compose exec -T tradeonbu python3 -m app.cli create-admin \
     --username "$ADMIN_USER" \
-    --password "$ADMIN_PASS" \
-    --domain "$DOMAIN"
+    --domain "$DOMAIN" \
+    --password-stdin
+  unset ADMIN_PASS
 }
 
 verify_https() {
@@ -209,11 +249,14 @@ EOF
 }
 
 main() {
+  load_helpers
   require_root
+  check_os || die "Unsupported OS — Ubuntu/Debian required"
   mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true
   prompt_inputs
   check_dns
   check_ports
+  install_system_packages
   install_docker
   clone_repo
   write_env

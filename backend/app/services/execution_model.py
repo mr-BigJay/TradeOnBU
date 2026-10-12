@@ -32,6 +32,17 @@ class ExecutionModel:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_effective_settings()
 
+    @classmethod
+    def for_signal(cls, signal) -> ExecutionModel:
+        params = (getattr(signal, "analysis", None) or {}).get("position_params") or {}
+        if not params:
+            return cls()
+        base = get_effective_settings().model_copy()
+        for key, val in params.items():
+            if hasattr(base, key):
+                setattr(base, key, type(getattr(base, key))(val))
+        return cls(base)
+
     def margin_notional(self) -> float:
         return self.settings.margin_usdt * self.settings.leverage
 

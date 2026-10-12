@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import Settings, get_settings
+from app.config import Settings, get_effective_settings, get_settings
 from app.domain.time_utils import ensure_utc
 from app.domain.state_machine import TERMINAL_STATUSES
 from app.models import Signal, SignalStatus
@@ -20,9 +20,18 @@ APPROVAL_ALLOWED_STATUSES = frozenset({SignalStatus.WAITING_FOR_ENTRY.value, Sig
 
 class TelegramApprovalService:
     def __init__(self, settings: Settings | None = None, market: MarketDataService | None = None) -> None:
-        self.settings = settings or get_settings()
+        self._settings_override = settings
         self.lifecycle = SignalLifecycleService()
-        self.precheck = ApprovalPrecheckService(market or MarketDataService(self.settings))
+        self._market_override = market
+
+    @property
+    def settings(self) -> Settings:
+        return self._settings_override or get_effective_settings()
+
+    @property
+    def precheck(self) -> ApprovalPrecheckService:
+        market = self._market_override or MarketDataService(self.settings)
+        return ApprovalPrecheckService(market)
 
     def user_allowed(self, user_id: int, source: str = "telegram") -> bool:
         if source != "telegram":

@@ -23,7 +23,9 @@ from app.services.settings_store import (
     telegram_public_view,
 )
 from app.services.telegram_notifier import TelegramNotifier
+from app.services.job_scheduler import reschedule_ict_scan
 from app.services.settings_runtime import refresh_settings_cache
+from app.services.telegram_coordinator import get_telegram_coordinator
 
 router = APIRouter(prefix="/api/gui/settings", tags=["gui-settings"])
 
@@ -80,6 +82,7 @@ async def put_telegram(body: TelegramUpdate, session: AsyncSession = Depends(get
     await audit(session, user.id, "telegram", "update", {"enabled": body.enabled})
     await session.commit()
     await refresh_settings_cache(session)
+    get_telegram_coordinator().notify_settings_changed()
     return await telegram_public_view(session)
 
 
@@ -105,7 +108,9 @@ async def send_test_message(session: AsyncSession = Depends(get_db), user_pair=D
     if not n.enabled:
         return {"ok": False, "detail": "Telegram not configured"}
     msg_id = await n.send_message("TradeOnBU test message — paper mode only.")
-    return {"ok": msg_id is not None}
+    if msg_id is None:
+        return {"ok": False, "detail": "Telegram did not confirm message delivery"}
+    return {"ok": True, "message_id": msg_id}
 
 
 @router.get("/strategy")
@@ -140,6 +145,7 @@ async def put_strategy(body: StrategyUpdate, session: AsyncSession = Depends(get
     await audit(session, user.id, "strategy", "update", body.model_dump())
     await session.commit()
     await refresh_settings_cache(session)
+    reschedule_ict_scan(row.scan_interval_seconds)
     return await get_strategy(session)
 
 

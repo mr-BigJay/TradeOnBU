@@ -88,6 +88,7 @@ async def telegram_public_view(session: AsyncSession) -> dict[str, Any]:
 async def apply_telegram_to_env_cache(session: AsyncSession) -> dict[str, str]:
     """Values for in-process Settings refresh (not written to .env)."""
     return {
+        "telegram_enabled": await get_plain(session, "telegram", "enabled", "false"),
         "telegram_bot_token": await get_secret(session, "telegram", "bot_token"),
         "telegram_chat_id": await get_plain(session, "telegram", "chat_id"),
         "telegram_allowed_user_ids": await get_plain(session, "telegram", "allowed_user_ids"),

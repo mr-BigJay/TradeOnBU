@@ -8,7 +8,7 @@ from uuid import UUID
 import httpx
 from sqlalchemy import select
 
-from app.config import Settings, get_settings
+from app.config import Settings, get_effective_settings
 from app.db import SessionLocal
 from app.models import Signal
 from app.services.system_state import get_system_state
@@ -25,13 +25,27 @@ UUID_RE = re.compile(
 
 class TelegramBotService:
     def __init__(self, settings: Settings | None = None) -> None:
-        self.settings = settings or get_settings()
-        self.notifier = TelegramNotifier(self.settings)
-        self.approval = TelegramApprovalService(self.settings)
+        self._settings_override = settings
+
+    @property
+    def settings(self) -> Settings:
+        return self._settings_override or get_effective_settings()
+
+    @property
+    def notifier(self) -> TelegramNotifier:
+        return TelegramNotifier(self.settings)
+
+    @property
+    def approval(self) -> TelegramApprovalService:
+        return TelegramApprovalService(self.settings)
 
     @property
     def enabled(self) -> bool:
-        return bool(self.settings.telegram_bot_token)
+        from app.services.settings_runtime import overlay_get
+
+        if overlay_get("telegram_enabled", "false").lower() != "true":
+            return False
+        return bool(self.settings.telegram_bot_token and self.settings.telegram_chat_id)
 
     @property
     def polling_enabled(self) -> bool:
