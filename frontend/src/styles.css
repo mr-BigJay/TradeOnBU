@@ -13,10 +13,19 @@ body {
   margin: 0;
 }
 
+html[dir="rtl"] .layout {
+  grid-template-columns: 1fr 320px;
+}
+
 .layout {
   display: grid;
   grid-template-columns: 320px 1fr;
   min-height: 100vh;
+}
+
+.login-wrap {
+  min-height: 100vh;
+  padding: 1rem;
 }
 
 .sidebar {

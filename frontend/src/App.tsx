@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { createChart, IChartApi, ISeriesApi, LineStyle } from "lightweight-charts";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { apiFetch, getApiKey, setApiKey } from "./api";
+import { ChartPanel } from "./ChartPanel";
 
 type Trend = {
   symbol: string;
@@ -76,9 +77,8 @@ export default function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [events, setEvents] = useState<SignalEvent[]>([]);
   const [importMsg, setImportMsg] = useState<string>("");
-  const chartRef = useRef<IChartApi | null>(null);
-  const seriesRef = useRef<ISeriesApi<"Line"> | null>(null);
-  const chartContainerRef = useRef<HTMLDivElement | null>(null);
+  const [apiKeyInput, setApiKeyInput] = useState(getApiKey());
+  const [authed, setAuthed] = useState(!!getApiKey());
 
   const selected = useMemo(
     () => signals.find((s) => s.public_id === selectedId) ?? signals[0] ?? null,
@@ -87,9 +87,9 @@ export default function App() {
 
   const refresh = useCallback(async () => {
     const [t, s, r] = await Promise.all([
-      fetch("/api/trend/current").then((x) => x.json()),
-      fetch("/api/signals").then((x) => x.json()),
-      fetch("/api/settings/runtime").then((x) => x.json()),
+      apiFetch("/api/trend/current"),
+      apiFetch("/api/signals"),
+      apiFetch("/api/settings/runtime"),
     ]);
     setTrend(t);
     setSignals(s);
@@ -98,53 +98,22 @@ export default function App() {
   }, [selectedId]);
 
   useEffect(() => {
-    refresh();
-    const id = setInterval(refresh, 15000);
+    if (!authed) return;
+    refresh().catch(() => setAuthed(false));
+    const id = setInterval(() => refresh().catch(() => undefined), 15000);
     return () => clearInterval(id);
-  }, [refresh]);
+  }, [refresh, authed]);
 
   useEffect(() => {
-    if (!selected) return;
-    fetch(`/api/signals/${selected.public_id}/events`)
-      .then((x) => x.json())
-      .then(setEvents);
-  }, [selected]);
+    if (!selected || !authed) return;
+    apiFetch(`/api/signals/${selected.public_id}/events`).then(setEvents);
+  }, [selected, authed]);
 
   useEffect(() => {
-    if (!chartContainerRef.current) return;
-    chartRef.current?.remove();
-    chartRef.current = createChart(chartContainerRef.current, {
-      layout: { background: { color: "#0c1224" }, textColor: "#d5def5" },
-      grid: { vertLines: { color: "#1b2640" }, horzLines: { color: "#1b2640" } },
-      height: 420,
-    });
-    seriesRef.current = chartRef.current.addLineSeries({ color: "#5da2ff", lineWidth: 2 });
-    const price = trend?.live_price ?? selected?.entry_price ?? 0;
-    if (price) {
-      const now = Math.floor(Date.now() / 1000);
-      seriesRef.current.setData([
-        { time: now - 3600, value: price * 0.998 },
-        { time: now - 1800, value: price * 1.001 },
-        { time: now, value: price },
-      ]);
-    }
-    if (selected) {
-      for (const m of [
-        { price: selected.entry_price, color: "#ffd76a", title: "Entry" },
-        { price: selected.stop_loss, color: "#ff6b6b", title: "SL" },
-        { price: selected.take_profit, color: "#6dffb5", title: "TP" },
-      ]) {
-        seriesRef.current.createPriceLine({
-          price: m.price,
-          color: m.color,
-          lineWidth: 2,
-          lineStyle: LineStyle.Dashed,
-          title: m.title,
-        });
-      }
-    }
-    return () => chartRef.current?.remove();
-  }, [selected, trend]);
+    const params = new URLSearchParams(window.location.search);
+    const fromUrl = params.get("signal");
+    if (fromUrl) setSelectedId(fromUrl);
+  }, []);
 
   const waiting = signals.filter((s) => s.status === "WAITING_FOR_ENTRY");
   const active = signals.filter((s) => s.status === "ACTIVE");
@@ -153,11 +122,7 @@ export default function App() {
   async function saveSettings(e: React.FormEvent) {
     e.preventDefault();
     if (!settings) return;
-    await fetch("/api/settings/runtime", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(settings),
-    });
+    await apiFetch("/api/settings/runtime", { method: "PUT", body: JSON.stringify(settings) });
     await refresh();
   }
 
@@ -179,23 +144,42 @@ export default function App() {
       fvg_entry: payload.fvg_entry === "on",
       notes: payload.notes ? String(payload.notes) : undefined,
     };
-    const resp = await fetch("/api/signals/import", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    const data = await resp.json();
-    setImportMsg(resp.ok ? `Imported ${data.public_id}` : data.detail || "Import failed");
+    try {
+      const data = await apiFetch("/api/signals/import", { method: "POST", body: JSON.stringify(body) });
+      setImportMsg(`Imported ${data.public_id}`);
+    } catch (err) {
+      setImportMsg(err instanceof Error ? err.message : "Import failed");
+    }
     await refresh();
   }
 
   async function approve(publicId: string, approved: boolean) {
-    await fetch("/api/signals/telegram-approval", {
+    await apiFetch("/api/signals/telegram-approval", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ public_id: publicId, approved }),
     });
     await refresh();
+  }
+
+  if (!authed) {
+    return (
+      <div className="login-wrap">
+        <div className="card" style={{ maxWidth: 420, margin: "10vh auto" }}>
+          <h1>Trade Monitor</h1>
+          <p>کلید API داشبورد را وارد کنید (Paper Trading)</p>
+          <input value={apiKeyInput} onChange={(e) => setApiKeyInput(e.target.value)} placeholder="X-API-Key" />
+          <button
+            style={{ marginTop: 10 }}
+            onClick={() => {
+              setApiKey(apiKeyInput.trim());
+              setAuthed(true);
+            }}
+          >
+            ورود
+          </button>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -323,10 +307,15 @@ export default function App() {
           </div>
         </div>
 
-        <div className="card">
-          <h2>Chart — Entry / SL / TP</h2>
-          <div className="chart-wrap" ref={chartContainerRef} />
-        </div>
+        <ChartPanel
+          symbol={trend?.symbol || "BTCUSDT"}
+          direction={selected?.direction}
+          signalLevels={
+            selected
+              ? { entry: selected.entry_price, sl: selected.stop_loss, tp: selected.take_profit }
+              : null
+          }
+        />
 
         <SignalTable
           title="Waiting Signals"

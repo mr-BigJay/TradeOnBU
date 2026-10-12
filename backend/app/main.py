@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from sqlalchemy import desc, select
@@ -15,8 +15,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.db import get_db, init_db
+from app.middleware.security import SecurityMiddleware
 from app.models import MarketTrendSnapshot, Signal, SignalEvent, SignalStatus
 from app.schemas import (
+    ChartBundleOut,
     ChatGPTImportRequest,
     RuntimeSettingsOut,
     RuntimeSettingsUpdate,
@@ -25,11 +27,14 @@ from app.schemas import (
     TelegramApprovalRequest,
     TrendSnapshotOut,
 )
+from app.services.chart_data import ChartDataService
 from app.services.import_signal import ImportSignalService
 from app.services.market_data import MarketDataService
 from app.services.paper_execution import PaperExecutionEngine
 from app.services.runtime_settings import get_runtime_settings
 from app.services.signal_lifecycle import SignalLifecycleService
+from app.services.telegram_approval import TelegramApprovalService
+from app.services.telegram_bot import TelegramBotService
 from app.services.telegram_notifier import TelegramNotifier
 from app.services.trend_engine import TrendEngine
 from app.worker import BotWorker
@@ -38,6 +43,16 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 worker = BotWorker()
 scheduler = AsyncIOScheduler()
+telegram_bot = TelegramBotService()
+
+
+async def _telegram_poll_loop() -> None:
+    while True:
+        try:
+            await telegram_bot.poll_once()
+        except Exception:
+            logger.exception("Telegram polling error")
+        await asyncio.sleep(2)
 
 
 @asynccontextmanager
@@ -47,16 +62,19 @@ async def lifespan(app: FastAPI):
     scheduler.add_job(worker.run_cycle, "interval", seconds=settings.scan_interval_seconds, id="ict_scan")
     scheduler.start()
     asyncio.create_task(worker.run_cycle())
+    if telegram_bot.enabled and not settings.telegram_use_webhook:
+        asyncio.create_task(_telegram_poll_loop())
     yield
     scheduler.shutdown(wait=False)
 
 
 app = FastAPI(title=settings.app_name, lifespan=lifespan)
+app.add_middleware(SecurityMiddleware)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.cors_origins(),
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -65,7 +83,20 @@ frontend_dist = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "paper_only": True, "time": datetime.now(timezone.utc).isoformat()}
+    return {
+        "status": "ok",
+        "paper_only": True,
+        "live_trading": False,
+        "time": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@app.get("/api/market/chart", response_model=ChartBundleOut)
+async def market_chart(symbol: str | None = None, interval: str = "5m", direction: str | None = None):
+    symbol = symbol or settings.default_symbol
+    svc = ChartDataService()
+    data = await svc.bundle(symbol, interval, direction=direction)
+    return ChartBundleOut(**data)
 
 
 @app.get("/api/settings/runtime", response_model=RuntimeSettingsOut)
@@ -100,7 +131,10 @@ async def update_runtime_settings(body: RuntimeSettingsUpdate, session: AsyncSes
 async def current_trend(session: AsyncSession = Depends(get_db)):
     symbol = settings.default_symbol
     result = await session.execute(
-        select(MarketTrendSnapshot).where(MarketTrendSnapshot.symbol == symbol).order_by(desc(MarketTrendSnapshot.id)).limit(1)
+        select(MarketTrendSnapshot)
+        .where(MarketTrendSnapshot.symbol == symbol)
+        .order_by(desc(MarketTrendSnapshot.id))
+        .limit(1)
     )
     snap = result.scalar_one_or_none()
     market = MarketDataService()
@@ -181,23 +215,32 @@ async def import_chatgpt_signal(body: ChatGPTImportRequest, session: AsyncSessio
     if not sig:
         raise HTTPException(409, "Duplicate or rejected signal")
     await TelegramNotifier().notify_new_setup(sig)
+    await session.commit()
     return sig
 
 
 @app.post("/api/signals/telegram-approval")
 async def telegram_approval(body: TelegramApprovalRequest, session: AsyncSession = Depends(get_db)):
-    result = await session.execute(select(Signal).where(Signal.public_id == body.public_id))
-    sig = result.scalar_one_or_none()
-    if not sig:
-        raise HTTPException(404, "Signal not found")
-    lifecycle = SignalLifecycleService()
-    if not body.approved:
-        await lifecycle.transition(session, sig, SignalStatus.REJECTED.value, "USER_REJECTED")
+    svc = TelegramApprovalService()
+    if body.approved:
+        sig, err = await svc.approve(session, body.public_id, user_id=0, source="dashboard")
+        if err == "NOT_FOUND":
+            raise HTTPException(404, "Signal not found")
     else:
-        sig.telegram_approved = True
-        await lifecycle.log_event(session, sig, "USER_APPROVED", sig.status, sig.status)
-    await session.commit()
-    return {"ok": True, "status": sig.status}
+        sig, err = await svc.reject(session, body.public_id, user_id=0, source="dashboard")
+        if err == "NOT_FOUND":
+            raise HTTPException(404, "Signal not found")
+    return {"ok": True, "status": sig.status if sig else None}
+
+
+@app.post("/api/telegram/webhook/{secret}")
+async def telegram_webhook(secret: str, request: Request):
+    if settings.telegram_webhook_secret and secret != settings.telegram_webhook_secret:
+        raise HTTPException(403, "Invalid webhook secret")
+    payload = await request.json()
+    if "callback_query" in payload or "message" in payload:
+        await telegram_bot.handle_update(payload)
+    return {"ok": True}
 
 
 @app.post("/api/worker/run-once")

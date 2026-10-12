@@ -76,6 +76,7 @@ class BotWorker:
                     await session.commit()
                     await session.refresh(sig)
                     await self.telegram.notify_new_setup(sig)
+                    await session.commit()
                     logger.info("Created signal %s", sig.public_id)
             await session.commit()
 

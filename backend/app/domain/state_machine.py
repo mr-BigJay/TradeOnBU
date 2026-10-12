@@ -9,7 +9,6 @@ TERMINAL_STATUSES = frozenset(
         SignalStatus.EXPIRED.value,
         SignalStatus.INVALIDATED.value,
         SignalStatus.REJECTED.value,
-        SignalStatus.DATA_ERROR.value,
     }
 )
 
@@ -31,6 +30,10 @@ ALLOWED_TRANSITIONS: dict[str, set[str]] = {
         SignalStatus.SL_HIT.value,
         SignalStatus.TIME_EXIT.value,
         SignalStatus.DATA_ERROR.value,
+    },
+    SignalStatus.DATA_ERROR.value: {
+        SignalStatus.WAITING_FOR_ENTRY.value,
+        SignalStatus.ACTIVE.value,
     },
 }
 

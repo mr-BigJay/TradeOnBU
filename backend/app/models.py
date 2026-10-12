@@ -105,6 +105,11 @@ class Signal(Base):
 
     telegram_approval_required: Mapped[bool] = mapped_column(default=True)
     telegram_approved: Mapped[bool | None] = mapped_column(nullable=True)
+    telegram_approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    telegram_approved_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    telegram_message_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    last_processed_candle_ms: Mapped[int] = mapped_column(Integer, default=0)
 
     dedupe_key: Mapped[str] = mapped_column(String(128), index=True)
 

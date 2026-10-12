@@ -9,11 +9,7 @@ import httpx
 from app.config import Settings, get_settings
 from app.domain.candles import Candle
 
-INTERVAL_MAP = {
-    "5m": "5m",
-    "15m": "15m",
-    "4h": "4h",
-}
+VALID_INTERVALS = {"1m", "5m", "15m", "1h", "4h"}
 
 
 @dataclass
@@ -31,7 +27,9 @@ class MarketDataService:
         self._lock = asyncio.Lock()
 
     async def fetch_klines(self, symbol: str, interval: str, limit: int = 200) -> list[Candle]:
-        params = {"symbol": symbol, "interval": INTERVAL_MAP.get(interval, interval), "limit": limit}
+        if interval not in VALID_INTERVALS:
+            raise ValueError(f"Unsupported interval: {interval}")
+        params = {"symbol": symbol, "interval": interval, "limit": limit}
         url = f"{self.settings.bitunix_futures_base}/api/v1/futures/market/kline"
         async with httpx.AsyncClient(timeout=20.0) as client:
             resp = await client.get(url, params=params)
@@ -52,16 +50,16 @@ class MarketDataService:
                 )
             )
         candles.sort(key=lambda c: c.time_ms)
-        # API returns only closed candles; keep all as confirmed
         return candles
 
     async def fetch_live_price(self, symbol: str) -> LiveQuote:
         async with self._lock:
             try:
-                candles = await self.fetch_klines(symbol, "5m", limit=1)
+                candles = await self.fetch_klines(symbol, "5m", limit=2)
                 if not candles:
                     raise RuntimeError("No candle data")
-                price = candles[-1].close
+                confirmed = candles[:-1] if len(candles) > 1 else candles
+                price = confirmed[-1].close
                 fetched_at = datetime.now(timezone.utc)
                 quote = LiveQuote(price=price, fetched_at=fetched_at, stale=False, source="bitunix_futures")
                 self._last_quote = quote

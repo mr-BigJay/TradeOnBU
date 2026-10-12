@@ -1,0 +1,48 @@
+import os
+
+import pytest
+import pytest_asyncio
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///./data/test_tradeonbu.db")
+os.environ.setdefault("DASHBOARD_API_KEY", "test-dashboard-key")
+os.environ.setdefault("ADMIN_API_KEY", "test-admin-key")
+os.environ.setdefault("TELEGRAM_ALLOWED_USER_IDS", "111,222")
+
+from app.config import get_settings
+from app.db import Base, get_db
+from app.main import app
+
+get_settings.cache_clear()
+
+TEST_ENGINE = create_async_engine(os.environ["DATABASE_URL"], echo=False)
+TestSession = async_sessionmaker(TEST_ENGINE, expire_on_commit=False)
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def prepare_db():
+    async with TEST_ENGINE.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+        await conn.run_sync(Base.metadata.create_all)
+    yield
+
+
+@pytest_asyncio.fixture
+async def session() -> AsyncSession:
+    async with TestSession() as s:
+        yield s
+
+
+@pytest_asyncio.fixture
+async def client():
+    async def _override_db():
+        async with TestSession() as s:
+            yield s
+
+    app.dependency_overrides[get_db] = _override_db
+    transport = ASGITransport(app=app)
+    headers = {"X-API-Key": "test-dashboard-key"}
+    async with AsyncClient(transport=transport, base_url="http://test", headers=headers) as ac:
+        yield ac
+    app.dependency_overrides.clear()

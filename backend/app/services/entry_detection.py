@@ -5,14 +5,10 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from app.models import EntryType, TrendState
-from app.services.ict_structure import (
-    analyze_structure,
-    detect_liquidity_sweep,
-    find_fvg_zones,
-)
+from app.services.ict_structure import analyze_structure, validate_ict_sequence
 from app.services.market_data import MarketDataService
 from app.services.paper_execution import PaperExecutionEngine
-from app.services.trend_engine import TrendContext, TrendEngine
+from app.services.trend_engine import TrendEngine
 
 
 @dataclass
@@ -36,6 +32,30 @@ class SetupCandidate:
     analysis: dict
     dedupe_key: str
     rejected_reason: str | None = None
+
+
+def _reject(symbol: str, direction: str, reason: str, analysis: dict) -> SetupCandidate:
+    return SetupCandidate(
+        symbol=symbol,
+        direction=direction,
+        entry_type=EntryType.LIMIT.value,
+        entry_price=0,
+        entry_zone_low=0,
+        entry_zone_high=0,
+        stop_loss=0,
+        take_profit=0,
+        invalidation_level=0,
+        market_bias="",
+        liquidity_sweep=False,
+        mss_confirmation=False,
+        fvg_entry=False,
+        gross_rr=0,
+        net_rr=0,
+        estimated_holding_hours=6.0,
+        analysis=analysis,
+        dedupe_key="",
+        rejected_reason=reason,
+    )
 
 
 class EntryDetectionService:
@@ -68,19 +88,32 @@ class EntryDetectionService:
         if ctx.trend_4h == TrendState.BULLISH and direction == "SHORT":
             return None
 
-        fvgs = find_fvg_zones(c5)
-        fvg = next((z for z in reversed(fvgs) if z[2] == direction), None)
-        if not fvg:
-            return None
+        seq = validate_ict_sequence(c5, direction)
+        if not seq.ok or not seq.fvg:
+            return _reject(
+                symbol,
+                direction,
+                "NO_TRADE",
+                {"ict_sequence": seq.__dict__, "reason": seq.reason},
+            )
 
-        zone_low, zone_high, _ = fvg
+        if not seq.liquidity_sweep or not seq.mss_confirmation or not seq.displacement or not seq.fvg_valid:
+            return _reject(
+                symbol,
+                direction,
+                "NO_TRADE",
+                {"ict_sequence": seq.__dict__, "reason": "MISSING_REQUIRED_ICT_CONFIRMATIONS"},
+            )
+
+        fvg = seq.fvg
+        zone_low, zone_high = fvg.low, fvg.high
         entry_price = (zone_low + zone_high) / 2
 
         swings = s5.swings
         if direction == "LONG":
             recent_lows = [s.price for s in swings if s.kind == "LOW"]
             if not recent_lows:
-                return None
+                return _reject(symbol, direction, "NO_TRADE", {"reason": "NO_SWING_LOW"})
             invalidation = min(recent_lows[-2:])
             stop_loss = invalidation * 0.999
             liq = s5.liquidity_levels
@@ -89,39 +122,20 @@ class EntryDetectionService:
         else:
             recent_highs = [s.price for s in swings if s.kind == "HIGH"]
             if not recent_highs:
-                return None
+                return _reject(symbol, direction, "NO_TRADE", {"reason": "NO_SWING_HIGH"})
             invalidation = max(recent_highs[-2:])
             stop_loss = invalidation * 1.001
             liq = s5.liquidity_levels
             tp_candidates = [lv for lv in liq if lv < entry_price] or [c5[-2].low * 0.998]
             take_profit = max(tp_candidates)
 
-        mss_ok = bool(s15.last_mss and direction in s15.last_mss)
-        liq_level = s5.liquidity_levels[-1] if s5.liquidity_levels else entry_price
-        sweep = detect_liquidity_sweep(c5, liq_level, direction)
-
         rr = self.paper.calc_rr(direction, entry_price, stop_loss, take_profit, min_net_rr)
         if not rr.acceptable:
-            return SetupCandidate(
-                symbol=symbol,
-                direction=direction,
-                entry_type=EntryType.LIMIT.value,
-                entry_price=entry_price,
-                entry_zone_low=zone_low,
-                entry_zone_high=zone_high,
-                stop_loss=stop_loss,
-                take_profit=take_profit,
-                invalidation_level=invalidation,
-                market_bias=ctx.ict_bias.value,
-                liquidity_sweep=sweep,
-                mss_confirmation=mss_ok,
-                fvg_entry=True,
-                gross_rr=rr.gross_rr,
-                net_rr=rr.net_rr,
-                estimated_holding_hours=6.0,
-                analysis={"trend": ctx.details, "reject": "RR below minimum"},
-                dedupe_key="",
-                rejected_reason="NO_TRADE_RR",
+            return _reject(
+                symbol,
+                direction,
+                "NO_TRADE_RR",
+                {"net_rr": rr.net_rr, "min_net_rr": min_net_rr},
             )
 
         dedupe_raw = f"{symbol}:{direction}:{round(entry_price, 1)}:{round(stop_loss, 1)}:{round(take_profit, 1)}"
@@ -138,8 +152,8 @@ class EntryDetectionService:
             take_profit=round(take_profit, 2),
             invalidation_level=round(invalidation, 2),
             market_bias=ctx.ict_bias.value,
-            liquidity_sweep=sweep,
-            mss_confirmation=mss_ok,
+            liquidity_sweep=True,
+            mss_confirmation=True,
             fvg_entry=True,
             gross_rr=rr.gross_rr,
             net_rr=rr.net_rr,
@@ -150,6 +164,12 @@ class EntryDetectionService:
                     "15m": ctx.trend_15m.value,
                     "5m": ctx.trend_5m.value,
                     "bias": ctx.ict_bias.value,
+                },
+                "ict_sequence": {
+                    "sweep_index": seq.sweep_index,
+                    "mss_index": seq.mss_index,
+                    "displacement_index": seq.displacement_index,
+                    "liquidity_level": seq.liquidity_level,
                 },
                 "structure_15m": s15.summary,
                 "structure_5m": s5.summary,

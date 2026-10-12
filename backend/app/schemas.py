@@ -64,6 +64,9 @@ class SignalOut(BaseModel):
     estimated_net_pnl_usdt: float | None
     telegram_approval_required: bool
     telegram_approved: bool | None
+    telegram_approved_at: datetime | None = None
+    telegram_approved_by: str | None = None
+    last_processed_candle_ms: int = 0
     created_at: datetime
     updated_at: datetime
 
@@ -103,3 +106,11 @@ class ChatGPTImportRequest(BaseModel):
 class TelegramApprovalRequest(BaseModel):
     public_id: str
     approved: bool
+
+
+class ChartBundleOut(BaseModel):
+    symbol: str
+    interval: str
+    candles: list[dict[str, Any]]
+    overlays: dict[str, Any]
+    paper_only: bool = True

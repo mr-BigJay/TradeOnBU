@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 import httpx
 
@@ -17,6 +18,17 @@ class TelegramNotifier:
     @property
     def enabled(self) -> bool:
         return bool(self.settings.telegram_bot_token and self.settings.telegram_chat_id)
+
+    def _inline_keyboard(self, public_id: str) -> dict[str, Any]:
+        return {
+            "inline_keyboard": [
+                [
+                    {"text": "✅ Approve Paper Signal", "callback_data": f"approve:{public_id}"},
+                    {"text": "❌ Reject Signal", "callback_data": f"reject:{public_id}"},
+                ],
+                [{"text": "📊 View Chart", "callback_data": f"chart:{public_id}"}],
+            ]
+        }
 
     def _format_signal(self, signal: Signal, title: str, extra: str = "") -> str:
         pnl = signal.estimated_net_pnl_usdt
@@ -35,22 +47,38 @@ class TelegramNotifier:
             f"\n_Paper simulation only — no Bitunix order placed._"
         )
 
-    async def send_message(self, text: str, parse_mode: str = "Markdown") -> bool:
+    async def send_message(
+        self,
+        text: str,
+        parse_mode: str = "Markdown",
+        reply_markup: dict[str, Any] | None = None,
+    ) -> int | None:
         if not self.enabled:
             logger.info("Telegram disabled; message skipped: %s", text[:120])
-            return False
+            return None
         url = f"https://api.telegram.org/bot{self.settings.telegram_bot_token}/sendMessage"
-        payload = {"chat_id": self.settings.telegram_chat_id, "text": text, "parse_mode": parse_mode}
+        payload: dict[str, Any] = {
+            "chat_id": self.settings.telegram_chat_id,
+            "text": text,
+            "parse_mode": parse_mode,
+        }
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.post(url, json=payload)
             if resp.status_code >= 400:
                 logger.error("Telegram error: %s", resp.text)
-                return False
-        return True
+                return None
+            data = resp.json()
+            return data.get("result", {}).get("message_id")
 
     async def notify_new_setup(self, signal: Signal) -> None:
-        extra = "\nReply with approval in dashboard to start monitoring."
-        await self.send_message(self._format_signal(signal, "New ICT Setup Detected", extra))
+        msg_id = await self.send_message(
+            self._format_signal(signal, "New ICT Setup Detected", "Use buttons below to approve paper monitoring.\n"),
+            reply_markup=self._inline_keyboard(signal.public_id),
+        )
+        if msg_id is not None:
+            signal.telegram_message_id = msg_id
 
     async def notify_entry_activated(self, signal: Signal) -> None:
         await self.send_message(
@@ -70,6 +98,4 @@ class TelegramNotifier:
         await self.send_message(self._format_signal(signal, "Time Exit"))
 
     async def notify_bias_change(self, symbol: str, old_bias: str, new_bias: str) -> None:
-        await self.send_message(
-            f"*Market Bias Change*\n{symbol}: {old_bias} → {new_bias}\n_Paper mode only._"
-        )
+        await self.send_message(f"*Market Bias Change*\n{symbol}: {old_bias} → {new_bias}\n_Paper mode only._")
