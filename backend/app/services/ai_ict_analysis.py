@@ -5,18 +5,21 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_effective_settings
-from app.models import AiAnalysisRun, AiAnalysisSettings
+from app.models import AiAnalysisRun
+from app.services.ai_analysis_scheduler import bump_next_run, get_or_create_settings
+from app.services.chart_data import ChartDataService
 from app.services.execution_model import ExecutionModel
 from app.services.market_data import MarketDataService
 from app.services.siwc.credentials import get_access_token
 from app.services.siwc.responses_client import OpenAIResponsesError, list_models, stream_response
-from app.services.chart_data import ChartDataService
 from app.services.telegram_notifier import TelegramNotifier
-from sqlalchemy import select
 
+REQUIRED_INTERVALS = ("4h", "15m", "5m", "1m")
+MIN_CANDLES = 20
 
 INSTRUCTIONS = """You are an ICT market analyst for BTCUSDT paper trading only.
 Respond in Persian (Farsi) with structured JSON inside a single ```json code block.
@@ -26,29 +29,43 @@ entry_price, stop_loss, take_profit, invalidation_level, net_rr_estimate, report
 Use only the supplied candle/structure data; if uncertain use NO_TRADE."""
 
 
-async def _market_context(symbol: str) -> dict[str, Any]:
-    market = MarketDataService(get_effective_settings())
+class MarketContextError(Exception):
+    def __init__(self, code: str, detail: str) -> None:
+        super().__init__(detail)
+        self.code = code
+        self.detail = detail
+
+
+async def build_market_context(symbol: str) -> tuple[dict[str, Any], float]:
+    settings = get_effective_settings()
+    market = MarketDataService(settings)
     chart = ChartDataService(market)
     ctx: dict[str, Any] = {"symbol": symbol, "timeframes": {}, "paper_only": True}
-    for interval in ("4h", "15m", "5m", "1m"):
+
+    for interval in REQUIRED_INTERVALS:
         try:
-            bundle = await chart.bundle(symbol, interval, limit=120)
-            candles = bundle.get("candles") or []
-            ctx["timeframes"][interval] = {
-                "candles": candles[-40:],
-                "overlays": bundle.get("overlays"),
-                "count": len(candles),
-            }
+            bundle = await market.fetch_kline_bundle(symbol, interval, 120)
         except Exception as exc:
-            ctx["timeframes"][interval] = {"error": str(exc)}
-    try:
-        quote = await market.fetch_live_price(symbol)
-        ctx["live_price"] = quote.price
-        ctx["quote_fetched_at"] = quote.fetched_at.isoformat()
-        ctx["quote_stale"] = market.is_quote_stale(quote)
-    except Exception as exc:
-        ctx["live_error"] = str(exc)
-    return ctx
+            raise MarketContextError("market_fetch_failed", f"{interval}: {exc}") from exc
+        if not bundle.data_complete:
+            raise MarketContextError("incomplete_candles", f"{interval} history has gaps")
+        closed = bundle.closed[-120:]
+        if len(closed) < MIN_CANDLES:
+            raise MarketContextError("insufficient_candles", f"{interval} has fewer than {MIN_CANDLES} closed candles")
+        full = await chart.bundle(symbol, interval, limit=120)
+        ctx["timeframes"][interval] = {
+            "candles": (full.get("candles") or [])[-40:],
+            "overlays": full.get("overlays"),
+            "count": len(closed),
+        }
+
+    quote = await market.fetch_live_price(symbol)
+    if market.is_quote_stale(quote):
+        raise MarketContextError("stale_live_price", "Live Bitunix quote is stale or unavailable")
+    ctx["live_price"] = quote.price
+    ctx["quote_fetched_at"] = quote.fetched_at.isoformat()
+    ctx["quote_stale"] = False
+    return ctx, quote.price
 
 
 def _extract_json(text: str) -> dict[str, Any]:
@@ -62,7 +79,7 @@ def _extract_json(text: str) -> dict[str, Any]:
     return json.loads(raw)
 
 
-def _validate_levels(data: dict[str, Any], live: float | None) -> dict[str, Any]:
+def _validate_levels(data: dict[str, Any], live: float) -> dict[str, Any]:
     decision = str(data.get("decision", "NO_TRADE")).upper()
     out: dict[str, Any] = {"ok": False, "reasons": []}
     if decision == "NO_TRADE":
@@ -72,6 +89,9 @@ def _validate_levels(data: dict[str, Any], live: float | None) -> dict[str, Any]
     if decision not in ("LONG", "SHORT"):
         out["reasons"].append("invalid_decision")
         return out
+    if live <= 0:
+        out["reasons"].append("missing_live_price")
+        return out
     try:
         entry = float(data["entry_price"])
         sl = float(data["stop_loss"])
@@ -79,10 +99,9 @@ def _validate_levels(data: dict[str, Any], live: float | None) -> dict[str, Any]
     except (KeyError, TypeError, ValueError):
         out["reasons"].append("missing_levels")
         return out
-    if live is not None:
-        drift = abs(entry - live) / live * 100
-        if drift > 2.5:
-            out["reasons"].append(f"entry_far_from_live:{drift:.2f}%")
+    drift = abs(entry - live) / live * 100
+    if drift > 2.5:
+        out["reasons"].append(f"entry_far_from_live:{drift:.2f}%")
     model = ExecutionModel()
     rr = model.calc_rr(decision, entry, sl, tp, "LIMIT", min_net_rr=get_effective_settings().min_net_rr)
     out["net_rr"] = rr.net_rr
@@ -131,7 +150,7 @@ async def run_ai_analysis(
 
     run.model_slug = model
     try:
-        ctx = await _market_context(symbol)
+        ctx, live = await build_market_context(symbol)
         user_payload = json.dumps(ctx, ensure_ascii=False)
         text = await stream_response(
             token,
@@ -140,7 +159,7 @@ async def run_ai_analysis(
             user_input=user_payload,
         )
         structured = _extract_json(text)
-        validation = _validate_levels(structured, ctx.get("live_price"))
+        validation = _validate_levels(structured, live)
         run.decision = str(structured.get("decision", "NO_TRADE")).upper()
         run.report_fa = structured.get("report_fa") or text
         run.structured = structured
@@ -155,6 +174,10 @@ async def run_ai_analysis(
             header = f"*تحلیل ICT هوش مصنوعی (Paper)*\nDecision: `{run.decision}`\n\n"
             msg_id = await notifier.send_message(header + run.report_fa[:3500])
             run.telegram_sent = msg_id is not None
+    except MarketContextError as exc:
+        run.status = "failed"
+        run.error_code = exc.code
+        run.error_detail = exc.detail
     except OpenAIResponsesError as exc:
         run.status = "failed"
         run.error_code = exc.code
@@ -166,23 +189,12 @@ async def run_ai_analysis(
     finally:
         run.completed_at = datetime.now(timezone.utc)
 
-    cfg = (await session.execute(select(AiAnalysisSettings).where(AiAnalysisSettings.id == 1))).scalar_one_or_none()
-    if cfg is None:
-        cfg = AiAnalysisSettings(id=1)
-        session.add(cfg)
+    cfg = await get_or_create_settings(session)
     cfg.last_run_at = run.completed_at
     if run.status.startswith("completed"):
         cfg.last_success_at = run.completed_at
         cfg.last_error = None
+        bump_next_run(cfg)
     else:
         cfg.last_error = run.error_detail
     return run
-
-
-async def acquire_hourly_lock(session: AsyncSession, dedupe_minutes: int = 55) -> bool:
-    cfg = (await session.execute(select(AiAnalysisSettings).where(AiAnalysisSettings.id == 1))).scalar_one_or_none()
-    if cfg and cfg.last_run_at:
-        delta = datetime.now(timezone.utc) - cfg.last_run_at.replace(tzinfo=timezone.utc)
-        if delta.total_seconds() < dedupe_minutes * 60:
-            return False
-    return True

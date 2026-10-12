@@ -48,6 +48,8 @@ class SystemState(Base):
     worker_lock_owner: Mapped[str | None] = mapped_column(String(64), nullable=True)
     worker_lock_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     worker_lock_until_ms: Mapped[int] = mapped_column(Integer, default=0)
+    ai_analysis_lock_owner: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ai_analysis_lock_until_ms: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class RuntimeSettings(Base):
@@ -129,6 +131,8 @@ class SiwcConnectSession(Base):
     code_verifier: Mapped[str] = mapped_column(String(128))
     redirect_uri: Mapped[str] = mapped_column(String(255))
     issued_client_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    secret_hash: Mapped[str] = mapped_column(String(64))
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -155,7 +159,9 @@ class AiAnalysisSettings(Base):
     __tablename__ = "ai_analysis_settings"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
-    enabled: Mapped[bool] = mapped_column(default=True)
+    enabled: Mapped[bool] = mapped_column(default=False)
+    unattended_consent: Mapped[bool] = mapped_column(default=False)
+    unattended_consent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     interval_minutes: Mapped[int] = mapped_column(Integer, default=60)
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

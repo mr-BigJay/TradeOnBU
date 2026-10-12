@@ -40,6 +40,12 @@ SIGNAL_MIGRATIONS = [
     "ALTER TABLE runtime_settings ADD COLUMN slippage_bps FLOAT DEFAULT 5.0",
     "ALTER TABLE runtime_settings ADD COLUMN max_simultaneous_positions INTEGER DEFAULT 3",
     "ALTER TABLE runtime_settings ADD COLUMN paper_trading_paused BOOLEAN DEFAULT 0",
+    "ALTER TABLE system_state ADD COLUMN ai_analysis_lock_owner VARCHAR(64)",
+    "ALTER TABLE system_state ADD COLUMN ai_analysis_lock_until_ms INTEGER DEFAULT 0",
+    "ALTER TABLE siwc_connect_sessions ADD COLUMN secret_hash VARCHAR(64)",
+    "ALTER TABLE siwc_connect_sessions ADD COLUMN consumed_at DATETIME",
+    "ALTER TABLE ai_analysis_settings ADD COLUMN unattended_consent BOOLEAN DEFAULT 0",
+    "ALTER TABLE ai_analysis_settings ADD COLUMN unattended_consent_at DATETIME",
 ]
 
 

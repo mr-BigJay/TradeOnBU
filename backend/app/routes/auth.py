@@ -59,6 +59,17 @@ async def require_user(request: Request, session: AsyncSession = Depends(get_db)
     return pair
 
 
+async def require_dashboard_access(
+    request: Request, session: AsyncSession = Depends(get_db)
+) -> tuple[User, UserSession] | None:
+    """Session login in production; API key gate handled by middleware when session auth is off."""
+    import os
+
+    if os.getenv("SESSION_AUTH_ENABLED", "0") != "1":
+        return None
+    return await require_user(request, session)
+
+
 @router.get("/csrf")
 async def csrf_token(request: Request, session: AsyncSession = Depends(get_db)):
     raw = request.cookies.get(SESSION_COOKIE)

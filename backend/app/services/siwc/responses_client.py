@@ -45,6 +45,7 @@ async def stream_response(
         "stream": True,
     }
     text_parts: list[str] = []
+    completed = False
     async with httpx.AsyncClient(timeout=timeout) as client:
         async with client.stream(
             "POST",
@@ -68,14 +69,19 @@ async def stream_response(
                 et = event.get("type")
                 if et == "response.output_text.delta":
                     text_parts.append(event.get("delta") or "")
+                elif et == "response.incomplete":
+                    raise OpenAIResponsesError("response_incomplete", "Response incomplete")
                 elif et == "response.failed":
                     err = (event.get("response") or {}).get("error") or {}
                     raise OpenAIResponsesError(err.get("code") or "response_failed", err.get("message") or "failed")
                 elif et == "response.completed":
+                    completed = True
                     return "".join(text_parts)
                 elif et == "error":
                     err = event.get("error") or {}
                     raise OpenAIResponsesError(err.get("code") or "stream_error", err.get("message") or "error")
-    if not text_parts:
-        raise OpenAIResponsesError("incomplete", "Stream ended without output")
-    return "".join(text_parts)
+    if completed:
+        return "".join(text_parts)
+    if text_parts:
+        raise OpenAIResponsesError("stream_interrupted", "Stream ended before response.completed")
+    raise OpenAIResponsesError("incomplete", "Stream ended without response.completed")

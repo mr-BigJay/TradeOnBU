@@ -19,6 +19,7 @@ class SessionSecurityMiddleware(BaseHTTPMiddleware):
         "/api/auth/login",
         "/api/auth/csrf",
         "/api/auth/me",
+        "/api/public/siwc/connect/complete",
     }
     CSRF_SAFE = {"GET", "HEAD", "OPTIONS"}
     CSRF_EXEMPT = {"/api/auth/login", "/api/auth/logout"}

@@ -21,6 +21,7 @@ from app.middleware.session_security import SessionSecurityMiddleware
 from app.routes import auth as auth_routes
 from app.routes import settings_gui as settings_gui_routes
 from app.routes import chatgpt_ai as chatgpt_ai_routes
+from app.routes import siwc_public as siwc_public_routes
 from app.services.settings_runtime import refresh_settings_cache
 from app.models import MarketTrendSnapshot, Signal, SignalEvent, SignalStatus
 from app.schemas import (
@@ -79,30 +80,31 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(worker.run_cycle())
         get_telegram_coordinator().start()
 
-        async def _ai_hourly_tick() -> None:
-            from sqlalchemy import select
+        async def _ai_scheduled_tick() -> None:
+            from app.services.ai_analysis_scheduler import (
+                release_analysis_lock,
+                should_run_scheduled,
+                try_acquire_analysis_lock,
+            )
+            from app.services.ai_ict_analysis import run_ai_analysis
 
-            from app.models import AiAnalysisSettings
-            from app.services.ai_ict_analysis import acquire_hourly_lock, run_ai_analysis
-            from app.services.siwc.credentials import get_access_token
-
+            owner = "ai_scheduler"
             async with SessionLocal() as session:
-                cfg = (await session.execute(select(AiAnalysisSettings).where(AiAnalysisSettings.id == 1))).scalar_one_or_none()
-                if cfg and not cfg.enabled:
+                if not await should_run_scheduled(session):
                     return
-                if not await acquire_hourly_lock(session):
+                if not await try_acquire_analysis_lock(session, owner, ttl_seconds=900):
                     return
-                _, _, err = await get_access_token(session)
-                if err:
-                    return
-                await run_ai_analysis(session, trigger="scheduled")
-                await session.commit()
+                try:
+                    await run_ai_analysis(session, trigger="scheduled")
+                    await session.commit()
+                finally:
+                    await release_analysis_lock(session, owner)
 
         scheduler.add_job(
-            _ai_hourly_tick,
+            _ai_scheduled_tick,
             "interval",
-            minutes=60,
-            id="ai_ict_hourly",
+            minutes=1,
+            id="ai_ict_scheduled",
             max_instances=1,
             coalesce=True,
         )
@@ -114,6 +116,7 @@ app = FastAPI(title=settings.app_name, lifespan=lifespan)
 app.include_router(auth_routes.router)
 app.include_router(settings_gui_routes.router)
 app.include_router(chatgpt_ai_routes.router)
+app.include_router(siwc_public_routes.router)
 app.add_middleware(SessionSecurityMiddleware)
 app.add_middleware(
     CORSMiddleware,

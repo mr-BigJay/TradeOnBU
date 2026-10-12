@@ -6,11 +6,14 @@ type Status = {
   plan_usage_authorized: boolean;
   email?: string;
   hourly_enabled: boolean;
+  unattended_consent: boolean;
+  scheduling_active: boolean;
+  scheduling_block_reason?: string;
   interval_minutes: number;
   last_run_at?: string;
+  next_run_at?: string;
   last_success_at?: string;
   last_error?: string;
-  preferred_model?: string;
 };
 
 type HistoryRow = {
@@ -22,12 +25,22 @@ type HistoryRow = {
   telegram_sent: boolean;
 };
 
+type ConnectBundle = {
+  connect_token: string;
+  connect_secret: string;
+  oauth_state: string;
+  authorize_url: string;
+};
+
 export function AiAnalysisPage() {
   const [status, setStatus] = useState<Status | null>(null);
   const [history, setHistory] = useState<HistoryRow[]>([]);
   const [msg, setMsg] = useState("");
-  const [connectInfo, setConnectInfo] = useState<{ connect_token: string; authorize_url: string } | null>(null);
-  const [detail, setDetail] = useState<string>("");
+  const [connectInfo, setConnectInfo] = useState<ConnectBundle | null>(null);
+  const [detail, setDetail] = useState("");
+  const [consent, setConsent] = useState(false);
+  const [scheduleEnabled, setScheduleEnabled] = useState(false);
+  const [intervalMin, setIntervalMin] = useState(60);
 
   const refresh = useCallback(async () => {
     const [s, h] = await Promise.all([
@@ -36,6 +49,9 @@ export function AiAnalysisPage() {
     ]);
     setStatus(s);
     setHistory(h);
+    setConsent(!!s.unattended_consent);
+    setScheduleEnabled(!!s.hourly_enabled);
+    setIntervalMin(s.interval_minutes || 60);
   }, []);
 
   useEffect(() => {
@@ -44,8 +60,31 @@ export function AiAnalysisPage() {
 
   async function beginConnect() {
     const data = await apiFetch("/api/gui/chatgpt/connect/begin", { method: "POST" });
-    setConnectInfo({ connect_token: data.connect_token, authorize_url: data.authorize_url });
-    setMsg("اتصال ChatGPT: اسکript محلی را با CONNECT_TOKEN اجرا کنید (README).");
+    setConnectInfo({
+      connect_token: data.connect_token,
+      connect_secret: data.connect_secret,
+      oauth_state: data.oauth_state,
+      authorize_url: data.authorize_url,
+    });
+    setMsg("Connect secret shown once — copy to your Windows helper. Scheduling stays off until you enable it below.");
+  }
+
+  async function saveSchedule() {
+    if (scheduleEnabled && !consent) {
+      setMsg("برای زمان‌بندی خودکار باید رضایت تحلیل بدون حضور را تأیید کنید.");
+      return;
+    }
+    await apiFetch("/api/gui/chatgpt/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        enabled: scheduleEnabled,
+        unattended_consent: consent,
+        interval_minutes: intervalMin,
+      }),
+    });
+    setMsg("تنظیمات زمان‌بندی ذخیره شد.");
+    await refresh();
   }
 
   async function analyzeNow() {
@@ -67,14 +106,22 @@ export function AiAnalysisPage() {
         <div className="card">
           <p>اتصال: {status.connected && status.plan_usage_authorized ? "فعال" : "غیرفعال"}</p>
           {status.email && <p>حساب: {status.email}</p>}
+          <p>زمان‌بندی خودکار: {status.scheduling_active ? "فعال" : "غیرفعال"}</p>
+          {!status.scheduling_active && status.scheduling_block_reason && (
+            <p className="hint">دلیل: {status.scheduling_block_reason}</p>
+          )}
+          <p>اجرای بعدی: {status.next_run_at || "—"}</p>
           <p>آخرین اجرا: {status.last_run_at || "—"}</p>
-          <p>آخرین موفق: {status.last_success_at || "—"}</p>
           {status.last_error && <p className="stale">{status.last_error}</p>}
           <div className="row-btns">
             <button type="button" onClick={beginConnect}>
               Connect with ChatGPT
             </button>
-            <button type="button" className="secondary" onClick={() => apiFetch("/api/gui/chatgpt/disconnect", { method: "POST" }).then(refresh)}>
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => apiFetch("/api/gui/chatgpt/disconnect", { method: "POST" }).then(refresh)}
+            >
               قطع اتصال
             </button>
             <button type="button" onClick={analyzeNow} disabled={!status.connected}>
@@ -86,12 +133,42 @@ export function AiAnalysisPage() {
       {connectInfo && (
         <div className="card mono">
           <p>CONNECT_TOKEN={connectInfo.connect_token}</p>
-          <p style={{ wordBreak: "break-all" }}>{connectInfo.authorize_url}</p>
+          <p>CONNECT_SECRET={connectInfo.connect_secret}</p>
+          <p>OAUTH_STATE={connectInfo.oauth_state}</p>
+          <p style={{ wordBreak: "break-all" }}>AUTHORIZE_URL={connectInfo.authorize_url}</p>
           <p className="hint">
-            TRADEONBU_URL={window.location.origin} CONNECT_TOKEN=… AUTHORIZE_URL=… python3 scripts/siwc_oauth_helper.py
+            Windows (PowerShell): set env vars then run python scripts/siwc_oauth_helper.py — no browser cookies required.
           </p>
         </div>
       )}
+      <div className="card">
+        <h3>زمان‌بندی ساعتی (نیاز به رضایت صریح)</h3>
+        <label>
+          <input type="checkbox" checked={consent} onChange={(e) => setConsent(e.target.checked)} />
+          اجازه می‌دهم TradeOnBU در پس‌زمینه (بدون حضور من) از طرح ChatGPT Plus برای تحلیل ICT استفاده کند.
+        </label>
+        <label>
+          <input
+            type="checkbox"
+            checked={scheduleEnabled}
+            onChange={(e) => setScheduleEnabled(e.target.checked)}
+            disabled={!status?.connected}
+          />
+          فعال‌سازی تحلیل خودکار هر{" "}
+          <input
+            type="number"
+            min={15}
+            max={240}
+            value={intervalMin}
+            onChange={(e) => setIntervalMin(Number(e.target.value))}
+            style={{ width: 60 }}
+          />{" "}
+          دقیقه
+        </label>
+        <button type="button" onClick={saveSchedule}>
+          ذخیره زمان‌بندی
+        </button>
+      </div>
       <div className="card">
         <h3>تاریخچه تحلیل AI</h3>
         <table>
@@ -106,7 +183,11 @@ export function AiAnalysisPage() {
           </thead>
           <tbody>
             {history.map((r) => (
-              <tr key={r.id} style={{ cursor: "pointer" }} onClick={() => apiFetch(`/api/gui/chatgpt/history/${r.id}`).then((d) => setDetail(d.report_fa || ""))}>
+              <tr
+                key={r.id}
+                style={{ cursor: "pointer" }}
+                onClick={() => apiFetch(`/api/gui/chatgpt/history/${r.id}`).then((d) => setDetail(d.report_fa || ""))}
+              >
                 <td>{new Date(r.created_at).toLocaleString("fa-IR")}</td>
                 <td>{r.status}</td>
                 <td>{r.decision || "—"}</td>

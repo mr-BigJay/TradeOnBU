@@ -95,6 +95,21 @@ async def exchange_code(
         return resp.json()
 
 
+async def revoke_token(*, token: str, client_id: str, token_type_hint: str = "refresh_token") -> None:
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        resp = await client.post(
+            f"{OPENAI_AUTH}/api/accounts/oauth/revoke",
+            data={
+                "client_id": client_id,
+                "token": token,
+                "token_type_hint": token_type_hint,
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        if resp.status_code >= 400 and resp.status_code != 404:
+            resp.raise_for_status()
+
+
 async def refresh_tokens(*, refresh_token: str, client_id: str) -> dict:
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.post(

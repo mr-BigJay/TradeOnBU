@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
-"""Local OAuth helper for Sign in with ChatGPT (SIWC) on self-hosted TradeOnBU.
+"""Local SIWC OAuth helper for self-hosted TradeOnBU (desktop → VPS).
 
-Run on a machine with a desktop browser. Opens loopback callback on 127.0.0.1:1455.
-Requires: connect_token and dashboard URL from Settings → Connect ChatGPT.
+Completes loopback OAuth on 127.0.0.1:1455 and posts the authorization code to the
+server public connect endpoint using a one-time connect secret from the dashboard.
+No dashboard session cookie or CSRF token is required.
+
+Required environment variables (from dashboard → تحلیل AI → Connect):
+  TRADEONBU_URL, CONNECT_TOKEN, CONNECT_SECRET, OAUTH_STATE, AUTHORIZE_URL
 """
 from __future__ import annotations
 
@@ -16,29 +20,25 @@ from threading import Event
 
 import httpx
 
-REDIRECT = "http://127.0.0.1:1455/auth/callback"
+REDIRECT_PATH = "/auth/callback"
 
 
 def main() -> None:
     base = os.environ.get("TRADEONBU_URL", "").rstrip("/")
     connect_token = os.environ.get("CONNECT_TOKEN", "")
-    session_cookie = os.environ.get("TRADEONBU_SESSION_COOKIE", "")
-    if not base or not connect_token:
-        print("Set TRADEONBU_URL and CONNECT_TOKEN", file=sys.stderr)
-        sys.exit(1)
-
-    headers = {}
-    if session_cookie:
-        headers["Cookie"] = f"tradeonbu_session={session_cookie}"
-
+    connect_secret = os.environ.get("CONNECT_SECRET", "")
+    oauth_state = os.environ.get("OAUTH_STATE", "")
     url = os.environ.get("AUTHORIZE_URL", "")
-    if not url:
-        with httpx.Client(timeout=30.0, headers=headers) as client:
-            begin = client.post(f"{base}/api/gui/chatgpt/connect/begin")
-            begin.raise_for_status()
-            data = begin.json()
-            url = data["authorize_url"]
-            connect_token = data["connect_token"]
+    missing = [k for k, v in [
+        ("TRADEONBU_URL", base),
+        ("CONNECT_TOKEN", connect_token),
+        ("CONNECT_SECRET", connect_secret),
+        ("OAUTH_STATE", oauth_state),
+        ("AUTHORIZE_URL", url),
+    ] if not v]
+    if missing:
+        print("Missing env:", ", ".join(missing), file=sys.stderr)
+        sys.exit(1)
 
     result: dict[str, str] = {}
     done = Event()
@@ -46,7 +46,7 @@ def main() -> None:
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):  # noqa: N802
             parsed = urllib.parse.urlparse(self.path)
-            if parsed.path != "/auth/callback":
+            if parsed.path != REDIRECT_PATH:
                 self.send_response(404)
                 self.end_headers()
                 return
@@ -55,11 +55,12 @@ def main() -> None:
                 result["error"] = qs["error"][0]
             else:
                 result["code"] = qs.get("code", [""])[0]
+                result["state"] = qs.get("state", [""])[0]
                 result["client_id"] = qs.get("client_id", [""])[0]
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
-            self.wfile.write(b"<html><body><p>TradeOnBU: you can close this tab.</p></body></html>")
+            self.wfile.write(b"<html><body><p>TradeOnBU: authorization received. You may close this tab.</p></body></html>")
             done.set()
 
         def log_message(self, *_args):
@@ -77,18 +78,27 @@ def main() -> None:
     if not result.get("code"):
         print("Missing authorization code", file=sys.stderr)
         sys.exit(1)
+    if result.get("state") != oauth_state:
+        print("OAuth state mismatch — aborting (possible CSRF)", file=sys.stderr)
+        sys.exit(1)
 
     payload = {
         "connect_token": connect_token,
+        "oauth_state": oauth_state,
         "code": result["code"],
         "callback_client_id": result.get("client_id") or None,
     }
-    with httpx.Client(timeout=60.0, headers=headers) as client:
-        resp = client.post(f"{base}/api/gui/chatgpt/connect/complete", json=payload)
+    with httpx.Client(timeout=60.0) as client:
+        resp = client.post(
+            f"{base}/api/public/siwc/connect/complete",
+            json=payload,
+            headers={"X-Connect-Secret": connect_secret},
+        )
         if resp.status_code >= 400:
             print(resp.text, file=sys.stderr)
             sys.exit(1)
-        print(json.dumps(resp.json(), indent=2))
+        out = resp.json()
+        print(json.dumps({"ok": out.get("ok"), "email": out.get("email")}, indent=2))
 
 
 if __name__ == "__main__":
