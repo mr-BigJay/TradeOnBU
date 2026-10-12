@@ -234,18 +234,30 @@ async def import_chatgpt_signal(body: ChatGPTImportRequest, session: AsyncSessio
     return sig
 
 
+def _approval_http_error(err: str) -> HTTPException:
+    if err == "NOT_FOUND":
+        return HTTPException(404, "Signal not found")
+    if err == "UNAUTHORIZED_USER":
+        return HTTPException(403, err)
+    if err in ("ALREADY_APPROVED", "ALREADY_CLOSED"):
+        return HTTPException(409, err)
+    return HTTPException(409, err)
+
+
 @app.post("/api/signals/telegram-approval")
 async def telegram_approval(body: TelegramApprovalRequest, session: AsyncSession = Depends(get_db)):
     svc = TelegramApprovalService()
     if body.approved:
         sig, err = await svc.approve(session, body.public_id, user_id=0, source="dashboard")
-        if err == "NOT_FOUND":
-            raise HTTPException(404, "Signal not found")
+        if err:
+            raise _approval_http_error(err)
+        if not sig or sig.telegram_approved is not True:
+            raise HTTPException(409, "Approval could not be confirmed")
     else:
         sig, err = await svc.reject(session, body.public_id, user_id=0, source="dashboard")
-        if err == "NOT_FOUND":
-            raise HTTPException(404, "Signal not found")
-    return {"ok": True, "status": sig.status if sig else None}
+        if err:
+            raise _approval_http_error(err)
+    return {"ok": True, "status": sig.status if sig else None, "telegram_approved": bool(sig and sig.telegram_approved)}
 
 
 @app.post("/api/telegram/webhook/{secret}")

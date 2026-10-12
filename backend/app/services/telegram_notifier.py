@@ -5,7 +5,8 @@ from typing import Any
 
 import httpx
 
-from app.config import Settings, get_effective_settings, get_settings
+from app.config import Settings, get_effective_settings
+from app.services.telegram_runtime import telegram_integration_active
 from app.models import Signal
 
 logger = logging.getLogger(__name__)
@@ -21,7 +22,7 @@ class TelegramNotifier:
 
     @property
     def enabled(self) -> bool:
-        return bool(self.settings.telegram_bot_token and self.settings.telegram_chat_id)
+        return telegram_integration_active(self.settings)
 
     def public_chart_url(self, public_id: str) -> str | None:
         url = (self.settings.dashboard_public_url or "").strip()

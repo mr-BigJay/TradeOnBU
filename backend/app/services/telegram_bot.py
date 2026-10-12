@@ -14,8 +14,37 @@ from app.models import Signal
 from app.services.system_state import get_system_state
 from app.services.telegram_approval import TelegramApprovalService
 from app.services.telegram_notifier import TelegramNotifier
+from app.services.telegram_runtime import telegram_integration_active
 
 logger = logging.getLogger(__name__)
+
+APPROVE_FAILURE_ERRORS = frozenset(
+    {
+        "NOT_FOUND",
+        "UNAUTHORIZED_USER",
+        "ALREADY_APPROVED",
+        "SIGNAL_EXPIRED",
+        "SIGNAL_NOT_APPROVABLE",
+        "LATE_APPROVAL_ENTRY_TOUCHED",
+        "APPROVAL_ENTRY_TOUCH_AMBIGUOUS",
+        "APPROVAL_TIMING_UNCERTAIN",
+        "INCOMPLETE_MARKET_DATA",
+        "PRECHECK_FAILED",
+    }
+)
+
+APPROVE_USER_MESSAGES: dict[str, str] = {
+    "UNAUTHORIZED_USER": "Unauthorized user",
+    "ALREADY_APPROVED": "Already approved",
+    "NOT_FOUND": "Signal not found",
+    "SIGNAL_EXPIRED": "Signal expired",
+    "SIGNAL_NOT_APPROVABLE": "Signal no longer valid",
+    "LATE_APPROVAL_ENTRY_TOUCHED": "Entry already touched — missed",
+    "APPROVAL_ENTRY_TOUCH_AMBIGUOUS": "Approval blocked — entry touch ambiguous",
+    "APPROVAL_TIMING_UNCERTAIN": "Approval blocked — timing uncertain",
+    "INCOMPLETE_MARKET_DATA": "Market data incomplete — try again later",
+    "PRECHECK_FAILED": "Approval pre-check failed",
+}
 
 UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
@@ -41,11 +70,7 @@ class TelegramBotService:
 
     @property
     def enabled(self) -> bool:
-        from app.services.settings_runtime import overlay_get
-
-        if overlay_get("telegram_enabled", "false").lower() != "true":
-            return False
-        return bool(self.settings.telegram_bot_token and self.settings.telegram_chat_id)
+        return telegram_integration_active(self.settings)
 
     @property
     def polling_enabled(self) -> bool:
@@ -87,10 +112,14 @@ class TelegramBotService:
         cb = update.get("callback_query")
         if not cb:
             return
+        callback_id = cb.get("id")
+        if not self.enabled:
+            if callback_id:
+                await self.answer_callback(callback_id, "Telegram integration disabled", show_alert=True)
+            return
         data = cb.get("data") or ""
         user = cb.get("from") or {}
         user_id = int(user.get("id", 0))
-        callback_id = cb.get("id")
         message = cb.get("message") or {}
         chat_id = message.get("chat", {}).get("id")
         message_id = message.get("message_id")
@@ -115,23 +144,34 @@ class TelegramBotService:
         async with SessionLocal() as session:
             if action == "approve":
                 sig, err = await self.approval.approve(session, public_id, user_id, source="telegram")
-                if err == "UNAUTHORIZED_USER":
-                    await self.answer_callback(callback_id, "Unauthorized user")
+                if err == "NOT_FOUND":
+                    await self.answer_callback(callback_id, APPROVE_USER_MESSAGES["NOT_FOUND"])
                     return
-                if err == "ALREADY_APPROVED":
-                    await self.answer_callback(callback_id, "Already approved")
-                    return
-                if err in ("SIGNAL_EXPIRED", "SIGNAL_NOT_APPROVABLE", "LATE_APPROVAL_ENTRY_TOUCHED"):
-                    await self.answer_callback(callback_id, "Signal no longer valid")
-                    if chat_id and message_id and sig:
+                if err:
+                    msg = APPROVE_USER_MESSAGES.get(err, f"Approval failed ({err})")
+                    show_alert = err in (
+                        "APPROVAL_ENTRY_TOUCH_AMBIGUOUS",
+                        "APPROVAL_TIMING_UNCERTAIN",
+                        "INCOMPLETE_MARKET_DATA",
+                        "PRECHECK_FAILED",
+                    )
+                    await self.answer_callback(callback_id, msg, show_alert=show_alert)
+                    if err in (
+                        "SIGNAL_EXPIRED",
+                        "SIGNAL_NOT_APPROVABLE",
+                        "LATE_APPROVAL_ENTRY_TOUCHED",
+                    ) and chat_id and message_id and sig:
                         await self.edit_message(
                             chat_id,
                             message_id,
                             self.notifier._format_signal(sig, "Signal Closed", f"Reason: {err}\n"),
                         )
                     return
+                if not sig or sig.telegram_approved is not True:
+                    await self.answer_callback(callback_id, "Approval could not be confirmed", show_alert=True)
+                    return
                 await self.answer_callback(callback_id, "Paper monitoring enabled")
-                if sig and chat_id and message_id:
+                if chat_id and message_id:
                     await self.edit_message(
                         chat_id,
                         message_id,

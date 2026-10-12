@@ -44,8 +44,6 @@ class BotWorker:
                 return
 
         try:
-            self.settings = get_effective_settings()
-            symbol = self.settings.default_symbol
             async with SessionLocal() as session:
                 from app.services.settings_runtime import refresh_settings_cache
 
@@ -53,11 +51,15 @@ class BotWorker:
                 self.settings = get_effective_settings()
                 runtime = await get_runtime_settings(session)
                 self.settings = get_effective_settings()
+                symbol = self.settings.default_symbol
                 self.market = MarketDataService(self.settings)
                 self.paper = PaperExecutionEngine(self.settings)
+                self.trend_engine = TrendEngine(self.market)
                 self.entry = EntryDetectionService(self.market, self.trend_engine, self.paper)
+                self.lifecycle = SignalLifecycleService(self.paper)
                 self.monitor = SignalMonitorService(self.market, self.lifecycle, self.paper)
-                self.telegram = TelegramNotifier(self.settings)
+                self.outbox = NotificationOutboxService(TelegramNotifier())
+                self.telegram = self.outbox.notifier
 
                 monitor_events = await self.monitor.monitor_open_signals(session, runtime)
                 for public_id, evs in monitor_events.items():

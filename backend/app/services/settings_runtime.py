@@ -30,3 +30,8 @@ async def refresh_settings_cache(session: AsyncSession) -> None:
 
 def overlay_get(name: str, default: str = "") -> str:
     return _settings_overlay.get(name, default)
+
+
+def reset_settings_overlay() -> None:
+    global _settings_overlay
+    _settings_overlay = {}

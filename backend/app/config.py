@@ -81,7 +81,7 @@ def get_effective_settings() -> Settings:
     if enabled.lower() == "false":
         base.telegram_bot_token = ""
         base.telegram_chat_id = ""
-        base.telegram_allowed_user_ids = ""
+        # Keep env allowlist for dev API keys; GUI saves overlay when enabled.
     token = overlay_get("telegram_bot_token")
     if token and enabled.lower() != "false":
         base.telegram_bot_token = token

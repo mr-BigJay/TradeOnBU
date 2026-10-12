@@ -25,6 +25,10 @@ TestSession = async_sessionmaker(TEST_ENGINE, expire_on_commit=False)
 
 @pytest_asyncio.fixture(autouse=True)
 async def prepare_db():
+    from app.services.settings_runtime import reset_settings_overlay
+
+    reset_settings_overlay()
+    get_settings.cache_clear()
     async with TEST_ENGINE.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
