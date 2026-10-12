@@ -20,6 +20,7 @@ from app.db import SessionLocal, get_db, init_db
 from app.middleware.session_security import SessionSecurityMiddleware
 from app.routes import auth as auth_routes
 from app.routes import settings_gui as settings_gui_routes
+from app.routes import chatgpt_ai as chatgpt_ai_routes
 from app.services.settings_runtime import refresh_settings_cache
 from app.models import MarketTrendSnapshot, Signal, SignalEvent, SignalStatus
 from app.schemas import (
@@ -77,6 +78,34 @@ async def lifespan(app: FastAPI):
         scheduler.start()
         asyncio.create_task(worker.run_cycle())
         get_telegram_coordinator().start()
+
+        async def _ai_hourly_tick() -> None:
+            from sqlalchemy import select
+
+            from app.models import AiAnalysisSettings
+            from app.services.ai_ict_analysis import acquire_hourly_lock, run_ai_analysis
+            from app.services.siwc.credentials import get_access_token
+
+            async with SessionLocal() as session:
+                cfg = (await session.execute(select(AiAnalysisSettings).where(AiAnalysisSettings.id == 1))).scalar_one_or_none()
+                if cfg and not cfg.enabled:
+                    return
+                if not await acquire_hourly_lock(session):
+                    return
+                _, _, err = await get_access_token(session)
+                if err:
+                    return
+                await run_ai_analysis(session, trigger="scheduled")
+                await session.commit()
+
+        scheduler.add_job(
+            _ai_hourly_tick,
+            "interval",
+            minutes=60,
+            id="ai_ict_hourly",
+            max_instances=1,
+            coalesce=True,
+        )
     yield
     scheduler.shutdown(wait=False)
 
@@ -84,6 +113,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title=settings.app_name, lifespan=lifespan)
 app.include_router(auth_routes.router)
 app.include_router(settings_gui_routes.router)
+app.include_router(chatgpt_ai_routes.router)
 app.add_middleware(SessionSecurityMiddleware)
 app.add_middleware(
     CORSMiddleware,

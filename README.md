@@ -2,6 +2,25 @@
 
 Rule-based ICT analysis, Telegram inline approval, real Bitunix candlestick charts, and full paper-trading lifecycle. **No live Bitunix orders.**
 
+## Hourly AI ICT analysis (ChatGPT Plus / SIWC)
+
+TradeOnBU supports **Sign in with ChatGPT** open-source token sharing (ChatGPT Plus/Pro plan usage on the official Responses API — not a separate API key).
+
+1. Open dashboard → **تحلیل AI** → **Connect with ChatGPT** (starts OAuth; completes on a machine with a browser).
+2. On your PC (not inside Docker), after copying `CONNECT_TOKEN` and `AUTHORIZE_URL` from the dashboard:
+
+```bash
+export TRADEONBU_URL=https://your-domain
+export CONNECT_TOKEN=...
+export AUTHORIZE_URL='...'
+# Optional: export TRADEONBU_SESSION_COOKIE=... if helper cannot use browser session
+python3 scripts/siwc_oauth_helper.py
+```
+
+For self-hosted VMs, OpenAI documents completing OAuth locally then transferring encrypted credentials over SSH — this helper posts tokens to your server over HTTPS after loopback OAuth ([SIWC self-hosted VMs](https://developers.openai.com/siwc/token-sharing-open-source/self-hosted-vms)).
+
+Hourly analysis runs server-side when connected (`store: false`, `stream: true`). Failures are recorded; rule-based reports are **not** substituted as AI. **Paper only.**
+
 ## Phase 3 — One-command install (Ubuntu/Debian)
 
 Production install (interactive — domain, admin username/password only). **Use the bootstrap entry point** so helper scripts are downloaded before install runs:

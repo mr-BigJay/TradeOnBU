@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { apiFetch, fetchMe, getApiKey, isAuthError, login, logout, setApiKey, setCsrf } from "./api";
 import { ChartPanel } from "./ChartPanel";
 import { SettingsPage } from "./SettingsPage";
+import { AiAnalysisPage } from "./AiAnalysisPage";
 
 type Trend = {
   symbol: string;
@@ -85,7 +86,7 @@ export default function App() {
   const [authBoot, setAuthBoot] = useState<"loading" | "done">("loading");
   const [authed, setAuthed] = useState(false);
   const [sessionUser, setSessionUser] = useState<string | null>(null);
-  const [page, setPage] = useState<"dashboard" | "settings">("dashboard");
+  const [page, setPage] = useState<"dashboard" | "settings" | "ai">("dashboard");
   const [onboarding, setOnboarding] = useState<Record<string, boolean>>({});
   const [bootError, setBootError] = useState<string | null>(null);
   const [dashError, setDashError] = useState<string | null>(null);
@@ -295,6 +296,9 @@ export default function App() {
           <button type="button" className={page === "settings" ? "active" : ""} onClick={() => setPage("settings")}>
             تنظیمات
           </button>
+          <button type="button" className={page === "ai" ? "active" : ""} onClick={() => setPage("ai")}>
+            تحلیل AI
+          </button>
           <button type="button" className="secondary" onClick={() => logout().finally(() => setAuthed(false))}>
             خروج
           </button>
@@ -401,6 +405,8 @@ export default function App() {
         {refreshing && <p className="hint">به‌روزرسانی داشبورد…</p>}
         {page === "settings" ? (
           <SettingsPage />
+        ) : page === "ai" ? (
+          <AiAnalysisPage />
         ) : (
         <>
         <div className="grid-2">
