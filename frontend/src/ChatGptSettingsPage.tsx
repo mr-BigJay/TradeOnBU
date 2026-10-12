@@ -1,16 +1,14 @@
 import { useCallback, useEffect, useState } from "react";
 import { apiFetch } from "./api";
+import { CopyField } from "./CopyField";
 
 type Status = {
   connected: boolean;
   plan_usage_authorized: boolean;
   email?: string;
-  hourly_enabled: boolean;
-  unattended_consent: boolean;
   scheduling_active: boolean;
-  scheduling_block_reason?: string;
-  interval_minutes: number;
   next_run_at?: string;
+  interval_minutes: number;
 };
 
 type ConnectBundle = {
@@ -48,12 +46,12 @@ export function ChatGptSettingsPage() {
       oauth_state: data.oauth_state,
       authorize_url: data.authorize_url,
     });
-    setMsg("مقادیر یک‌بارمصرف را کپی کنید و روی ویندوز اسکریپت helper را اجرا کنید.");
+    setMsg("مقادیر زیر را کپی کنید و روی ویندوز helper را اجرا کنید.");
   }
 
   async function saveSchedule() {
     if (scheduleEnabled && !consent) {
-      setMsg("رضایت تحلیل خودکار را تیک بزنید.");
+      setMsg("رضایت تحلیل خودکار را فعال کنید.");
       return;
     }
     await apiFetch("/api/gui/chatgpt/settings", {
@@ -72,62 +70,81 @@ export function ChatGptSettingsPage() {
 
   return (
     <div className="page">
-      <h2>ChatGPT Plus</h2>
-      <p className="hint">اتصال SIWC — بدون API key جداگانه. Paper only.</p>
-      {msg && <p className="hint">{msg}</p>}
+      <header className="page-header">
+        <h1>ChatGPT Plus</h1>
+        <p className="hint">اتصال رسمی SIWC · بدون API key</p>
+      </header>
 
-      <div className="card form-stack">
-        <p>
-          وضعیت: <strong>{connected ? "متصل" : "قطع"}</strong>
-          {status?.email ? ` — ${status.email}` : ""}
-        </p>
-        <div className="row-btns">
-          <button type="button" onClick={beginConnect}>
+      {msg && <p className="toast toast-ok">{msg}</p>}
+
+      <div className="card status-card">
+        <span className={`status-pill ${connected ? "on" : "off"}`}>{connected ? "متصل" : "قطع"}</span>
+        {status?.email && <p className="status-email">{status.email}</p>}
+        <div className="stack-btns">
+          <button type="button" className="btn-primary btn-block" onClick={beginConnect}>
             Connect with ChatGPT
           </button>
-          <button type="button" className="secondary" onClick={() => apiFetch("/api/gui/chatgpt/disconnect", { method: "POST" }).then(refresh)}>
+          <button
+            type="button"
+            className="secondary btn-block"
+            onClick={() => apiFetch("/api/gui/chatgpt/disconnect", { method: "POST" }).then(refresh)}
+          >
             قطع اتصال
           </button>
         </div>
       </div>
 
       {connectInfo && (
-        <details className="card mono connect-box" open>
-          <summary>داده‌های اتصال (یک‌بار)</summary>
-          <p>CONNECT_TOKEN={connectInfo.connect_token}</p>
-          <p>CONNECT_SECRET={connectInfo.connect_secret}</p>
-          <p>OAUTH_STATE={connectInfo.oauth_state}</p>
-          <p className="break-all">AUTHORIZE_URL={connectInfo.authorize_url}</p>
-        </details>
+        <div className="card connect-panel">
+          <h3 className="section-title">اتصال یک‌بارمصرف</h3>
+          <CopyField label="CONNECT_TOKEN" value={connectInfo.connect_token} />
+          <CopyField label="CONNECT_SECRET" value={connectInfo.connect_secret} />
+          <CopyField label="OAUTH_STATE" value={connectInfo.oauth_state} />
+          <CopyField label="AUTHORIZE_URL" value={connectInfo.authorize_url} />
+        </div>
       )}
 
-      <form className="card form-stack" onSubmit={(e) => { e.preventDefault(); saveSchedule(); }}>
-        <h3>تحلیل خودکار</h3>
-        <label className="check-row">
+      <form
+        className="card form-stack"
+        onSubmit={(e) => {
+          e.preventDefault();
+          saveSchedule();
+        }}
+      >
+        <h3 className="section-title">تحلیل خودکار</h3>
+        <label className="toggle-row">
           <input type="checkbox" checked={consent} onChange={(e) => setConsent(e.target.checked)} />
-          اجازه استفاده از ChatGPT Plus در پس‌زمینه
+          <span>اجازه استفاده از ChatGPT در پس‌زمینه</span>
         </label>
-        <label className="check-row">
-          <input type="checkbox" checked={scheduleEnabled} onChange={(e) => setScheduleEnabled(e.target.checked)} disabled={!connected} />
-          هر{" "}
+        <label className="toggle-row">
+          <input
+            type="checkbox"
+            checked={scheduleEnabled}
+            onChange={(e) => setScheduleEnabled(e.target.checked)}
+            disabled={!connected}
+          />
+          <span>فعال‌سازی زمان‌بندی</span>
+        </label>
+        <label>
+          هر چند دقیقه؟ (۱۵–۲۴۰)
           <input
             type="number"
             min={15}
             max={240}
+            inputMode="numeric"
             value={intervalMin}
             onChange={(e) => setIntervalMin(Number(e.target.value))}
-            className="inline-num"
             disabled={!connected}
-          />{" "}
-          دقیقه
+          />
         </label>
         {status && (
           <p className="hint">
-            زمان‌بندی: {status.scheduling_active ? "فعال" : "غیرفعال"}
-            {status.next_run_at ? ` — بعدی: ${new Date(status.next_run_at).toLocaleString("fa-IR")}` : ""}
+            {status.scheduling_active ? "زمان‌بندی فعال" : "زمان‌بندی غیرفعال"}
+            {status.next_run_at &&
+              ` · بعدی: ${new Date(status.next_run_at).toLocaleString("fa-IR", { dateStyle: "short", timeStyle: "short" })}`}
           </p>
         )}
-        <button type="submit" disabled={!connected}>
+        <button type="submit" className="btn-primary btn-block" disabled={!connected}>
           ذخیره
         </button>
       </form>

@@ -29,38 +29,59 @@ export function TelegramSettingsPage() {
     await load();
   }
 
-  if (loading) return <p className="hint">بارگذاری…</p>;
-  if (!telegram) return <p className="stale">تلگرام بارگذاری نشد.</p>;
+  if (loading) {
+    return (
+      <div className="page">
+        <p className="hint center-hint">بارگذاری…</p>
+      </div>
+    );
+  }
+
+  if (!telegram) {
+    return (
+      <div className="page">
+        <p className="toast toast-error">بارگذاری تلگرام ناموفق بود.</p>
+      </div>
+    );
+  }
 
   return (
     <div className="page">
-      <h2>تلگرام</h2>
-      <p className="hint">ارسال گزارش تحلیل AI به ربات شما (Paper only).</p>
-      {msg && <p className="hint">{msg}</p>}
+      <header className="page-header">
+        <h1>تلگرام</h1>
+        <p className="hint">دریافت گزارش تحلیل AI</p>
+      </header>
+
+      {msg && <p className="toast toast-ok">{msg}</p>}
+
       <form className="card form-stack" onSubmit={save}>
-        <label className="check-row">
+        <label className="toggle-row">
           <input type="checkbox" checked={telegram.enabled} onChange={(e) => setTelegram({ ...telegram, enabled: e.target.checked })} />
-          فعال
+          <span>ربات فعال</span>
         </label>
         <label>توکن ربات</label>
         <input
           type="password"
+          autoComplete="off"
           placeholder={telegram.bot_token_masked || "فقط در صورت تغییر"}
           onChange={(e) => setTelegram({ ...telegram, bot_token: e.target.value })}
         />
         <label>Chat ID</label>
-        <input value={telegram.chat_id || ""} onChange={(e) => setTelegram({ ...telegram, chat_id: e.target.value })} />
+        <input inputMode="numeric" value={telegram.chat_id || ""} onChange={(e) => setTelegram({ ...telegram, chat_id: e.target.value })} />
         <label>کاربران مجاز (با کاما)</label>
-        <input
-          value={telegram.allowed_user_ids || ""}
-          onChange={(e) => setTelegram({ ...telegram, allowed_user_ids: e.target.value })}
-        />
-        <div className="row-btns">
-          <button type="submit">ذخیره</button>
-          <button type="button" className="secondary" onClick={() => apiFetch("/api/gui/settings/telegram/test", { method: "POST" }).then(() => setMsg("اتصال OK"))}>
-            تست
+        <input value={telegram.allowed_user_ids || ""} onChange={(e) => setTelegram({ ...telegram, allowed_user_ids: e.target.value })} />
+        <button type="submit" className="btn-primary btn-block">
+          ذخیره
+        </button>
+        <div className="stack-btns">
+          <button type="button" className="secondary btn-block" onClick={() => apiFetch("/api/gui/settings/telegram/test", { method: "POST" }).then(() => setMsg("اتصال OK"))}>
+            تست اتصال
           </button>
-          <button type="button" className="secondary" onClick={() => apiFetch("/api/gui/settings/telegram/send-test", { method: "POST" }).then(() => setMsg("پیام آزمایشی ارسال شد"))}>
+          <button
+            type="button"
+            className="secondary btn-block"
+            onClick={() => apiFetch("/api/gui/settings/telegram/send-test", { method: "POST" }).then(() => setMsg("پیام آزمایشی ارسال شد"))}
+          >
             پیام آزمایشی
           </button>
         </div>

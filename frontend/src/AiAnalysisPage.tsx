@@ -5,7 +5,6 @@ type Status = {
   connected: boolean;
   plan_usage_authorized: boolean;
   last_run_at?: string;
-  next_run_at?: string;
   last_error?: string;
 };
 
@@ -17,6 +16,14 @@ type HistoryRow = {
   created_at: string;
   telegram_sent: boolean;
 };
+
+function decisionBadge(d?: string) {
+  const u = (d || "—").toUpperCase();
+  if (u === "LONG") return "badge badge-long";
+  if (u === "SHORT") return "badge badge-short";
+  if (u === "NO_TRADE") return "badge badge-neutral";
+  return "badge";
+}
 
 export function AiAnalysisPage() {
   const [status, setStatus] = useState<Status | null>(null);
@@ -40,10 +47,10 @@ export function AiAnalysisPage() {
 
   async function analyzeNow() {
     setBusy(true);
-    setMsg("در حال تحلیل…");
+    setMsg("");
     try {
       await apiFetch("/api/gui/chatgpt/analyze-now", { method: "POST" }, 130_000);
-      setMsg("انجام شد.");
+      setMsg("تحلیل انجام شد.");
       await refresh();
     } catch (e) {
       setMsg(e instanceof Error ? e.message : "خطا");
@@ -56,56 +63,64 @@ export function AiAnalysisPage() {
 
   return (
     <div className="page">
-      <h2>تحلیل و گزارش‌ها</h2>
-      <p className="hint">BTCUSDT — ICT — Persian — Paper only</p>
-      {msg && <p className="hint">{msg}</p>}
+      <header className="page-header">
+        <h1>تحلیل ICT</h1>
+        <p className="hint">BTCUSDT · فارسی · Paper</p>
+      </header>
 
-      <div className="card row-btns">
-        <button type="button" onClick={analyzeNow} disabled={!connected || busy}>
-          {busy ? "…" : "Analyze Now"}
-        </button>
-        <button type="button" className="secondary" onClick={() => refresh()}>
-          به‌روزرسانی
-        </button>
-      </div>
+      {msg && <p className={`toast ${msg.includes("خطا") || msg.includes("409") ? "toast-error" : "toast-ok"}`}>{msg}</p>}
 
-      {status && (
-        <p className="hint">
-          آخرین: {status.last_run_at ? new Date(status.last_run_at).toLocaleString("fa-IR") : "—"}
-          {status.last_error && <span className="stale"> — {status.last_error}</span>}
+      <button type="button" className="btn-primary btn-block btn-lg" onClick={analyzeNow} disabled={!connected || busy}>
+        {busy ? "در حال تحلیل…" : "Analyze Now"}
+      </button>
+      {!connected && <p className="hint center-hint">ابتدا ChatGPT را در منوی ChatGPT وصل کنید.</p>}
+
+      {status?.last_run_at && (
+        <p className="meta-line">
+          آخرین اجرا: {new Date(status.last_run_at).toLocaleString("fa-IR", { dateStyle: "short", timeStyle: "short" })}
         </p>
       )}
+      {status?.last_error && <p className="toast toast-error">{status.last_error}</p>}
 
-      <div className="card">
-        <table>
-          <thead>
-            <tr>
-              <th>زمان</th>
-              <th>وضعیت</th>
-              <th>تصمیم</th>
-              <th>تلگرام</th>
-            </tr>
-          </thead>
-          <tbody>
-            {history.map((r) => (
-              <tr key={r.id} className="click-row" onClick={() => apiFetch(`/api/gui/chatgpt/history/${r.id}`).then((d) => setDetail(d.report_fa || ""))}>
-                <td>{new Date(r.created_at).toLocaleString("fa-IR")}</td>
-                <td>{r.status}</td>
-                <td>{r.decision || "—"}</td>
-                <td>{r.telegram_sent ? "✓" : "—"}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        {!history.length && <p className="hint">هنوز گزارشی نیست.</p>}
-      </div>
+      <section className="section">
+        <h2 className="section-title">گزارش‌های قبلی</h2>
+        {!history.length && <p className="hint center-hint">هنوز گزارشی ثبت نشده.</p>}
+        <ul className="history-list">
+          {history.map((r) => (
+            <li key={r.id}>
+              <button
+                type="button"
+                className="history-card"
+                onClick={() => apiFetch(`/api/gui/chatgpt/history/${r.id}`).then((d) => setDetail(d.report_fa || ""))}
+              >
+                <div className="history-card-top">
+                  <span className={decisionBadge(r.decision)}>{r.decision || "—"}</span>
+                  {r.telegram_sent && <span className="tg-dot" title="ارسال به تلگرام">✓</span>}
+                </div>
+                <p className="history-preview">{r.report_preview || r.status}</p>
+                <p className="history-time">
+                  {new Date(r.created_at).toLocaleString("fa-IR", { dateStyle: "medium", timeStyle: "short" })}
+                </p>
+              </button>
+            </li>
+          ))}
+        </ul>
+      </section>
 
       {detail && (
-        <div className="card report-box">
-          <button type="button" className="secondary close-report" onClick={() => setDetail("")}>
-            بستن
-          </button>
-          <pre>{detail}</pre>
+        <div className="sheet-backdrop" role="presentation" onClick={() => setDetail("")}>
+          <div className="sheet" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
+            <div className="sheet-handle" />
+            <div className="sheet-head">
+              <h3>گزارش</h3>
+              <button type="button" className="ghost-btn" onClick={() => setDetail("")}>
+                بستن
+              </button>
+            </div>
+            <div className="sheet-body">
+              <pre>{detail}</pre>
+            </div>
+          </div>
         </div>
       )}
     </div>
