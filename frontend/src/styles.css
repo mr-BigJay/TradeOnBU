@@ -1,0 +1,154 @@
+:root {
+  color-scheme: dark;
+  font-family: Inter, system-ui, sans-serif;
+  background: #0b1020;
+  color: #e8edf7;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: 320px 1fr;
+  min-height: 100vh;
+}
+
+.sidebar {
+  border-right: 1px solid #1f2a44;
+  padding: 1rem;
+  background: #0f1528;
+}
+
+.main {
+  padding: 1rem 1.25rem 2rem;
+}
+
+h1,
+h2,
+h3 {
+  margin: 0 0 0.75rem;
+}
+
+.card {
+  background: #121a30;
+  border: 1px solid #24304d;
+  border-radius: 10px;
+  padding: 0.85rem;
+  margin-bottom: 0.85rem;
+}
+
+.grid-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem;
+}
+
+label {
+  display: block;
+  font-size: 0.8rem;
+  color: #9fb0d0;
+  margin-bottom: 0.25rem;
+}
+
+input,
+select,
+textarea,
+button {
+  width: 100%;
+  border-radius: 8px;
+  border: 1px solid #2a3858;
+  background: #0c1224;
+  color: #e8edf7;
+  padding: 0.5rem 0.6rem;
+}
+
+button {
+  cursor: pointer;
+  background: #2f6fed;
+  border-color: #2f6fed;
+  font-weight: 600;
+}
+
+button.secondary {
+  background: #1a2440;
+  border-color: #33456b;
+}
+
+.badge {
+  display: inline-block;
+  padding: 0.15rem 0.45rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.status-WAITING_FOR_ENTRY {
+  background: #3a3200;
+  color: #ffd76a;
+}
+
+.status-ACTIVE {
+  background: #003a31;
+  color: #6dffd8;
+}
+
+.status-TP_HIT {
+  background: #113d11;
+  color: #7dff7d;
+}
+
+.status-SL_HIT,
+.status-MISSED_ENTRY,
+.status-INVALIDATED,
+.status-REJECTED,
+.status-DATA_ERROR {
+  background: #4a1212;
+  color: #ff9c9c;
+}
+
+.status-EXPIRED,
+.status-TIME_EXIT {
+  background: #3a2a10;
+  color: #ffcc88;
+}
+
+.chart-wrap {
+  height: 420px;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid #24304d;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+th,
+td {
+  border-bottom: 1px solid #24304d;
+  padding: 0.45rem 0.35rem;
+  text-align: left;
+}
+
+.stale {
+  color: #ff8f8f;
+}
+
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.78rem;
+}
+
+@media (max-width: 1100px) {
+  .layout {
+    grid-template-columns: 1fr;
+  }
+}

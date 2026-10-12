@@ -1,0 +1,159 @@
+from __future__ import annotations
+
+import hashlib
+from dataclasses import dataclass
+from datetime import datetime, timezone
+
+from app.models import EntryType, TrendState
+from app.services.ict_structure import (
+    analyze_structure,
+    detect_liquidity_sweep,
+    find_fvg_zones,
+)
+from app.services.market_data import MarketDataService
+from app.services.paper_execution import PaperExecutionEngine
+from app.services.trend_engine import TrendContext, TrendEngine
+
+
+@dataclass
+class SetupCandidate:
+    symbol: str
+    direction: str
+    entry_type: str
+    entry_price: float
+    entry_zone_low: float
+    entry_zone_high: float
+    stop_loss: float
+    take_profit: float
+    invalidation_level: float
+    market_bias: str
+    liquidity_sweep: bool
+    mss_confirmation: bool
+    fvg_entry: bool
+    gross_rr: float
+    net_rr: float
+    estimated_holding_hours: float
+    analysis: dict
+    dedupe_key: str
+    rejected_reason: str | None = None
+
+
+class EntryDetectionService:
+    def __init__(
+        self,
+        market: MarketDataService,
+        trend_engine: TrendEngine,
+        paper: PaperExecutionEngine,
+    ) -> None:
+        self.market = market
+        self.trend_engine = trend_engine
+        self.paper = paper
+
+    async def scan(self, symbol: str, min_net_rr: float) -> SetupCandidate | None:
+        ctx = await self.trend_engine.analyze(symbol)
+        if ctx.ict_bias not in (TrendState.BULLISH, TrendState.BEARISH):
+            return None
+
+        c15 = await self.market.fetch_klines(symbol, "15m", 200)
+        c5 = await self.market.fetch_klines(symbol, "5m", 200)
+        s15 = analyze_structure(c15)
+        s5 = analyze_structure(c5)
+
+        if not s15.has_clear_structure or not s5.has_clear_structure:
+            return None
+
+        direction = "LONG" if ctx.ict_bias == TrendState.BULLISH else "SHORT"
+        if ctx.trend_4h == TrendState.BEARISH and direction == "LONG":
+            return None
+        if ctx.trend_4h == TrendState.BULLISH and direction == "SHORT":
+            return None
+
+        fvgs = find_fvg_zones(c5)
+        fvg = next((z for z in reversed(fvgs) if z[2] == direction), None)
+        if not fvg:
+            return None
+
+        zone_low, zone_high, _ = fvg
+        entry_price = (zone_low + zone_high) / 2
+
+        swings = s5.swings
+        if direction == "LONG":
+            recent_lows = [s.price for s in swings if s.kind == "LOW"]
+            if not recent_lows:
+                return None
+            invalidation = min(recent_lows[-2:])
+            stop_loss = invalidation * 0.999
+            liq = s5.liquidity_levels
+            tp_candidates = [lv for lv in liq if lv > entry_price] or [c5[-2].high * 1.002]
+            take_profit = min(tp_candidates)
+        else:
+            recent_highs = [s.price for s in swings if s.kind == "HIGH"]
+            if not recent_highs:
+                return None
+            invalidation = max(recent_highs[-2:])
+            stop_loss = invalidation * 1.001
+            liq = s5.liquidity_levels
+            tp_candidates = [lv for lv in liq if lv < entry_price] or [c5[-2].low * 0.998]
+            take_profit = max(tp_candidates)
+
+        mss_ok = bool(s15.last_mss and direction in s15.last_mss)
+        liq_level = s5.liquidity_levels[-1] if s5.liquidity_levels else entry_price
+        sweep = detect_liquidity_sweep(c5, liq_level, direction)
+
+        rr = self.paper.calc_rr(direction, entry_price, stop_loss, take_profit, min_net_rr)
+        if not rr.acceptable:
+            return SetupCandidate(
+                symbol=symbol,
+                direction=direction,
+                entry_type=EntryType.LIMIT.value,
+                entry_price=entry_price,
+                entry_zone_low=zone_low,
+                entry_zone_high=zone_high,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+                invalidation_level=invalidation,
+                market_bias=ctx.ict_bias.value,
+                liquidity_sweep=sweep,
+                mss_confirmation=mss_ok,
+                fvg_entry=True,
+                gross_rr=rr.gross_rr,
+                net_rr=rr.net_rr,
+                estimated_holding_hours=6.0,
+                analysis={"trend": ctx.details, "reject": "RR below minimum"},
+                dedupe_key="",
+                rejected_reason="NO_TRADE_RR",
+            )
+
+        dedupe_raw = f"{symbol}:{direction}:{round(entry_price, 1)}:{round(stop_loss, 1)}:{round(take_profit, 1)}"
+        dedupe_key = hashlib.sha256(dedupe_raw.encode()).hexdigest()[:32]
+
+        return SetupCandidate(
+            symbol=symbol,
+            direction=direction,
+            entry_type=EntryType.LIMIT.value,
+            entry_price=round(entry_price, 2),
+            entry_zone_low=round(zone_low, 2),
+            entry_zone_high=round(zone_high, 2),
+            stop_loss=round(stop_loss, 2),
+            take_profit=round(take_profit, 2),
+            invalidation_level=round(invalidation, 2),
+            market_bias=ctx.ict_bias.value,
+            liquidity_sweep=sweep,
+            mss_confirmation=mss_ok,
+            fvg_entry=True,
+            gross_rr=rr.gross_rr,
+            net_rr=rr.net_rr,
+            estimated_holding_hours=6.0,
+            analysis={
+                "trend_context": {
+                    "4h": ctx.trend_4h.value,
+                    "15m": ctx.trend_15m.value,
+                    "5m": ctx.trend_5m.value,
+                    "bias": ctx.ict_bias.value,
+                },
+                "structure_15m": s15.summary,
+                "structure_5m": s5.summary,
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+            },
+            dedupe_key=dedupe_key,
+        )

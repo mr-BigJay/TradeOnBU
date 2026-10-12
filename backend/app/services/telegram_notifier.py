@@ -1,0 +1,75 @@
+from __future__ import annotations
+
+import logging
+
+import httpx
+
+from app.config import Settings, get_settings
+from app.models import Signal
+
+logger = logging.getLogger(__name__)
+
+
+class TelegramNotifier:
+    def __init__(self, settings: Settings | None = None) -> None:
+        self.settings = settings or get_settings()
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.settings.telegram_bot_token and self.settings.telegram_chat_id)
+
+    def _format_signal(self, signal: Signal, title: str, extra: str = "") -> str:
+        pnl = signal.estimated_net_pnl_usdt
+        pnl_line = f"Estimated Net P&L: {pnl} USDT\n" if pnl is not None else ""
+        return (
+            f"*{title}*\n"
+            f"ID: `{signal.public_id}`\n"
+            f"Symbol: {signal.symbol} | {signal.direction}\n"
+            f"Status: {signal.status}\n"
+            f"Entry: {signal.entry_price} ({signal.entry_type})\n"
+            f"SL: {signal.stop_loss} | TP: {signal.take_profit}\n"
+            f"Margin: {self.settings.margin_usdt} USDT | Leverage: {self.settings.leverage}x\n"
+            f"Net R:R: {signal.net_rr}\n"
+            f"{pnl_line}"
+            f"{extra}"
+            f"\n_Paper simulation only — no Bitunix order placed._"
+        )
+
+    async def send_message(self, text: str, parse_mode: str = "Markdown") -> bool:
+        if not self.enabled:
+            logger.info("Telegram disabled; message skipped: %s", text[:120])
+            return False
+        url = f"https://api.telegram.org/bot{self.settings.telegram_bot_token}/sendMessage"
+        payload = {"chat_id": self.settings.telegram_chat_id, "text": text, "parse_mode": parse_mode}
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(url, json=payload)
+            if resp.status_code >= 400:
+                logger.error("Telegram error: %s", resp.text)
+                return False
+        return True
+
+    async def notify_new_setup(self, signal: Signal) -> None:
+        extra = "\nReply with approval in dashboard to start monitoring."
+        await self.send_message(self._format_signal(signal, "New ICT Setup Detected", extra))
+
+    async def notify_entry_activated(self, signal: Signal) -> None:
+        await self.send_message(
+            self._format_signal(signal, "Simulated Entry Activated", f"Fill: {signal.fill_price}\n")
+        )
+
+    async def notify_outcome(self, signal: Signal) -> None:
+        await self.send_message(self._format_signal(signal, f"Trade Outcome: {signal.status}"))
+
+    async def notify_missed_entry(self, signal: Signal) -> None:
+        await self.send_message(self._format_signal(signal, "Setup Cancelled: Missed Entry"))
+
+    async def notify_expired(self, signal: Signal) -> None:
+        await self.send_message(self._format_signal(signal, "Setup Expired"))
+
+    async def notify_time_exit(self, signal: Signal) -> None:
+        await self.send_message(self._format_signal(signal, "Time Exit"))
+
+    async def notify_bias_change(self, symbol: str, old_bias: str, new_bias: str) -> None:
+        await self.send_message(
+            f"*Market Bias Change*\n{symbol}: {old_bias} → {new_bias}\n_Paper mode only._"
+        )
