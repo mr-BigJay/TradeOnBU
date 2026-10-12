@@ -6,6 +6,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 os.environ.setdefault("SKIP_CONFIG_GUARD", "1")
+os.environ.setdefault("DISABLE_APP_BACKGROUND", "1")
 os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///./data/test_tradeonbu.db")
 os.environ.setdefault("DASHBOARD_API_KEY", "test-dashboard-key-0123456789")
 os.environ.setdefault("ADMIN_API_KEY", "test-admin-key-0123456789ab")

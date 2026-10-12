@@ -2,6 +2,15 @@
 
 Rule-based ICT analysis, Telegram inline approval, real Bitunix candlestick charts, and full paper-trading lifecycle. **No live Bitunix orders.**
 
+## Phase 2.2 final reliability
+
+- **Telegram approval:** Production precheck loads real 5m/1m candles from signal creation through approval; rejects expired, terminal, and late (entry already touched) setups. Approvals during a forming 5m bar use 1m granularity and set `entry_monitor_from_ms` to the next 5m open (documented in signal events / `analysis.approval_policy`).
+- **Telegram polling:** `poll_once` advances the update offset only after successful `handle_update`; failed updates are retried.
+- **Notifications:** Durable `notification_outbox` with dedupe keys, retries, and `sent` status only after confirmed delivery (worker flush each cycle).
+- **Worker lock:** Atomic SQLite `UPDATE … WHERE lock expired OR same owner`; ms-based expiry for naive/aware safety.
+- **Market data:** `receipt_time_ms` vs optional `exchange_time_ms`; gap backfill with `data_complete` gate before ICT/monitoring.
+- **Verification:** `scripts/verify_deployment.sh` (Docker steps skipped when Docker is unavailable).
+
 ## Phase 2.1 reliability hotfix
 
 - Telegram allowlist **fail-closed** (empty list denies everyone)

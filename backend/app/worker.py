@@ -16,6 +16,8 @@ from app.services.runtime_settings import get_runtime_settings
 from app.services.signal_lifecycle import SignalLifecycleService
 from app.services.signal_monitor import SignalMonitorService
 from app.services.system_state import release_worker_lock, try_acquire_worker_lock
+from app.services.notification_outbox import NotificationOutboxService
+from app.services.telegram_bot import TelegramBotService
 from app.services.telegram_notifier import TelegramNotifier
 from app.services.trend_engine import TrendEngine
 
@@ -31,18 +33,11 @@ class BotWorker:
         self.entry = EntryDetectionService(self.market, self.trend_engine, self.paper)
         self.lifecycle = SignalLifecycleService(self.paper)
         self.monitor = SignalMonitorService(self.market, self.lifecycle, self.paper)
+        self.outbox = NotificationOutboxService()
         self.telegram = TelegramNotifier(self.settings)
+        self.telegram_bot = TelegramBotService(self.settings)
         self._last_bias: str | None = None
         self._owner = f"worker-{uuid.uuid4().hex[:8]}"
-
-    async def _mark_notified(self, session, sig: Signal, event_key: str) -> bool:
-        notified = list(sig.analysis.get("notified_events", []))
-        if event_key in notified:
-            return False
-        notified.append(event_key)
-        sig.analysis = {**sig.analysis, "notified_events": notified}
-        await session.commit()
-        return True
 
     async def run_cycle(self) -> None:
         async with SessionLocal() as lock_session:
@@ -63,26 +58,19 @@ class BotWorker:
 
                 monitor_events = await self.monitor.monitor_open_signals(session, runtime)
 
-                async with SessionLocal() as session2:
-                    for public_id, evs in monitor_events.items():
-                        result = await session2.execute(select(Signal).where(Signal.public_id == public_id))
-                        sig = result.scalar_one_or_none()
-                        if not sig:
-                            continue
-                        for ev in evs:
-                            key = f"{ev}:{sig.public_id}"
-                            if not await self._mark_notified(session2, sig, key):
-                                continue
-                            if ev == SignalStatus.ACTIVE.value:
-                                await self.telegram.notify_entry_activated(sig)
-                            elif ev == SignalStatus.MISSED_ENTRY.value:
-                                await self.telegram.notify_missed_entry(sig)
-                            elif ev == SignalStatus.EXPIRED.value:
-                                await self.telegram.notify_expired(sig)
-                            elif ev == SignalStatus.TIME_EXIT.value:
-                                await self.telegram.notify_time_exit(sig)
-                            elif ev in (SignalStatus.TP_HIT.value, SignalStatus.SL_HIT.value):
-                                await self.telegram.notify_outcome(sig)
+                for public_id, evs in monitor_events.items():
+                    result = await session.execute(select(Signal).where(Signal.public_id == public_id))
+                    sig = result.scalar_one_or_none()
+                    if not sig:
+                        continue
+                    for ev in evs:
+                        await self.outbox.enqueue(
+                            session,
+                            dedupe_key=f"{ev}:{sig.public_id}",
+                            event_type=ev,
+                            signal=sig,
+                        )
+                await session.commit()
 
                 candidate = await self.entry.scan(symbol, runtime.min_net_rr)
                 if candidate and not candidate.rejected_reason:
@@ -94,13 +82,19 @@ class BotWorker:
                         runtime.holding_time_hours,
                     )
                     if sig:
+                        await self.outbox.enqueue(
+                            session,
+                            dedupe_key=f"NEW:{sig.public_id}",
+                            event_type="NEW",
+                            signal=sig,
+                        )
                         await session.commit()
                         await session.refresh(sig)
-                        if await self._mark_notified(session, sig, f"NEW:{sig.public_id}"):
-                            await self.telegram.notify_new_setup(sig)
-                        await session.commit()
                         logger.info("Created signal %s", sig.public_id)
                 await session.commit()
+                await self.outbox.flush_pending(session)
+                if self.telegram_bot.polling_enabled:
+                    await self.telegram_bot.poll_once()
         finally:
             async with SessionLocal() as lock_session:
                 await release_worker_lock(lock_session, self._owner)

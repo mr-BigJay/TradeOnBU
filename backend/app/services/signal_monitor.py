@@ -25,7 +25,10 @@ class SignalMonitorService:
         self.lifecycle = lifecycle
         self.paper = paper or ExecutionModel()
 
-    def _approval_ms(self, signal: Signal) -> int | None:
+    def _monitor_from_ms(self, signal: Signal) -> int | None:
+        """Earliest closed-bar open time eligible for entry/exit monitoring."""
+        if signal.entry_monitor_from_ms is not None:
+            return signal.entry_monitor_from_ms
         if not signal.telegram_approval_required:
             created = ensure_utc(signal.created_at) or datetime.now(timezone.utc)
             return int(created.timestamp() * 1000)
@@ -36,10 +39,10 @@ class SignalMonitorService:
 
     def _eligible_closed_bars(self, signal: Signal, closed: list[Candle], interval: str = "5m") -> list[Candle]:
         cursor = signal.last_processed_candle_ms or 0
-        approval_ms = self._approval_ms(signal)
+        monitor_from = self._monitor_from_ms(signal)
         bars = [b for b in closed if b.time_ms > cursor]
-        if approval_ms is not None:
-            bars = [b for b in bars if b.time_ms >= approval_ms]
+        if monitor_from is not None:
+            bars = [b for b in bars if b.time_ms >= monitor_from]
         elif signal.telegram_approval_required:
             bars = []
         return sorted(bars, key=lambda b: b.time_ms)
@@ -234,9 +237,28 @@ class SignalMonitorService:
         quote = await self.market.fetch_live_price(symbol)
         stale = self.market.is_quote_stale(quote)
         bundle = await self.market.fetch_kline_bundle(symbol, "5m", 200)
+        history_ok = bundle.data_complete
 
         out: dict[str, list[str]] = {}
         for sig in signals:
+            if not history_ok:
+                await self.lifecycle.log_event(
+                    session,
+                    sig,
+                    "INCOMPLETE_HISTORY_SKIP",
+                    sig.status,
+                    sig.status,
+                    note="5m gap backfill incomplete — monitoring paused",
+                )
+                if sig.status != SignalStatus.DATA_ERROR.value:
+                    await self.lifecycle.transition(
+                        session,
+                        sig,
+                        SignalStatus.DATA_ERROR.value,
+                        "INCOMPLETE_MARKET_DATA",
+                        note="Gap backfill incomplete",
+                    )
+                continue
             bars = self._eligible_closed_bars(sig, bundle.closed, bundle.interval)
             if sig.status in (SignalStatus.WAITING_FOR_ENTRY.value, SignalStatus.DATA_ERROR.value):
                 evs = await self.process_waiting(

@@ -172,6 +172,6 @@ class TelegramBotService:
             try:
                 await self.handle_update(upd)
             except Exception:
-                logger.exception("Telegram update failed")
-            finally:
-                await self._persist_offset(update_id + 1)
+                logger.exception("Telegram update failed update_id=%s", update_id)
+                break
+            await self._persist_offset(update_id + 1)

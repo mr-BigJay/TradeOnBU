@@ -17,6 +17,7 @@ from app.services.telegram_notifier import TelegramNotifier
 from app.services.signal_lifecycle import SignalLifecycleService
 from app.services.signal_monitor import SignalMonitorService
 from tests.helpers.factories import make_signal
+from tests.helpers.market_fakes import EmptyCompleteMarket, PrecheckTouchMarket, complete_bundle, live_quote
 
 
 def test_empty_telegram_allowlist_fail_closed():
@@ -48,10 +49,14 @@ async def test_dashboard_cannot_approve(client, session):
 
 
 @pytest.mark.asyncio
-async def test_admin_can_approve(admin_client, session):
+async def test_admin_can_approve(admin_client, session, monkeypatch):
     sig = make_signal()
     session.add(sig)
     await session.commit()
+    monkeypatch.setattr(
+        "app.main.TelegramApprovalService",
+        lambda: TelegramApprovalService(market=EmptyCompleteMarket()),
+    )
     resp = await admin_client.post(
         "/api/signals/telegram-approval",
         json={"public_id": sig.public_id, "approved": True},
@@ -80,7 +85,7 @@ async def test_concurrent_approval_idempotent(session):
     sig = make_signal()
     session.add(sig)
     await session.commit()
-    svc = TelegramApprovalService()
+    svc = TelegramApprovalService(market=EmptyCompleteMarket())
     r1 = await svc.approve(session, sig.public_id, 111)
     r2 = await svc.approve(session, sig.public_id, 111)
     assert r1[1] is None
@@ -93,8 +98,10 @@ async def test_late_approval_after_entry_touched(session):
     session.add(sig)
     await session.commit()
     bar = Candle(open=100, high=101, low=99, close=100, time_ms=1_700_000_000_000)
-    svc = TelegramApprovalService()
-    _, err = await svc.approve(session, sig.public_id, 111, pre_approval_bars=[bar])
+    sig.created_at = datetime.fromtimestamp((bar.time_ms - 600_000) / 1000, tz=timezone.utc)
+    await session.commit()
+    svc = TelegramApprovalService(market=PrecheckTouchMarket(bar))
+    _, err = await svc.approve(session, sig.public_id, 111)
     await session.refresh(sig)
     assert err == "LATE_APPROVAL_ENTRY_TOUCHED"
     assert sig.status == SignalStatus.MISSED_ENTRY.value
@@ -147,7 +154,8 @@ def test_sl_first_when_both_hit():
 
 def test_stale_quote_flag():
     md = MarketDataService()
-    old = LiveQuote(1.0, datetime.now(timezone.utc) - timedelta(minutes=10), 0, True, "t")
+    old_receipt = int((datetime.now(timezone.utc) - timedelta(minutes=10)).timestamp() * 1000)
+    old = LiveQuote(1.0, datetime.now(timezone.utc) - timedelta(minutes=10), old_receipt, None, True, "t")
     assert md.is_quote_stale(old) is True
 
 
@@ -174,6 +182,7 @@ async def test_paper_lifecycle_deterministic(session):
     sig = make_signal(
         telegram_approved=True,
         telegram_approved_at=datetime.fromtimestamp(1_700_000_000, tz=timezone.utc),
+        entry_monitor_from_ms=1_700_000_000,
     )
     sig.last_processed_candle_ms = 0
     session.add(sig)
@@ -181,13 +190,11 @@ async def test_paper_lifecycle_deterministic(session):
 
     class FakeMarket:
         async def fetch_live_price(self, symbol):
-            return LiveQuote(100, datetime.now(timezone.utc), int(datetime.now(timezone.utc).timestamp() * 1000), False, "test")
+            return live_quote(100)
 
         async def fetch_kline_bundle(self, symbol, interval, limit=200):
-            from app.services.market_data import KlineBundle
-
             bar = Candle(open=100, high=100.5, low=99.5, close=100.2, time_ms=1_700_000_300_000)
-            return KlineBundle(closed=[bar], forming=None, gaps=[], interval="5m")
+            return complete_bundle(closed=[bar], interval="5m")
 
         def is_quote_stale(self, q):
             return False

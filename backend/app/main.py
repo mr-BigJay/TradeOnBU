@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -61,18 +62,19 @@ async def lifespan(app: FastAPI):
     validate_settings(settings)
     Path("data").mkdir(exist_ok=True)
     await init_db()
-    scheduler.add_job(
-        worker.run_cycle,
-        "interval",
-        seconds=settings.scan_interval_seconds,
-        id="ict_scan",
-        max_instances=1,
-        coalesce=True,
-    )
-    scheduler.start()
-    asyncio.create_task(worker.run_cycle())
-    if telegram_bot.polling_enabled:
-        asyncio.create_task(_telegram_poll_loop())
+    if not os.getenv("DISABLE_APP_BACKGROUND"):
+        scheduler.add_job(
+            worker.run_cycle,
+            "interval",
+            seconds=settings.scan_interval_seconds,
+            id="ict_scan",
+            max_instances=1,
+            coalesce=True,
+        )
+        scheduler.start()
+        asyncio.create_task(worker.run_cycle())
+        if telegram_bot.polling_enabled:
+            asyncio.create_task(_telegram_poll_loop())
     yield
     scheduler.shutdown(wait=False)
 

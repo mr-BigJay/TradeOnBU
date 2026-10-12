@@ -12,6 +12,7 @@ from app.services.signal_lifecycle import SignalLifecycleService
 from app.services.signal_monitor import SignalMonitorService
 from app.services.telegram_approval import TelegramApprovalService
 from tests.helpers.factories import make_signal
+from tests.helpers.market_fakes import EmptyCompleteMarket, complete_bundle, live_quote
 
 
 @pytest.mark.asyncio
@@ -19,7 +20,7 @@ async def test_unauthorized_telegram_user_rejected(session):
     sig = make_signal()
     session.add(sig)
     await session.commit()
-    svc = TelegramApprovalService()
+    svc = TelegramApprovalService(market=EmptyCompleteMarket())
     approved, err = await svc.approve(session, sig.public_id, user_id=999999)
     assert approved is None
     assert err == "UNAUTHORIZED_USER"
@@ -30,7 +31,7 @@ async def test_duplicate_approval_single_event(session):
     sig = make_signal()
     session.add(sig)
     await session.commit()
-    svc = TelegramApprovalService()
+    svc = TelegramApprovalService(market=EmptyCompleteMarket())
     lifecycle = SignalLifecycleService()
     first, err1 = await svc.approve(session, sig.public_id, user_id=111)
     assert err1 is None
@@ -134,21 +135,10 @@ def _bar(o, h, l, c, t):
 
 class _FakeMarket:
     async def fetch_live_price(self, symbol):
-        return LiveQuote(
-            100.0,
-            datetime.now(timezone.utc),
-            int(datetime.now(timezone.utc).timestamp() * 1000),
-            False,
-            "test",
-        )
+        return live_quote(100.0)
 
     async def fetch_kline_bundle(self, symbol, interval, limit=200):
-        return KlineBundle(
-            closed=[_bar(100, 101, 99, 100, 1_700_000_000_000)],
-            forming=None,
-            gaps=[],
-            interval="5m",
-        )
+        return complete_bundle(closed=[_bar(100, 101, 99, 100, 1_700_000_000_000)], interval="5m")
 
     def is_quote_stale(self, quote):
         return False
