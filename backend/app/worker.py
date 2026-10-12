@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import select
 
-from app.config import get_settings
+from app.config import get_effective_settings, get_settings
 from app.db import SessionLocal, init_db
 from app.models import MarketTrendSnapshot, Signal, SignalStatus
 from app.services.entry_detection import EntryDetectionService
@@ -44,9 +44,17 @@ class BotWorker:
                 return
 
         try:
+            self.settings = get_effective_settings()
             symbol = self.settings.default_symbol
             async with SessionLocal() as session:
+                from app.services.settings_runtime import refresh_settings_cache
+
+                await refresh_settings_cache(session)
+                self.settings = get_effective_settings()
                 runtime = await get_runtime_settings(session)
+                if runtime.paper_trading_paused or not runtime.scanning_enabled:
+                    logger.info("Worker scan skipped — paused or scanning disabled")
+                    return
                 ctx = await self.trend_engine.analyze(symbol)
                 await self.trend_engine.persist(session, ctx)
 

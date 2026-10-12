@@ -8,6 +8,7 @@ RUN npm run build
 FROM python:3.12-slim
 WORKDIR /app
 COPY backend/requirements.txt ./backend/requirements.txt
+RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
 RUN pip install --no-cache-dir -r backend/requirements.txt
 COPY backend/ ./backend/
 COPY --from=frontend /fe/dist ./frontend/dist

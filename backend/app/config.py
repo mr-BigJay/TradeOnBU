@@ -70,3 +70,39 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+def get_effective_settings() -> Settings:
+    """Environment bootstrap merged with DB-backed overlay (Telegram, risk, etc.)."""
+    from app.services.settings_runtime import overlay_get
+
+    base = get_settings().model_copy()
+    token = overlay_get("telegram_bot_token")
+    if token:
+        base.telegram_bot_token = token
+    chat = overlay_get("telegram_chat_id")
+    if chat:
+        base.telegram_chat_id = chat
+    allow = overlay_get("telegram_allowed_user_ids")
+    if allow is not None and allow != "":
+        base.telegram_allowed_user_ids = allow
+    req = overlay_get("telegram_require_approval")
+    if req:
+        base.telegram_require_approval = req.lower() == "true"
+    wh = overlay_get("telegram_use_webhook")
+    if wh:
+        base.telegram_use_webhook = wh.lower() == "true"
+    sec = overlay_get("telegram_webhook_secret")
+    if sec:
+        base.telegram_webhook_secret = sec
+    sym = overlay_get("default_symbol")
+    if sym:
+        base.default_symbol = sym
+    scan = overlay_get("scan_interval_seconds")
+    if scan.isdigit():
+        base.scan_interval_seconds = int(scan)
+    for fld in ("margin_usdt", "leverage", "maker_fee_rate", "taker_fee_rate", "spread_bps", "slippage_bps"):
+        val = overlay_get(fld)
+        if val:
+            setattr(base, fld, type(getattr(base, fld))(val))
+    return base

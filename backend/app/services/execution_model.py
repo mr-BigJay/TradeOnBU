@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
-from app.config import Settings, get_settings
+from app.config import Settings, get_effective_settings, get_settings
 
 
 class ExitOutcome(str, Enum):
@@ -30,7 +30,7 @@ class ExecutionModel:
     """Single source of truth for paper fills, costs, P&L and net R:R."""
 
     def __init__(self, settings: Settings | None = None) -> None:
-        self.settings = settings or get_settings()
+        self.settings = settings or get_effective_settings()
 
     def margin_notional(self) -> float:
         return self.settings.margin_usdt * self.settings.leverage

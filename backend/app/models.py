@@ -58,7 +58,76 @@ class RuntimeSettings(Base):
     max_missed_entry_pct: Mapped[float] = mapped_column(Float, default=0.30)
     holding_time_hours: Mapped[float] = mapped_column(Float, default=6.0)
     min_net_rr: Mapped[float] = mapped_column(Float, default=2.0)
+    scan_interval_seconds: Mapped[int] = mapped_column(Integer, default=300)
+    default_symbol: Mapped[str] = mapped_column(String(32), default="BTCUSDT")
+    scanning_enabled: Mapped[bool] = mapped_column(default=True)
+    margin_usdt: Mapped[float] = mapped_column(Float, default=50.0)
+    leverage: Mapped[int] = mapped_column(Integer, default=10)
+    maker_fee_rate: Mapped[float] = mapped_column(Float, default=0.0002)
+    taker_fee_rate: Mapped[float] = mapped_column(Float, default=0.0006)
+    spread_bps: Mapped[float] = mapped_column(Float, default=2.0)
+    slippage_bps: Mapped[float] = mapped_column(Float, default=5.0)
+    max_simultaneous_positions: Mapped[int] = mapped_column(Integer, default=3)
+    paper_trading_paused: Mapped[bool] = mapped_column(default=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class InstallationMeta(Base):
+    __tablename__ = "installation_meta"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    installed: Mapped[bool] = mapped_column(default=False)
+    domain: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    installed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    username: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(String(255))
+    is_admin: Mapped[bool] = mapped_column(default=True)
+    onboarding: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class UserSession(Base):
+    __tablename__ = "user_sessions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    csrf_token: Mapped[str] = mapped_column(String(64))
+    ip_address: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class SettingEntry(Base):
+    __tablename__ = "setting_entries"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    category: Mapped[str] = mapped_column(String(32), index=True)
+    key: Mapped[str] = mapped_column(String(64), index=True)
+    value_plain: Mapped[str | None] = mapped_column(Text, nullable=True)
+    value_secret: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class SettingsAuditLog(Base):
+    __tablename__ = "settings_audit_log"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    category: Mapped[str] = mapped_column(String(32))
+    action: Mapped[str] = mapped_column(String(64))
+    detail: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
 
 
 class MarketTrendSnapshot(Base):

@@ -16,8 +16,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bootstrap import validate_settings
 from app.config import get_settings
-from app.db import get_db, init_db
-from app.middleware.security import SecurityMiddleware
+from app.db import SessionLocal, get_db, init_db
+from app.middleware.session_security import SessionSecurityMiddleware
+from app.routes import auth as auth_routes
+from app.routes import settings_gui as settings_gui_routes
+from app.services.settings_runtime import refresh_settings_cache
 from app.models import MarketTrendSnapshot, Signal, SignalEvent, SignalStatus
 from app.schemas import (
     ChartBundleOut,
@@ -62,6 +65,11 @@ async def lifespan(app: FastAPI):
     validate_settings(settings)
     Path("data").mkdir(exist_ok=True)
     await init_db()
+    async with SessionLocal() as session:
+        try:
+            await refresh_settings_cache(session)
+        except Exception:
+            logger.exception("Settings cache refresh skipped")
     if not os.getenv("DISABLE_APP_BACKGROUND"):
         scheduler.add_job(
             worker.run_cycle,
@@ -80,7 +88,9 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title=settings.app_name, lifespan=lifespan)
-app.add_middleware(SecurityMiddleware)
+app.include_router(auth_routes.router)
+app.include_router(settings_gui_routes.router)
+app.add_middleware(SessionSecurityMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins(),

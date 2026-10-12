@@ -78,7 +78,19 @@ class SignalLifecycleService:
         if existing.scalar_one_or_none():
             return None
 
+        from app.config import get_effective_settings
+
+        eff = get_effective_settings()
         now = datetime.now(timezone.utc)
+        position_snapshot = {
+            "margin_usdt": eff.margin_usdt,
+            "leverage": eff.leverage,
+            "maker_fee_rate": eff.maker_fee_rate,
+            "taker_fee_rate": eff.taker_fee_rate,
+            "spread_bps": eff.spread_bps,
+            "slippage_bps": eff.slippage_bps,
+        }
+        merged_analysis = {**(candidate.analysis or {}), "position_params": position_snapshot}
         sig = Signal(
             public_id=str(uuid4()),
             symbol=candidate.symbol,
@@ -98,7 +110,7 @@ class SignalLifecycleService:
             gross_rr=candidate.gross_rr,
             net_rr=candidate.net_rr,
             estimated_holding_hours=holding_time_hours,
-            analysis=candidate.analysis,
+            analysis=merged_analysis,
             dedupe_key=candidate.dedupe_key,
             telegram_approval_required=require_telegram,
             telegram_approved=None if require_telegram else True,

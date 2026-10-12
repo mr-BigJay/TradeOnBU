@@ -29,6 +29,17 @@ SIGNAL_MIGRATIONS = [
     "ALTER TABLE signals ADD COLUMN entry_activation_candle_ms INTEGER",
     "ALTER TABLE signals ADD COLUMN entry_monitor_from_ms INTEGER",
     "ALTER TABLE system_state ADD COLUMN worker_lock_until_ms INTEGER DEFAULT 0",
+    "ALTER TABLE runtime_settings ADD COLUMN scan_interval_seconds INTEGER DEFAULT 300",
+    "ALTER TABLE runtime_settings ADD COLUMN default_symbol VARCHAR(32) DEFAULT 'BTCUSDT'",
+    "ALTER TABLE runtime_settings ADD COLUMN scanning_enabled BOOLEAN DEFAULT 1",
+    "ALTER TABLE runtime_settings ADD COLUMN margin_usdt FLOAT DEFAULT 50.0",
+    "ALTER TABLE runtime_settings ADD COLUMN leverage INTEGER DEFAULT 10",
+    "ALTER TABLE runtime_settings ADD COLUMN maker_fee_rate FLOAT DEFAULT 0.0002",
+    "ALTER TABLE runtime_settings ADD COLUMN taker_fee_rate FLOAT DEFAULT 0.0006",
+    "ALTER TABLE runtime_settings ADD COLUMN spread_bps FLOAT DEFAULT 2.0",
+    "ALTER TABLE runtime_settings ADD COLUMN slippage_bps FLOAT DEFAULT 5.0",
+    "ALTER TABLE runtime_settings ADD COLUMN max_simultaneous_positions INTEGER DEFAULT 3",
+    "ALTER TABLE runtime_settings ADD COLUMN paper_trading_paused BOOLEAN DEFAULT 0",
 ]
 
 

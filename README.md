@@ -2,6 +2,21 @@
 
 Rule-based ICT analysis, Telegram inline approval, real Bitunix candlestick charts, and full paper-trading lifecycle. **No live Bitunix orders.**
 
+## Phase 3 — One-command install (Ubuntu/Debian)
+
+Production install (interactive — domain, admin username/password only):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mr-BigJay/TradeOnBU/cursor/ict-lifecycle-system-2ec7/scripts/install.sh | sudo bash
+```
+
+Install path: `/opt/tradeonbu` • HTTPS via **Caddy** (Let's Encrypt) • Session login (Argon2id) • Settings in dashboard (Persian RTL).
+
+Ops scripts: `scripts/update.sh`, `backup.sh`, `restore.sh`, `uninstall.sh`  
+CLI recovery: `docker compose exec tradeonbu python3 -m app.cli reset-password --username USER --password NEW`
+
+**Tested in dev:** 64 pytest passed, frontend build OK. **Requires Ubuntu host:** DNS, ports 80/443, real ACME certificate, end-to-end HTTPS login.
+
 ## Deployment blockers (2.2.2)
 
 - Docker `DATABASE_URL`: `sqlite+aiosqlite:////app/data/tradeonbu.db` (host volume `./data`).

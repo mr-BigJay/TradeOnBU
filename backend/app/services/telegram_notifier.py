@@ -5,7 +5,7 @@ from typing import Any
 
 import httpx
 
-from app.config import Settings, get_settings
+from app.config import Settings, get_effective_settings, get_settings
 from app.models import Signal
 
 logger = logging.getLogger(__name__)
@@ -13,7 +13,11 @@ logger = logging.getLogger(__name__)
 
 class TelegramNotifier:
     def __init__(self, settings: Settings | None = None) -> None:
-        self.settings = settings or get_settings()
+        self._settings_override = settings
+
+    @property
+    def settings(self) -> Settings:
+        return self._settings_override or get_effective_settings()
 
     @property
     def enabled(self) -> bool:

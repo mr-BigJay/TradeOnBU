@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { apiFetch, getApiKey, setApiKey } from "./api";
+import { apiFetch, fetchMe, getApiKey, login, logout, setApiKey, setCsrf } from "./api";
 import { ChartPanel } from "./ChartPanel";
+import { SettingsPage } from "./SettingsPage";
 
 type Trend = {
   symbol: string;
@@ -78,7 +79,13 @@ export default function App() {
   const [events, setEvents] = useState<SignalEvent[]>([]);
   const [importMsg, setImportMsg] = useState<string>("");
   const [apiKeyInput, setApiKeyInput] = useState(getApiKey());
-  const [authed, setAuthed] = useState(!!getApiKey());
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [loginErr, setLoginErr] = useState("");
+  const [authed, setAuthed] = useState(false);
+  const [sessionUser, setSessionUser] = useState<string | null>(null);
+  const [page, setPage] = useState<"dashboard" | "settings">("dashboard");
+  const [onboarding, setOnboarding] = useState<Record<string, boolean>>({});
 
   const selected = useMemo(
     () => signals.find((s) => s.public_id === selectedId) ?? signals[0] ?? null,
@@ -96,6 +103,19 @@ export default function App() {
     setSettings(r);
     if (!selectedId && s.length) setSelectedId(s[0].public_id);
   }, [selectedId]);
+
+  useEffect(() => {
+    fetchMe()
+      .then((m) => {
+        if (m.authenticated) {
+          setAuthed(true);
+          setSessionUser(m.username);
+          if (m.csrf_token) setCsrf(m.csrf_token);
+          setOnboarding(m.onboarding || {});
+        } else if (getApiKey()) setAuthed(true);
+      })
+      .catch(() => undefined);
+  }, []);
 
   useEffect(() => {
     if (!authed) return;
@@ -165,18 +185,39 @@ export default function App() {
     return (
       <div className="login-wrap">
         <div className="card" style={{ maxWidth: 420, margin: "10vh auto" }}>
-          <h1>Trade Monitor</h1>
-          <p>کلید API داشبورد را وارد کنید (Paper Trading)</p>
-          <input value={apiKeyInput} onChange={(e) => setApiKeyInput(e.target.value)} placeholder="X-API-Key" />
+          <h1>TradeOnBU</h1>
+          <p>ورود مدیر — معاملات کاغذی (Paper Only)</p>
+          <label>نام کاربری</label>
+          <input value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" />
+          <label style={{ marginTop: 8 }}>رمز عبور</label>
+          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" />
+          {loginErr && <p className="stale">{loginErr}</p>}
           <button
             style={{ marginTop: 10 }}
-            onClick={() => {
-              setApiKey(apiKeyInput.trim());
-              setAuthed(true);
-            }}
+            onClick={() =>
+              login(username, password)
+                .then((d) => {
+                  setAuthed(true);
+                  setSessionUser(d.username);
+                })
+                .catch((e) => setLoginErr(e.message))
+            }
           >
             ورود
           </button>
+          <details style={{ marginTop: 16 }}>
+            <summary>حالت توسعه (API Key)</summary>
+            <input value={apiKeyInput} onChange={(e) => setApiKeyInput(e.target.value)} placeholder="X-API-Key" />
+            <button
+              type="button"
+              onClick={() => {
+                setApiKey(apiKeyInput.trim());
+                setAuthed(true);
+              }}
+            >
+              ورود با کلید
+            </button>
+          </details>
         </div>
       </div>
     );
@@ -185,11 +226,35 @@ export default function App() {
   return (
     <div className="layout">
       <aside className="sidebar">
-        <h1>Trade Monitor</h1>
+        <h1>TradeOnBU</h1>
         <p style={{ color: "#9fb0d0", fontSize: "0.85rem" }}>
-          ICT lifecycle • Paper trading only • No auto ChatGPT API
+          {sessionUser ? `کاربر: ${sessionUser}` : "ICT Paper Trading"}
         </p>
+        <nav className="side-nav">
+          <button type="button" className={page === "dashboard" ? "active" : ""} onClick={() => setPage("dashboard")}>
+            داشبورد
+          </button>
+          <button type="button" className={page === "settings" ? "active" : ""} onClick={() => setPage("settings")}>
+            تنظیمات
+          </button>
+          <button type="button" className="secondary" onClick={() => logout().finally(() => setAuthed(false))}>
+            خروج
+          </button>
+        </nav>
 
+        {Object.keys(onboarding).length < 3 && (
+          <div className="card">
+            <h3>راه‌اندازی اولیه</h3>
+            <ul className="checklist">
+              <li>اتصال تلگرام در تنظیمات</li>
+              <li>بررسی داده Bitunix</li>
+              <li>تأیید ریسک paper</li>
+            </ul>
+          </div>
+        )}
+
+        {page === "settings" ? null : (
+        <>
         <div className="card">
           <h3>Runtime Settings</h3>
           {settings && (
@@ -261,9 +326,15 @@ export default function App() {
           </form>
           {importMsg && <p className="mono">{importMsg}</p>}
         </div>
+        </>
+        )}
       </aside>
 
       <main className="main">
+        {page === "settings" ? (
+          <SettingsPage />
+        ) : (
+        <>
         <div className="grid-2">
           <div className="card">
             <h2>Current Market Trend</h2>
@@ -359,6 +430,8 @@ export default function App() {
             </tbody>
           </table>
         </div>
+        </>
+        )}
       </main>
     </div>
   );
