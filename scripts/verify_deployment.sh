@@ -14,7 +14,25 @@ pass() { log "PASS: $1"; PASS=$((PASS + 1)); }
 fail() { log "FAIL: $1"; FAIL=$((FAIL + 1)); }
 skip() { log "SKIP: $1"; SKIP=$((SKIP + 1)); }
 
-log "TradeOnBU Phase 2.2 deployment verification"
+json_health_ok() {
+  python3 -c "
+import sys
+sys.path.insert(0, '${ROOT}')
+from scripts.verify_helpers import check_health_json
+check_health_json(sys.stdin.read())
+"
+}
+
+json_chart_ok() {
+  python3 -c "
+import sys
+sys.path.insert(0, '${ROOT}')
+from scripts.verify_helpers import check_chart_json
+check_chart_json(sys.stdin.read())
+"
+}
+
+log "TradeOnBU deployment verification"
 log "Defaults: BTCUSDT, margin 50 USDT, leverage 10x, min net R:R 2, scan 5m, pending 90m, missed 0.30%, hold 6h"
 
 # --- Docker Compose ---
@@ -44,6 +62,11 @@ if [[ -f .env ]]; then
   else
     fail "Missing DASHBOARD_API_KEY or ADMIN_API_KEY in .env"
   fi
+  if grep -qE '^DATABASE_URL=.*//app/data/' .env 2>/dev/null || grep -qE '^DATABASE_URL=' docker-compose.yml; then
+    pass "Production DATABASE_URL targets /app/data volume"
+  else
+    skip "DATABASE_URL /app/data not confirmed in .env (compose may override)"
+  fi
 else
   skip ".env not found (use .env.example for production)"
 fi
@@ -62,10 +85,10 @@ health() {
 }
 
 if health >/tmp/tradeonbu-health.json 2>&1; then
-  if grep -q '"live_trading": false' /tmp/tradeonbu-health.json && grep -q '"paper_only": true' /tmp/tradeonbu-health.json; then
-    pass "Health endpoint: paper_only, live_trading disabled"
+  if json_health_ok </tmp/tradeonbu-health.json 2>/dev/null; then
+    pass "Health endpoint: paper_only, live_trading disabled (JSON parsed)"
   else
-    fail "Health endpoint missing expected paper-only flags"
+    fail "Health endpoint JSON missing expected paper-only flags"
   fi
 else
   skip "API not reachable at ${BASE_URL} (start stack or set VERIFY_BASE_URL)"
@@ -80,8 +103,8 @@ fi
 
 if [[ -n "$API_KEY" ]] && health >/dev/null 2>&1; then
   if curl -sf -H "X-API-Key: $API_KEY" "${BASE_URL}/api/market/chart?symbol=BTCUSDT&interval=5m" >/tmp/tradeonbu-chart.json; then
-    if grep -q 'candles' /tmp/tradeonbu-chart.json; then
-      pass "Live chart API returns candles"
+    if json_chart_ok </tmp/tradeonbu-chart.json 2>/dev/null; then
+      pass "Live chart API returns candles (JSON parsed)"
     else
       fail "Chart API response missing candles"
     fi
@@ -123,8 +146,8 @@ fi
 if command -v docker >/dev/null 2>&1 && docker compose ps 2>/dev/null | grep -q Up; then
   docker compose restart 2>&1 | tee /tmp/tradeonbu-restart.log || true
   sleep 6
-  if health >/dev/null 2>&1; then
-    pass "API healthy after compose restart"
+  if health >/tmp/tradeonbu-health-restart.json 2>&1 && json_health_ok </tmp/tradeonbu-health-restart.json; then
+    pass "API healthy after compose restart (JSON parsed)"
   else
     fail "API not healthy after restart"
   fi

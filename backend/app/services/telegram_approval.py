@@ -82,6 +82,18 @@ class TelegramApprovalService:
                 )
                 await session.commit()
                 return sig, check.reason
+            if check.reason in ("APPROVAL_ENTRY_TOUCH_AMBIGUOUS", "APPROVAL_TIMING_UNCERTAIN"):
+                await self.lifecycle.log_event(
+                    session,
+                    sig,
+                    check.reason,
+                    sig.status,
+                    sig.status,
+                    payload={"candle_ms": check.touched_candle_ms, "policy": check.policy_note},
+                    note=check.policy_note,
+                )
+                await session.commit()
+                return sig, check.reason
             return sig, check.reason or "PRECHECK_FAILED"
 
         sig.telegram_approved = True

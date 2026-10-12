@@ -83,6 +83,33 @@ class SignalMonitorService:
             bars = []
         return sorted(bars, key=lambda b: b.time_ms)
 
+    async def _finalize_exit(
+        self,
+        session: AsyncSession,
+        signal: Signal,
+        status: str,
+        raw_exit: float,
+        note: str | None,
+        bar_ms: int,
+        events: list[str],
+    ) -> list[str]:
+        outcome = ExitOutcome.TP if status == SignalStatus.TP_HIT.value else ExitOutcome.SL
+        fill = signal.fill_price or self.paper.open_fill(signal.entry_price, signal.direction, signal.entry_type)
+        exit_fill = self.paper.close_fill(raw_exit, signal.direction, outcome)
+        signal.exit_price = exit_fill
+        signal.exit_reason = status
+        signal.estimated_net_pnl_usdt = self.paper.net_pnl(signal.direction, fill, exit_fill)
+        await self.lifecycle.transition(
+            session,
+            signal,
+            status,
+            status,
+            payload={"raw_exit": raw_exit, "exit_fill": exit_fill, "candle_ms": bar_ms},
+            note=note,
+        )
+        events.append(status)
+        return events
+
     async def _resolve_bar_conflict(
         self,
         signal: Signal,
@@ -101,6 +128,74 @@ class SignalMonitorService:
             if st:
                 return st, raw, nt or "RESOLVED_1M"
         return SignalStatus.SL_HIT.value, signal.stop_loss, "SL_FIRST_AMBIGUOUS"
+
+    async def _try_entry_and_same_bar_exit(
+        self,
+        session: AsyncSession,
+        signal: Signal,
+        bar: Candle,
+    ) -> list[str]:
+        """Walk 1m candles inside a 5m bar: entry then post-entry TP/SL on the same 5m bar."""
+        events: list[str] = []
+        step_5m = interval_ms("5m")
+        m1_bundle = await self.market.fetch_kline_bundle(signal.symbol, "1m", 120)
+        window = sorted(
+            [c for c in m1_bundle.closed if bar.time_ms <= c.time_ms < bar.time_ms + step_5m],
+            key=lambda c: c.time_ms,
+        )
+
+        if window:
+            entered = False
+            for c in window:
+                if not entered:
+                    triggered, fill = self.lifecycle.entry_triggered(signal, c.high, c.low, c.close)
+                    if not triggered:
+                        continue
+                    entered = True
+                    close_ms = c.time_ms + interval_ms("1m")
+                    signal.fill_price = fill
+                    signal.entry_activation_candle_ms = c.time_ms
+                    signal.activated_at = datetime.fromtimestamp(close_ms / 1000, tz=timezone.utc)
+                    signal.active_expires_at = signal.activated_at + timedelta(hours=signal.estimated_holding_hours)
+                    await self.lifecycle.transition(
+                        session,
+                        signal,
+                        SignalStatus.ACTIVE.value,
+                        "ENTRY_ACTIVATED",
+                        payload={"fill_price": fill, "candle_ms": c.time_ms, "activation_ms": close_ms, "via": "1m"},
+                    )
+                    events.append("ACTIVE")
+                    status, raw_exit, note = await self._resolve_bar_conflict(signal, c)
+                    if status and raw_exit is not None:
+                        return await self._finalize_exit(session, signal, status, raw_exit, note, c.time_ms, events)
+                    continue
+                status, raw_exit, note = await self._resolve_bar_conflict(signal, c)
+                if status and raw_exit is not None:
+                    return await self._finalize_exit(session, signal, status, raw_exit, note, c.time_ms, events)
+            signal.last_processed_candle_ms = bar.time_ms
+            return events if entered else []
+
+        triggered, fill = self.lifecycle.entry_triggered(signal, bar.high, bar.low, bar.close)
+        if not triggered:
+            return []
+        close_ms = candle_close_ms(bar, "5m")
+        signal.fill_price = fill
+        signal.entry_activation_candle_ms = bar.time_ms
+        signal.activated_at = datetime.fromtimestamp(close_ms / 1000, tz=timezone.utc)
+        signal.active_expires_at = signal.activated_at + timedelta(hours=signal.estimated_holding_hours)
+        await self.lifecycle.transition(
+            session,
+            signal,
+            SignalStatus.ACTIVE.value,
+            "ENTRY_ACTIVATED",
+            payload={"fill_price": fill, "candle_ms": bar.time_ms, "activation_ms": close_ms, "via": "5m"},
+        )
+        events.append("ACTIVE")
+        status, raw_exit, note = await self._resolve_bar_conflict(signal, bar)
+        if status and raw_exit is not None:
+            return await self._finalize_exit(session, signal, status, raw_exit, note, bar.time_ms, events)
+        signal.last_processed_candle_ms = bar.time_ms
+        return events
 
     async def process_waiting_unapproved(
         self,
@@ -171,24 +266,10 @@ class SignalMonitorService:
             return ["MISSED_ENTRY"]
 
         for bar in bars:
-            triggered, fill = self.lifecycle.entry_triggered(signal, bar.high, bar.low, bar.close)
+            bar_events = await self._try_entry_and_same_bar_exit(session, signal, bar)
+            if bar_events:
+                return bar_events
             signal.last_processed_candle_ms = bar.time_ms
-            if not triggered:
-                continue
-            close_ms = candle_close_ms(bar, "5m")
-            signal.fill_price = fill
-            signal.entry_activation_candle_ms = bar.time_ms
-            signal.activated_at = datetime.fromtimestamp(close_ms / 1000, tz=timezone.utc)
-            signal.active_expires_at = signal.activated_at + timedelta(hours=signal.estimated_holding_hours)
-            await self.lifecycle.transition(
-                session,
-                signal,
-                SignalStatus.ACTIVE.value,
-                "ENTRY_ACTIVATED",
-                payload={"fill_price": fill, "candle_ms": bar.time_ms, "activation_ms": close_ms},
-            )
-            events.append("ACTIVE")
-            return events
         return events
 
     async def process_active(
@@ -218,22 +299,7 @@ class SignalMonitorService:
             status, raw_exit, note = await self._resolve_bar_conflict(signal, bar)
             if not status or raw_exit is None:
                 continue
-            outcome = ExitOutcome.TP if status == SignalStatus.TP_HIT.value else ExitOutcome.SL
-            fill = signal.fill_price or self.paper.open_fill(signal.entry_price, signal.direction, signal.entry_type)
-            exit_fill = self.paper.close_fill(raw_exit, signal.direction, outcome)
-            signal.exit_price = exit_fill
-            signal.exit_reason = status
-            signal.estimated_net_pnl_usdt = self.paper.net_pnl(signal.direction, fill, exit_fill)
-            await self.lifecycle.transition(
-                session,
-                signal,
-                status,
-                status,
-                payload={"raw_exit": raw_exit, "exit_fill": exit_fill, "candle_ms": bar.time_ms},
-                note=note,
-            )
-            events.append(status)
-            return events
+            return await self._finalize_exit(session, signal, status, raw_exit, note, bar.time_ms, events)
 
         active_expires = ensure_utc(signal.active_expires_at)
         if active_expires and now >= active_expires:

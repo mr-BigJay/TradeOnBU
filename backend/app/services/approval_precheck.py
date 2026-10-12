@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass
 
 from app.domain.approval_policy import approval_inside_forming_bar, entry_monitor_start_ms
-from app.domain.candle_utils import candle_close_ms, interval_ms
+from app.domain.candle_utils import interval_ms
 from app.domain.candles import Candle
 from app.domain.time_utils import ensure_utc
 from app.models import Signal
@@ -75,6 +74,19 @@ class ApprovalPrecheckService:
                 None,
                 "Incomplete 1m history — cannot verify creation-boundary entry touch",
             )
+
+        step_1m = interval_ms("1m")
+        creation_1m_open = (created_ms // step_1m) * step_1m
+        if created_ms > creation_1m_open:
+            creation_1m = next((b for b in m1_bundle.closed if b.time_ms == creation_1m_open), None)
+            if creation_1m and self._touched(signal, creation_1m):
+                return ApprovalPrecheckResult(
+                    False,
+                    "APPROVAL_ENTRY_TOUCH_AMBIGUOUS",
+                    None,
+                    creation_1m.time_ms,
+                    "Signal created mid-1m; OHLC cannot prove entry was not touched before creation",
+                )
 
         # Partial 5m candle at signal creation: open before created_ms, touch may occur after creation.
         if creation_bar_open <= created_ms < creation_bar_close and approval_ms > created_ms:

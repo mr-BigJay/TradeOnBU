@@ -2,6 +2,13 @@
 
 Rule-based ICT analysis, Telegram inline approval, real Bitunix candlestick charts, and full paper-trading lifecycle. **No live Bitunix orders.**
 
+## Deployment blockers (2.2.2)
+
+- Docker `DATABASE_URL`: `sqlite+aiosqlite:////app/data/tradeonbu.db` (host volume `./data`).
+- Same 5m bar: 1m walk for entry + post-entry TP/SL; SL-first on ambiguous 1m.
+- Approval: `APPROVAL_ENTRY_TOUCH_AMBIGUOUS` when created mid-1m and OHLC could hide pre-creation touch.
+- `scripts/verify_deployment.sh` uses `scripts/verify_helpers.py` for JSON parsing.
+
 ## Pre-deployment reliability (2.2.1)
 
 - Creation-boundary approval precheck via 1m candles inside the partial 5m bar at signal creation.

@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     app_name: str = "TradeOnBU ICT"
+    # Relative path for local runs from backend/; Docker overrides with /app/data absolute URL.
     database_url: str = "sqlite+aiosqlite:///./data/tradeonbu.db"
 
     bitunix_futures_base: str = "https://fapi.bitunix.com"
