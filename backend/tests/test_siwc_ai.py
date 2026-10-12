@@ -25,7 +25,7 @@ def test_plan_scope_detection():
 async def test_ai_run_fails_without_credentials(session):
     from app.services.ai_ict_analysis import run_ai_analysis
 
-    run = await run_ai_analysis(session, trigger="test")
+    run = await run_ai_analysis(trigger="test")
     assert run.status == "failed"
     assert run.is_ai is True
     assert run.error_code == "not_connected"

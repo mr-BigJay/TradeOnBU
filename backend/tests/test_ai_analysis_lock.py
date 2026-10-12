@@ -92,6 +92,8 @@ def test_telegram_invalid_trade_label():
     assert "NO TRADE" in msg
     assert "NOT actionable" in msg
     assert "net_rr_below_threshold" in msg
+    assert "*" not in msg
+    assert "`" not in msg
 
 
 @pytest.mark.asyncio
@@ -126,9 +128,9 @@ async def test_telegram_invalid_on_rejected_long(session):
             with patch("app.services.ai_ict_analysis.stream_response", AsyncMock(return_value=f"```json\n{ai_json}\n```")):
                 with patch("app.services.ai_ict_analysis.TelegramNotifier") as tn:
                     inst = tn.return_value
-                    inst.enabled = True
-                    inst.send_message = AsyncMock(side_effect=capture)
-                    run = await run_ai_analysis(session, trigger="test")
+                    type(inst).enabled = property(lambda self: True)
+                    inst.send_ai_report = AsyncMock(side_effect=capture)
+                    run = await run_ai_analysis(trigger="test")
     assert run.status == "completed_with_warnings"
     assert sent
     assert "INVALID" in sent[0]

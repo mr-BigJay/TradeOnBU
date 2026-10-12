@@ -228,7 +228,7 @@ async def test_market_context_fail_closed(session):
 async def test_run_ai_skips_telegram_when_failed(session):
     from app.services.ai_ict_analysis import run_ai_analysis
 
-    run = await run_ai_analysis(session, trigger="test")
+    run = await run_ai_analysis(trigger="test")
     assert run.status == "failed"
     assert run.telegram_sent is False
 
@@ -354,12 +354,12 @@ async def test_telegram_delivery_on_success(session):
             with patch("app.services.ai_ict_analysis.stream_response", AsyncMock(return_value=f"```json\n{ai_json}\n```")):
                 with patch("app.services.ai_ict_analysis.TelegramNotifier") as tn:
                     inst = tn.return_value
-                    inst.enabled = True
-                    inst.send_message = AsyncMock(return_value=12345)
-                    run = await run_ai_analysis(session, trigger="test")
+                    type(inst).enabled = property(lambda self: True)
+                    inst.send_ai_report = AsyncMock(return_value=12345)
+                    run = await run_ai_analysis(trigger="test")
     assert run.telegram_sent is True
-    inst.send_message.assert_awaited()
-    args = inst.send_message.await_args[0][0]
+    inst.send_ai_report.assert_awaited()
+    args = inst.send_ai_report.await_args[0][0]
     assert "NO TRADE" in args or "تحلیل" in args
 
 
@@ -373,6 +373,7 @@ async def test_should_run_scheduled_respects_interval(session):
         unattended_consent=True,
         interval_minutes=60,
         last_run_at=datetime.now(timezone.utc),
+        next_run_at=datetime.now(timezone.utc) + timedelta(minutes=60),
     )
     session.add(cfg)
     cred = ChatGptCredential(

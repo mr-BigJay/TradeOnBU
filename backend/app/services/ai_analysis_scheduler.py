@@ -11,6 +11,8 @@ from app.services.siwc.credentials import get_credential_row
 from app.services.siwc.oauth import has_plan_scope
 from app.services.system_state import get_system_state
 
+FAILURE_BACKOFF_MINUTES = 15
+
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
@@ -41,6 +43,20 @@ async def scheduling_allowed(session: AsyncSession) -> tuple[bool, str | None]:
     if not has_plan_scope(cred.scopes_json or []):
         return False, "plan_scope_missing"
     return True, None
+
+
+def record_run_outcome(cfg: AiAnalysisSettings, run_status: str, error_detail: str | None = None) -> None:
+    now = _utc_now()
+    cfg.last_run_at = now
+    interval = max(15, cfg.interval_minutes)
+    if run_status.startswith("completed"):
+        cfg.last_success_at = now
+        cfg.last_error = None
+        cfg.next_run_at = now + timedelta(minutes=interval)
+    else:
+        cfg.last_error = error_detail or "run_failed"
+        backoff = max(FAILURE_BACKOFF_MINUTES, min(interval, 60))
+        cfg.next_run_at = now + timedelta(minutes=backoff)
 
 
 async def _try_acquire_analysis_lock(session: AsyncSession, owner: str, ttl_seconds: int) -> bool:
@@ -111,16 +127,6 @@ async def should_run_scheduled(session: AsyncSession) -> bool:
     if not ok:
         return False
     cfg = await get_or_create_settings(session)
-    if cfg.last_run_at:
-        interval = max(15, cfg.interval_minutes)
-        next_at = _ensure_utc(cfg.last_run_at) + timedelta(minutes=interval)
-        if cfg.next_run_at:
-            next_at = min(next_at, _ensure_utc(cfg.next_run_at))
-        if _utc_now() < next_at:
-            return False
-    return True
-
-
-def bump_next_run(cfg: AiAnalysisSettings) -> None:
-    interval = max(15, cfg.interval_minutes)
-    cfg.next_run_at = _utc_now() + timedelta(minutes=interval)
+    if cfg.next_run_at is None:
+        return True
+    return _utc_now() >= _ensure_utc(cfg.next_run_at)

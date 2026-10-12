@@ -2,21 +2,22 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_effective_settings
+from app.db import SessionLocal
 from app.models import AiAnalysisRun
-from app.services.ai_analysis_scheduler import bump_next_run, get_or_create_settings
+from app.services.ai_analysis_scheduler import get_or_create_settings, record_run_outcome
+from app.services.ai_telegram_format import format_ai_telegram_message
 from app.services.chart_data import ChartDataService
 from app.services.execution_model import ExecutionModel
 from app.services.market_data import MarketDataService
 from app.services.siwc.credentials import get_access_token
 from app.services.siwc.responses_client import OpenAIResponsesError, list_models, stream_response
-from app.services.ai_telegram_format import format_ai_telegram_message
 from app.services.telegram_notifier import TelegramNotifier
 
 REQUIRED_INTERVALS = ("4h", "15m", "5m", "1m")
@@ -35,6 +36,20 @@ class MarketContextError(Exception):
         super().__init__(detail)
         self.code = code
         self.detail = detail
+
+
+@dataclass
+class _RunDraft:
+    status: str = "failed"
+    model_slug: str | None = None
+    decision: str | None = None
+    report_fa: str | None = None
+    structured: dict[str, Any] = field(default_factory=dict)
+    validation: dict[str, Any] = field(default_factory=dict)
+    telegram_sent: bool = False
+    error_code: str | None = None
+    error_detail: str | None = None
+    completed_at: datetime | None = None
 
 
 async def build_market_context(symbol: str) -> tuple[dict[str, Any], float]:
@@ -113,43 +128,77 @@ def _validate_levels(data: dict[str, Any], live: float) -> dict[str, Any]:
     return out
 
 
-async def run_ai_analysis(
-    session: AsyncSession,
-    *,
-    trigger: str = "scheduled",
-    model_override: str | None = None,
-) -> AiAnalysisRun:
+async def _create_run_record(*, trigger: str) -> int:
+    async with SessionLocal() as session:
+        run = AiAnalysisRun(
+            status="running",
+            trigger=trigger,
+            is_ai=True,
+            started_at=datetime.now(timezone.utc),
+        )
+        session.add(run)
+        await session.commit()
+        await session.refresh(run)
+        return run.id
+
+
+async def _persist_run_draft(run_id: int, draft: _RunDraft) -> AiAnalysisRun:
+    completed = draft.completed_at or datetime.now(timezone.utc)
+    async with SessionLocal() as session:
+        run = (
+            await session.execute(select(AiAnalysisRun).where(AiAnalysisRun.id == run_id))
+        ).scalar_one()
+        run.status = draft.status
+        run.model_slug = draft.model_slug
+        run.decision = draft.decision
+        run.report_fa = draft.report_fa
+        run.structured = draft.structured
+        run.validation = draft.validation
+        run.telegram_sent = draft.telegram_sent
+        run.error_code = draft.error_code
+        run.error_detail = draft.error_detail
+        run.completed_at = completed
+        cfg = await get_or_create_settings(session)
+        record_run_outcome(cfg, run.status, draft.error_detail)
+        await session.commit()
+        await session.refresh(run)
+        return run
+
+
+async def _execute_inference(*, run_id: int, trigger: str, model_override: str | None) -> _RunDraft:
+    """Network I/O only — no SQLite write transaction held on the run row."""
+    _ = run_id
     settings = get_effective_settings()
     symbol = settings.default_symbol
-    run = AiAnalysisRun(
-        status="running",
-        trigger=trigger,
-        is_ai=True,
-        started_at=datetime.now(timezone.utc),
-    )
-    session.add(run)
-    await session.flush()
+    draft = _RunDraft()
 
-    token, cred, err = await get_access_token(session)
+    async with SessionLocal() as session:
+        token, cred, err = await get_access_token(session)
+        await session.commit()
+
     if err or not token:
-        run.status = "failed"
-        run.error_code = err or "not_connected"
-        run.error_detail = "ChatGPT plan not connected"
-        run.completed_at = datetime.now(timezone.utc)
-        return run
+        draft.error_code = err or "not_connected"
+        draft.error_detail = "ChatGPT plan not connected"
+        draft.completed_at = datetime.now(timezone.utc)
+        return draft
 
-    model = model_override or cred.preferred_model  # type: ignore[union-attr]
+    model = model_override or (cred.preferred_model if cred else None)
     if not model:
-        models = await list_models(token)
-        model = models[0]["slug"] if models else None
+        try:
+            models = await list_models(token)
+            model = models[0]["slug"] if models else None
+        except Exception as exc:
+            draft.error_code = "model_list_failed"
+            draft.error_detail = str(exc)[:500]
+            draft.completed_at = datetime.now(timezone.utc)
+            return draft
     if not model:
-        run.status = "failed"
-        run.error_code = "no_model"
-        run.error_detail = "No listable model for this ChatGPT account"
-        run.completed_at = datetime.now(timezone.utc)
-        return run
+        draft.error_code = "no_model"
+        draft.error_detail = "No listable model for this ChatGPT account"
+        draft.completed_at = datetime.now(timezone.utc)
+        return draft
 
-    run.model_slug = model
+    draft.model_slug = model
     try:
         ctx, live = await build_market_context(symbol)
         user_payload = json.dumps(ctx, ensure_ascii=False)
@@ -161,45 +210,42 @@ async def run_ai_analysis(
         )
         structured = _extract_json(text)
         validation = _validate_levels(structured, live)
-        run.decision = str(structured.get("decision", "NO_TRADE")).upper()
-        run.report_fa = structured.get("report_fa") or text
-        run.structured = structured
-        run.validation = validation
-        run.status = "completed" if validation.get("ok") else "completed_with_warnings"
+        draft.decision = str(structured.get("decision", "NO_TRADE")).upper()
+        draft.report_fa = structured.get("report_fa") or text
+        draft.structured = structured
+        draft.validation = validation
+        draft.status = "completed" if validation.get("ok") else "completed_with_warnings"
         if validation.get("reasons"):
-            run.error_code = "validation_warning"
-            run.error_detail = ",".join(validation["reasons"])
+            draft.error_code = "validation_warning"
+            draft.error_detail = ",".join(validation["reasons"])
 
         notifier = TelegramNotifier()
-        if notifier.enabled and run.report_fa:
+        if notifier.enabled and draft.report_fa:
             msg = format_ai_telegram_message(
-                decision=run.decision,
-                report_fa=run.report_fa,
+                decision=draft.decision,
+                report_fa=draft.report_fa,
                 validation=validation,
             )
-            msg_id = await notifier.send_message(msg)
-            run.telegram_sent = msg_id is not None
+            msg_id = await notifier.send_ai_report(msg)
+            draft.telegram_sent = msg_id is not None
     except MarketContextError as exc:
-        run.status = "failed"
-        run.error_code = exc.code
-        run.error_detail = exc.detail
+        draft.status = "failed"
+        draft.error_code = exc.code
+        draft.error_detail = exc.detail
     except OpenAIResponsesError as exc:
-        run.status = "failed"
-        run.error_code = exc.code
-        run.error_detail = str(exc)
+        draft.status = "failed"
+        draft.error_code = exc.code
+        draft.error_detail = str(exc)
     except Exception as exc:
-        run.status = "failed"
-        run.error_code = "analysis_error"
-        run.error_detail = str(exc)[:500]
+        draft.status = "failed"
+        draft.error_code = "analysis_error"
+        draft.error_detail = str(exc)[:500]
     finally:
-        run.completed_at = datetime.now(timezone.utc)
+        draft.completed_at = datetime.now(timezone.utc)
+    return draft
 
-    cfg = await get_or_create_settings(session)
-    cfg.last_run_at = run.completed_at
-    if run.status.startswith("completed"):
-        cfg.last_success_at = run.completed_at
-        cfg.last_error = None
-        bump_next_run(cfg)
-    else:
-        cfg.last_error = run.error_detail
-    return run
+
+async def run_ai_analysis(*, trigger: str = "scheduled", model_override: str | None = None) -> AiAnalysisRun:
+    run_id = await _create_run_record(trigger=trigger)
+    draft = await _execute_inference(run_id=run_id, trigger=trigger, model_override=model_override)
+    return await _persist_run_draft(run_id, draft)

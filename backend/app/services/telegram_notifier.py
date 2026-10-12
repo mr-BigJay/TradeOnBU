@@ -63,7 +63,7 @@ class TelegramNotifier:
     async def send_message(
         self,
         text: str,
-        parse_mode: str = "Markdown",
+        parse_mode: str | None = "Markdown",
         reply_markup: dict[str, Any] | None = None,
     ) -> int | None:
         if not self.enabled:
@@ -73,8 +73,9 @@ class TelegramNotifier:
         payload: dict[str, Any] = {
             "chat_id": self.settings.telegram_chat_id,
             "text": text,
-            "parse_mode": parse_mode,
         }
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
         if reply_markup:
             payload["reply_markup"] = reply_markup
         async with httpx.AsyncClient(timeout=15.0) as client:
@@ -87,6 +88,10 @@ class TelegramNotifier:
                 logger.error("Telegram API not ok: %s", data)
                 return None
             return data.get("result", {}).get("message_id")
+
+    async def send_ai_report(self, text: str) -> int | None:
+        """Plain text — AI Persian reports may contain Markdown-special characters."""
+        return await self.send_message(text, parse_mode=None)
 
     async def notify_new_setup(self, signal: Signal) -> int | None:
         msg_id = await self.send_message(
