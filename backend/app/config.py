@@ -59,6 +59,12 @@ class Settings(BaseSettings):
     def cors_origins(self) -> list[str]:
         return [o.strip() for o in self.cors_allowed_origins.split(",") if o.strip()]
 
+    def effective_telegram_webhook(self) -> bool:
+        if not self.telegram_use_webhook:
+            return False
+        secret = self.telegram_webhook_secret or ""
+        return len(secret) >= 32
+
 
 @lru_cache
 def get_settings() -> Settings:

@@ -10,12 +10,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.domain.state_machine import TERMINAL_STATUSES, can_transition
 from app.models import Signal, SignalEvent, SignalStatus
 from app.services.entry_detection import SetupCandidate
-from app.services.paper_execution import PaperExecutionEngine
+from app.services.execution_model import ExecutionModel
 
 
 class SignalLifecycleService:
-    def __init__(self, paper: PaperExecutionEngine | None = None) -> None:
-        self.paper = paper or PaperExecutionEngine()
+    def __init__(self, paper: ExecutionModel | None = None) -> None:
+        self.paper = paper or ExecutionModel()
 
     async def log_event(
         self,
@@ -110,11 +110,6 @@ class SignalLifecycleService:
         await self.transition(session, sig, SignalStatus.WAITING_FOR_ENTRY.value, "ENTER_WAITING")
         return sig
 
-    def entry_distance_pct(self, signal: Signal, price: float) -> float:
-        if signal.entry_price == 0:
-            return 0.0
-        return abs(price - signal.entry_price) / signal.entry_price * 100
-
     def favorable_move_pct(self, signal: Signal, price: float) -> float:
         if signal.direction == "LONG":
             return (price - signal.entry_price) / signal.entry_price * 100
@@ -123,29 +118,24 @@ class SignalLifecycleService:
     def entry_triggered(self, signal: Signal, candle_high: float, candle_low: float, candle_close: float) -> tuple[bool, float]:
         entry = signal.entry_price
         et = signal.entry_type
+        fill_raw: float | None = None
         if signal.direction == "LONG":
             if et == "LIMIT":
-                touched = candle_low <= entry
-                fill_raw = entry if touched else None
+                fill_raw = entry if candle_low <= entry else None
             elif et == "STOP":
-                touched = candle_high >= entry
-                fill_raw = entry if touched else None
-            else:  # CONFIRMATION — need close beyond entry
-                touched = candle_close >= entry and candle_low <= entry
-                fill_raw = candle_close if touched else None
+                fill_raw = entry if candle_high >= entry else None
+            else:
+                fill_raw = candle_close if candle_close >= entry and candle_low <= entry else None
         else:
             if et == "LIMIT":
-                touched = candle_high >= entry
-                fill_raw = entry if touched else None
+                fill_raw = entry if candle_high >= entry else None
             elif et == "STOP":
-                touched = candle_low <= entry
-                fill_raw = entry if touched else None
+                fill_raw = entry if candle_low <= entry else None
             else:
-                touched = candle_close <= entry and candle_high >= entry
-                fill_raw = candle_close if touched else None
+                fill_raw = candle_close if candle_close <= entry and candle_high >= entry else None
         if fill_raw is None:
             return False, 0.0
-        fill = self.paper.simulate_fill(fill_raw, signal.direction, signal.entry_type, signal.entry_type == "STOP")
+        fill = self.paper.open_fill(fill_raw, signal.direction, et)
         return True, fill
 
     def check_invalidation(self, signal: Signal, price: float) -> bool:
@@ -160,32 +150,22 @@ class SignalLifecycleService:
         bar_low: float,
         bar_open: float,
     ) -> tuple[str | None, float | None, str | None]:
-        """Conservative intrabar resolution when both TP and SL touched."""
         if signal.direction == "LONG":
             hit_sl = bar_low <= signal.stop_loss
             hit_tp = bar_high >= signal.take_profit
             if hit_sl and hit_tp:
-                # Conservative: assume SL first if bar opened closer to SL side
-                dist_sl = abs(bar_open - signal.stop_loss)
-                dist_tp = abs(bar_open - signal.take_profit)
-                if dist_sl <= dist_tp:
-                    return SignalStatus.SL_HIT.value, self.paper.simulate_exit(signal.stop_loss, "LONG", False), "CONSERVATIVE_SL_FIRST"
-                return SignalStatus.TP_HIT.value, self.paper.simulate_exit(signal.take_profit, "LONG", True), "CONSERVATIVE_TP_FIRST"
+                return SignalStatus.SL_HIT.value, signal.stop_loss, "SL_FIRST_AMBIGUOUS"
             if hit_sl:
-                return SignalStatus.SL_HIT.value, self.paper.simulate_exit(signal.stop_loss, "LONG", False), None
+                return SignalStatus.SL_HIT.value, signal.stop_loss, None
             if hit_tp:
-                return SignalStatus.TP_HIT.value, self.paper.simulate_exit(signal.take_profit, "LONG", True), None
+                return SignalStatus.TP_HIT.value, signal.take_profit, None
         else:
             hit_sl = bar_high >= signal.stop_loss
             hit_tp = bar_low <= signal.take_profit
             if hit_sl and hit_tp:
-                dist_sl = abs(bar_open - signal.stop_loss)
-                dist_tp = abs(bar_open - signal.take_profit)
-                if dist_sl <= dist_tp:
-                    return SignalStatus.SL_HIT.value, self.paper.simulate_exit(signal.stop_loss, "SHORT", False), "CONSERVATIVE_SL_FIRST"
-                return SignalStatus.TP_HIT.value, self.paper.simulate_exit(signal.take_profit, "SHORT", True), "CONSERVATIVE_TP_FIRST"
+                return SignalStatus.SL_HIT.value, signal.stop_loss, "SL_FIRST_AMBIGUOUS"
             if hit_sl:
-                return SignalStatus.SL_HIT.value, self.paper.simulate_exit(signal.stop_loss, "SHORT", False), None
+                return SignalStatus.SL_HIT.value, signal.stop_loss, None
             if hit_tp:
-                return SignalStatus.TP_HIT.value, self.paper.simulate_exit(signal.take_profit, "SHORT", True), None
+                return SignalStatus.TP_HIT.value, signal.take_profit, None
         return None, None, None

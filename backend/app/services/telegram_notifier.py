@@ -19,6 +19,14 @@ class TelegramNotifier:
     def enabled(self) -> bool:
         return bool(self.settings.telegram_bot_token and self.settings.telegram_chat_id)
 
+    def public_chart_url(self, public_id: str) -> str | None:
+        url = (self.settings.dashboard_public_url or "").strip()
+        if not url.startswith("https://"):
+            return None
+        if "localhost" in url or "127.0.0.1" in url:
+            return None
+        return f"{url.rstrip('/')}/?signal={public_id}"
+
     def _inline_keyboard(self, public_id: str) -> dict[str, Any]:
         return {
             "inline_keyboard": [

@@ -5,10 +5,12 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+os.environ.setdefault("SKIP_CONFIG_GUARD", "1")
 os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///./data/test_tradeonbu.db")
-os.environ.setdefault("DASHBOARD_API_KEY", "test-dashboard-key")
-os.environ.setdefault("ADMIN_API_KEY", "test-admin-key")
+os.environ.setdefault("DASHBOARD_API_KEY", "test-dashboard-key-0123456789")
+os.environ.setdefault("ADMIN_API_KEY", "test-admin-key-0123456789ab")
 os.environ.setdefault("TELEGRAM_ALLOWED_USER_IDS", "111,222")
+os.environ.setdefault("TELEGRAM_WEBHOOK_SECRET", "x" * 32)
 
 from app.config import get_settings
 from app.db import Base, get_db
@@ -42,7 +44,21 @@ async def client():
 
     app.dependency_overrides[get_db] = _override_db
     transport = ASGITransport(app=app)
-    headers = {"X-API-Key": "test-dashboard-key"}
+    headers = {"X-API-Key": os.environ["DASHBOARD_API_KEY"]}
+    async with AsyncClient(transport=transport, base_url="http://test", headers=headers) as ac:
+        yield ac
+    app.dependency_overrides.clear()
+
+
+@pytest_asyncio.fixture
+async def admin_client():
+    async def _override_db():
+        async with TestSession() as s:
+            yield s
+
+    app.dependency_overrides[get_db] = _override_db
+    transport = ASGITransport(app=app)
+    headers = {"X-API-Key": os.environ["ADMIN_API_KEY"]}
     async with AsyncClient(transport=transport, base_url="http://test", headers=headers) as ac:
         yield ac
     app.dependency_overrides.clear()

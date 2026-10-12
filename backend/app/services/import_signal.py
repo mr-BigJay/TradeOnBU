@@ -51,7 +51,7 @@ class ImportSignalService:
         if direction == "SHORT" and req.stop_loss <= req.entry_price:
             return None, "Invalid SL for SHORT"
 
-        rr = self.paper.calc_rr(direction, req.entry_price, req.stop_loss, req.take_profit, min_net_rr)
+        rr = self.paper.calc_rr(direction, req.entry_price, req.stop_loss, req.take_profit, req.entry_type, min_net_rr)
         if not rr.acceptable:
             return None, f"Net R:R {rr.net_rr} below minimum {min_net_rr}"
 

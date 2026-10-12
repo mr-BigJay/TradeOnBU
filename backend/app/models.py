@@ -40,6 +40,15 @@ class SignalSource(str, enum.Enum):
     CHATGPT_IMPORT = "CHATGPT_IMPORT"
 
 
+class SystemState(Base):
+    __tablename__ = "system_state"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    telegram_update_offset: Mapped[int] = mapped_column(Integer, default=0)
+    worker_lock_owner: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    worker_lock_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class RuntimeSettings(Base):
     __tablename__ = "runtime_settings"
 
@@ -110,6 +119,7 @@ class Signal(Base):
     telegram_message_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     last_processed_candle_ms: Mapped[int] = mapped_column(Integer, default=0)
+    entry_activation_candle_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     dedupe_key: Mapped[str] = mapped_column(String(128), index=True)
 

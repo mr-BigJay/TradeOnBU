@@ -5,10 +5,12 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.candle_utils import candle_close_ms
+from app.domain.time_utils import ensure_utc
 from app.domain.candles import Candle
 from app.models import Signal, SignalStatus
+from app.services.execution_model import ExecutionModel, ExitOutcome
 from app.services.market_data import MarketDataService
-from app.services.paper_execution import PaperExecutionEngine
 from app.services.signal_lifecycle import SignalLifecycleService
 
 
@@ -17,46 +19,49 @@ class SignalMonitorService:
         self,
         market: MarketDataService,
         lifecycle: SignalLifecycleService,
-        paper: PaperExecutionEngine | None = None,
+        paper: ExecutionModel | None = None,
     ) -> None:
         self.market = market
         self.lifecycle = lifecycle
-        self.paper = paper or PaperExecutionEngine()
+        self.paper = paper or ExecutionModel()
 
-    def _signal_start_ms(self, signal: Signal) -> int:
-        if signal.status == SignalStatus.ACTIVE.value and signal.activated_at:
-            return int(signal.activated_at.timestamp() * 1000)
-        return int(signal.created_at.timestamp() * 1000)
+    def _approval_ms(self, signal: Signal) -> int | None:
+        if not signal.telegram_approval_required:
+            created = ensure_utc(signal.created_at) or datetime.now(timezone.utc)
+            return int(created.timestamp() * 1000)
+        if signal.telegram_approved_at:
+            approved = ensure_utc(signal.telegram_approved_at)
+            return int(approved.timestamp() * 1000) if approved else None
+        return None
 
-    def _pending_bars(
-        self,
-        signal: Signal,
-        candles: list[Candle],
-    ) -> list[Candle]:
-        start_ms = self._signal_start_ms(signal)
+    def _eligible_closed_bars(self, signal: Signal, closed: list[Candle], interval: str = "5m") -> list[Candle]:
         cursor = signal.last_processed_candle_ms or 0
-        return [c for c in candles if c.time_ms > cursor and c.time_ms >= start_ms]
+        approval_ms = self._approval_ms(signal)
+        bars = [b for b in closed if b.time_ms > cursor]
+        if approval_ms is not None:
+            bars = [b for b in bars if b.time_ms >= approval_ms]
+        elif signal.telegram_approval_required:
+            bars = []
+        return sorted(bars, key=lambda b: b.time_ms)
 
     async def _resolve_bar_conflict(
         self,
         signal: Signal,
         bar: Candle,
     ) -> tuple[str | None, float | None, str | None]:
-        status, exit_price, note = self.lifecycle.resolve_active_bar(
-            signal, bar.high, bar.low, bar.open
-        )
-        if status and (note is None or "CONSERVATIVE" not in (note or "")):
-            return status, exit_price, note
+        status, raw_exit, note = self.lifecycle.resolve_active_bar(signal, bar.high, bar.low, bar.open)
+        if not status or raw_exit is None:
+            return None, None, None
+        if note != "SL_FIRST_AMBIGUOUS":
+            return status, raw_exit, note
 
-        if status and note and "CONSERVATIVE" in note:
-            fine = await self.market.fetch_klines(signal.symbol, "1m", 10)
-            window = [c for c in fine if bar.time_ms <= c.time_ms < bar.time_ms + 5 * 60_000]
-            for c in window:
-                st, ex, nt = self.lifecycle.resolve_active_bar(signal, c.high, c.low, c.open)
-                if st:
-                    return st, ex, nt or "RESOLVED_1M"
-            return SignalStatus.SL_HIT.value, exit_price, note
-        return status, exit_price, note
+        fine_bundle = await self.market.fetch_kline_bundle(signal.symbol, "1m", 30)
+        window = [c for c in fine_bundle.closed if bar.time_ms <= c.time_ms < bar.time_ms + 5 * 60_000]
+        for c in window:
+            st, raw, nt = self.lifecycle.resolve_active_bar(signal, c.high, c.low, c.open)
+            if st:
+                return st, raw, nt or "RESOLVED_1M"
+        return SignalStatus.SL_HIT.value, signal.stop_loss, "SL_FIRST_AMBIGUOUS"
 
     async def process_waiting_unapproved(
         self,
@@ -69,21 +74,15 @@ class SignalMonitorService:
         events: list[str] = []
         if data_stale:
             await self.lifecycle.log_event(
-                session,
-                signal,
-                "DATA_STALE_SKIP",
-                signal.status,
-                signal.status,
-                note="Stale data; pending lifecycle checks paused",
+                session, signal, "DATA_STALE_SKIP", signal.status, signal.status, note="Stale quote"
             )
             return events
 
-        if signal.pending_expires_at and now >= signal.pending_expires_at:
+        expires = ensure_utc(signal.pending_expires_at)
+        if expires and now >= expires:
             await self.lifecycle.transition(session, signal, SignalStatus.EXPIRED.value, "PENDING_EXPIRED")
             events.append("EXPIRED")
-            return events
-
-        if self.lifecycle.check_invalidation(signal, quote_price):
+        elif self.lifecycle.check_invalidation(signal, quote_price):
             await self.lifecycle.transition(session, signal, SignalStatus.INVALIDATED.value, "STRUCTURE_INVALIDATED")
             events.append("INVALIDATED")
         return events
@@ -100,42 +99,28 @@ class SignalMonitorService:
         events: list[str] = []
         now = datetime.now(timezone.utc)
 
-        approved = not signal.telegram_approval_required or signal.telegram_approved is True
-        if not approved:
-            ev = await self.process_waiting_unapproved(session, signal, quote_price, now, data_stale)
-            if bars:
-                signal.last_processed_candle_ms = max(signal.last_processed_candle_ms, bars[-1].time_ms)
-            return ev
+        if signal.telegram_approval_required and signal.telegram_approved is not True:
+            return await self.process_waiting_unapproved(session, signal, quote_price, now, data_stale)
 
         if data_stale:
             await self.lifecycle.log_event(
-                session,
-                signal,
-                "DATA_STALE_SKIP",
-                signal.status,
-                signal.status,
-                note="Stale data; entry monitoring skipped",
+                session, signal, "DATA_STALE_SKIP", signal.status, signal.status, note="Stale quote"
             )
             return events
 
         if signal.status == SignalStatus.DATA_ERROR.value:
             await self.lifecycle.transition(
-                session,
-                signal,
-                SignalStatus.WAITING_FOR_ENTRY.value,
-                "DATA_RECOVERED",
-                note="Resumed waiting after recoverable data error",
+                session, signal, SignalStatus.WAITING_FOR_ENTRY.value, "DATA_RECOVERED", note="Recovered"
             )
 
-        if signal.pending_expires_at and now >= signal.pending_expires_at:
+        expires = ensure_utc(signal.pending_expires_at)
+        if expires and now >= expires:
             await self.lifecycle.transition(session, signal, SignalStatus.EXPIRED.value, "PENDING_EXPIRED")
-            events.append("EXPIRED")
-            return events
+            return ["EXPIRED"]
 
         if self.lifecycle.check_invalidation(signal, quote_price):
             await self.lifecycle.transition(session, signal, SignalStatus.INVALIDATED.value, "STRUCTURE_INVALIDATED")
-            events.append("INVALIDATED")
-            return events
+            return ["INVALIDATED"]
 
         fav = self.lifecycle.favorable_move_pct(signal, quote_price)
         if fav >= max_missed_entry_pct:
@@ -146,26 +131,27 @@ class SignalMonitorService:
                 "MISSED_ENTRY",
                 payload={"favorable_move_pct": fav},
             )
-            events.append("MISSED_ENTRY")
-            return events
+            return ["MISSED_ENTRY"]
 
         for bar in bars:
             triggered, fill = self.lifecycle.entry_triggered(signal, bar.high, bar.low, bar.close)
-            if triggered:
-                signal.fill_price = fill
-                signal.activated_at = now
-                signal.active_expires_at = now + timedelta(hours=signal.estimated_holding_hours)
-                await self.lifecycle.transition(
-                    session,
-                    signal,
-                    SignalStatus.ACTIVE.value,
-                    "ENTRY_ACTIVATED",
-                    payload={"fill_price": fill, "candle_ms": bar.time_ms},
-                )
-                events.append("ACTIVE")
-                signal.last_processed_candle_ms = bar.time_ms
-                return events
             signal.last_processed_candle_ms = bar.time_ms
+            if not triggered:
+                continue
+            close_ms = candle_close_ms(bar, "5m")
+            signal.fill_price = fill
+            signal.entry_activation_candle_ms = bar.time_ms
+            signal.activated_at = datetime.fromtimestamp(close_ms / 1000, tz=timezone.utc)
+            signal.active_expires_at = signal.activated_at + timedelta(hours=signal.estimated_holding_hours)
+            await self.lifecycle.transition(
+                session,
+                signal,
+                SignalStatus.ACTIVE.value,
+                "ENTRY_ACTIVATED",
+                payload={"fill_price": fill, "candle_ms": bar.time_ms, "activation_ms": close_ms},
+            )
+            events.append("ACTIVE")
+            return events
         return events
 
     async def process_active(
@@ -181,56 +167,53 @@ class SignalMonitorService:
 
         if data_stale:
             await self.lifecycle.log_event(
-                session,
-                signal,
-                "DATA_STALE_SKIP",
-                signal.status,
-                signal.status,
-                note="Stale data; active monitoring skipped",
+                session, signal, "DATA_STALE_SKIP", signal.status, signal.status, note="Stale quote"
             )
             return events
 
         if signal.status == SignalStatus.DATA_ERROR.value:
+            await self.lifecycle.transition(session, signal, SignalStatus.ACTIVE.value, "DATA_RECOVERED", note="Recovered")
+
+        activation_ms = signal.entry_activation_candle_ms or (
+            int(signal.activated_at.timestamp() * 1000) if signal.activated_at else 0
+        )
+        bars = [b for b in bars if b.time_ms >= activation_ms]
+
+        for bar in bars:
+            signal.last_processed_candle_ms = bar.time_ms
+            status, raw_exit, note = await self._resolve_bar_conflict(signal, bar)
+            if not status or raw_exit is None:
+                continue
+            outcome = ExitOutcome.TP if status == SignalStatus.TP_HIT.value else ExitOutcome.SL
+            fill = signal.fill_price or self.paper.open_fill(signal.entry_price, signal.direction, signal.entry_type)
+            exit_fill = self.paper.close_fill(raw_exit, signal.direction, outcome)
+            signal.exit_price = exit_fill
+            signal.exit_reason = status
+            signal.estimated_net_pnl_usdt = self.paper.net_pnl(signal.direction, fill, exit_fill)
             await self.lifecycle.transition(
                 session,
                 signal,
-                SignalStatus.ACTIVE.value,
-                "DATA_RECOVERED",
-                note="Resumed active monitoring after recoverable data error",
+                status,
+                status,
+                payload={"raw_exit": raw_exit, "exit_fill": exit_fill, "candle_ms": bar.time_ms},
+                note=note,
             )
+            events.append(status)
+            return events
 
-        for bar in bars:
-            status, exit_price, note = await self._resolve_bar_conflict(signal, bar)
-            if status and exit_price is not None:
-                signal.exit_price = exit_price
-                signal.exit_reason = status
-                fill = signal.fill_price or signal.entry_price
-                signal.estimated_net_pnl_usdt = self.paper.pnl_usdt(signal.direction, fill, exit_price)
-                await self.lifecycle.transition(
-                    session,
-                    signal,
-                    status,
-                    status,
-                    payload={"exit_price": exit_price, "candle_ms": bar.time_ms},
-                    note=note,
-                )
-                events.append(status)
-                signal.last_processed_candle_ms = bar.time_ms
-                return events
-            signal.last_processed_candle_ms = bar.time_ms
-
-        if signal.active_expires_at and now >= signal.active_expires_at:
-            exit_price = self.paper.simulate_exit(quote_price, signal.direction, hit_tp=False)
-            signal.exit_price = exit_price
+        active_expires = ensure_utc(signal.active_expires_at)
+        if active_expires and now >= active_expires:
+            fill = signal.fill_price or self.paper.open_fill(signal.entry_price, signal.direction, signal.entry_type)
+            exit_fill = self.paper.close_fill(quote_price, signal.direction, ExitOutcome.TIME)
+            signal.exit_price = exit_fill
             signal.exit_reason = SignalStatus.TIME_EXIT.value
-            fill = signal.fill_price or signal.entry_price
-            signal.estimated_net_pnl_usdt = self.paper.pnl_usdt(signal.direction, fill, exit_price)
+            signal.estimated_net_pnl_usdt = self.paper.net_pnl(signal.direction, fill, exit_fill)
             await self.lifecycle.transition(
                 session,
                 signal,
                 SignalStatus.TIME_EXIT.value,
                 "TIME_EXIT",
-                payload={"exit_price": exit_price},
+                payload={"raw_exit": quote_price, "exit_fill": exit_fill},
             )
             events.append("TIME_EXIT")
         return events
@@ -239,11 +222,7 @@ class SignalMonitorService:
         result = await session.execute(
             select(Signal).where(
                 Signal.status.in_(
-                    [
-                        SignalStatus.WAITING_FOR_ENTRY.value,
-                        SignalStatus.ACTIVE.value,
-                        SignalStatus.DATA_ERROR.value,
-                    ]
+                    [SignalStatus.WAITING_FOR_ENTRY.value, SignalStatus.ACTIVE.value, SignalStatus.DATA_ERROR.value]
                 )
             )
         )
@@ -251,43 +230,20 @@ class SignalMonitorService:
         if not signals:
             return {}
 
-        symbols = {s.symbol for s in signals}
-        symbol = next(iter(symbols))
+        symbol = signals[0].symbol
         quote = await self.market.fetch_live_price(symbol)
         stale = self.market.is_quote_stale(quote)
-        candles = await self.market.fetch_klines(symbol, "5m", 120)
-        confirmed = candles[:-1] if len(candles) > 1 else candles
+        bundle = await self.market.fetch_kline_bundle(symbol, "5m", 200)
 
         out: dict[str, list[str]] = {}
         for sig in signals:
-            bars = self._pending_bars(sig, confirmed)
-            if sig.status in (SignalStatus.WAITING_FOR_ENTRY.value, SignalStatus.DATA_ERROR.value) and (
-                sig.status != SignalStatus.DATA_ERROR.value or sig.telegram_approved
-            ):
-                if sig.status == SignalStatus.DATA_ERROR.value and not sig.telegram_approved:
-                    evs = await self.process_waiting_unapproved(
-                        session, sig, quote.price, datetime.now(timezone.utc), stale
-                    )
-                else:
-                    evs = await self.process_waiting(
-                        session,
-                        sig,
-                        settings_row.max_missed_entry_pct,
-                        quote.price,
-                        bars,
-                        stale,
-                    )
-            elif sig.status == SignalStatus.ACTIVE.value or (
-                sig.status == SignalStatus.DATA_ERROR.value and sig.activated_at
-            ):
-                active_bars = [
-                    b
-                    for b in bars
-                    if sig.activated_at and b.time_ms >= int(sig.activated_at.timestamp() * 1000)
-                ]
-                evs = await self.process_active(session, sig, active_bars, quote.price, stale)
+            bars = self._eligible_closed_bars(sig, bundle.closed, bundle.interval)
+            if sig.status in (SignalStatus.WAITING_FOR_ENTRY.value, SignalStatus.DATA_ERROR.value):
+                evs = await self.process_waiting(
+                    session, sig, settings_row.max_missed_entry_pct, quote.price, bars, stale
+                )
             else:
-                evs = []
+                evs = await self.process_active(session, sig, bars, quote.price, stale)
             if evs:
                 out[sig.public_id] = evs
         await session.commit()

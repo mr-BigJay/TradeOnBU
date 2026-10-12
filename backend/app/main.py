@@ -13,6 +13,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.bootstrap import validate_settings
 from app.config import get_settings
 from app.db import get_db, init_db
 from app.middleware.security import SecurityMiddleware
@@ -57,12 +58,20 @@ async def _telegram_poll_loop() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    validate_settings(settings)
     Path("data").mkdir(exist_ok=True)
     await init_db()
-    scheduler.add_job(worker.run_cycle, "interval", seconds=settings.scan_interval_seconds, id="ict_scan")
+    scheduler.add_job(
+        worker.run_cycle,
+        "interval",
+        seconds=settings.scan_interval_seconds,
+        id="ict_scan",
+        max_instances=1,
+        coalesce=True,
+    )
     scheduler.start()
     asyncio.create_task(worker.run_cycle())
-    if telegram_bot.enabled and not settings.telegram_use_webhook:
+    if telegram_bot.polling_enabled:
         asyncio.create_task(_telegram_poll_loop())
     yield
     scheduler.shutdown(wait=False)
@@ -235,8 +244,13 @@ async def telegram_approval(body: TelegramApprovalRequest, session: AsyncSession
 
 @app.post("/api/telegram/webhook/{secret}")
 async def telegram_webhook(secret: str, request: Request):
-    if settings.telegram_webhook_secret and secret != settings.telegram_webhook_secret:
+    if not settings.effective_telegram_webhook():
+        raise HTTPException(503, "Telegram webhook mode is disabled")
+    if secret != settings.telegram_webhook_secret:
         raise HTTPException(403, "Invalid webhook secret")
+    header_secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
+    if header_secret != settings.telegram_webhook_secret:
+        raise HTTPException(403, "Invalid Telegram secret token header")
     payload = await request.json()
     if "callback_query" in payload or "message" in payload:
         await telegram_bot.handle_update(payload)

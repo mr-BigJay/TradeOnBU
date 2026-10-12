@@ -26,6 +26,7 @@ SIGNAL_MIGRATIONS = [
     "ALTER TABLE signals ADD COLUMN telegram_approved_by VARCHAR(32)",
     "ALTER TABLE signals ADD COLUMN telegram_message_id INTEGER",
     "ALTER TABLE signals ADD COLUMN last_processed_candle_ms INTEGER DEFAULT 0",
+    "ALTER TABLE signals ADD COLUMN entry_activation_candle_ms INTEGER",
 ]
 
 

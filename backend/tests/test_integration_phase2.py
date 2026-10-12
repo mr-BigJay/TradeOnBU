@@ -6,6 +6,7 @@ from httpx import ASGITransport, AsyncClient
 
 from app.domain.candles import Candle
 from app.models import RuntimeSettings, SignalStatus
+from app.services.market_data import KlineBundle, LiveQuote
 from app.services.paper_execution import PaperExecutionEngine
 from app.services.signal_lifecycle import SignalLifecycleService
 from app.services.signal_monitor import SignalMonitorService
@@ -55,7 +56,6 @@ async def test_entry_not_active_before_approval(session):
     triggered, _ = lifecycle.entry_triggered(sig, 99.0, 100.0, 100.0)
     assert triggered is True
     monitor = SignalMonitorService(market=_FakeMarket(), lifecycle=lifecycle)
-    runtime = RuntimeSettings(id=1, max_pending_minutes=90, max_missed_entry_pct=0.3, holding_time_hours=6, min_net_rr=2)
     bars = [_bar(99, 100.5, 98.5, 100.0, 1_700_000_000_000)]
     ev = await monitor.process_waiting(session, sig, 0.3, 100.0, bars, False)
     assert "ACTIVE" not in ev
@@ -91,11 +91,15 @@ async def test_stale_data_no_trade_outcome(session):
 
 @pytest.mark.asyncio
 async def test_candle_cursor_prevents_reprocessing(session):
-    sig = make_signal(telegram_approved=True, last_processed_candle_ms=1_700_000_000_000)
+    sig = make_signal(
+        telegram_approved=True,
+        telegram_approved_at=datetime.fromtimestamp(0, tz=timezone.utc),
+        last_processed_candle_ms=1_700_000_000_000,
+    )
     session.add(sig)
     await session.commit()
     monitor = SignalMonitorService(market=_FakeMarket(), lifecycle=SignalLifecycleService())
-    bars = monitor._pending_bars(sig, [_bar(100, 101, 99, 100, 1_700_000_000_000)])
+    bars = monitor._eligible_closed_bars(sig, [_bar(100, 101, 99, 100, 1_700_000_000_000)])
     assert bars == []
 
 
@@ -105,8 +109,8 @@ async def test_conservative_sl_when_both_hit(session):
     sig = make_signal(status=SignalStatus.ACTIVE.value)
     sig.fill_price = 100.0
     status, price, note = lifecycle.resolve_active_bar(sig, 107, 97, 100)
-    assert status == SignalStatus.TP_HIT.value or status == SignalStatus.SL_HIT.value
-    assert note is not None
+    assert status == SignalStatus.SL_HIT.value
+    assert note == "SL_FIRST_AMBIGUOUS"
 
 
 @pytest.mark.asyncio
@@ -120,7 +124,7 @@ async def test_no_live_bitunix_order_endpoints(client):
 @pytest.mark.asyncio
 async def test_net_rr_with_fees():
     paper = PaperExecutionEngine()
-    rr = paper.calc_rr("LONG", 100, 98, 106, min_net_rr=1.0)
+    rr = paper.calc_rr("LONG", 100, 98, 106, "LIMIT", 1.0)
     assert rr.net_rr == round(rr.net_reward_usdt / abs(rr.net_loss_usdt), 3)
 
 
@@ -130,13 +134,21 @@ def _bar(o, h, l, c, t):
 
 class _FakeMarket:
     async def fetch_live_price(self, symbol):
-        from app.services.market_data import LiveQuote
-        from datetime import datetime, timezone
+        return LiveQuote(
+            100.0,
+            datetime.now(timezone.utc),
+            int(datetime.now(timezone.utc).timestamp() * 1000),
+            False,
+            "test",
+        )
 
-        return LiveQuote(100.0, datetime.now(timezone.utc), False, "test")
-
-    async def fetch_klines(self, symbol, interval, limit=200):
-        return [_bar(100, 101, 99, 100, 1_700_000_000_000)]
+    async def fetch_kline_bundle(self, symbol, interval, limit=200):
+        return KlineBundle(
+            closed=[_bar(100, 101, 99, 100, 1_700_000_000_000)],
+            forming=None,
+            gaps=[],
+            interval="5m",
+        )
 
     def is_quote_stale(self, quote):
         return False

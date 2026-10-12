@@ -11,6 +11,13 @@ from app.config import get_settings
 
 
 class SecurityMiddleware(BaseHTTPMiddleware):
+    ADMIN_PREFIXES = (
+        "/api/settings",
+        "/api/worker",
+        "/api/signals/import",
+        "/api/signals/telegram-approval",
+    )
+
     def __init__(self, app):
         super().__init__(app)
         self.settings = get_settings()
@@ -42,18 +49,13 @@ class SecurityMiddleware(BaseHTTPMiddleware):
             if not self._rate_limit_ok(client):
                 return JSONResponse({"detail": "Rate limit exceeded"}, status_code=429)
 
-            if not self.settings.dashboard_api_key and not self.settings.admin_api_key:
-                return await call_next(request)
-
-            api_key = request.headers.get("X-API-Key", "")
-            is_admin_path = path.startswith("/api/settings") or path.startswith("/api/worker") or path.startswith(
-                "/api/signals/import"
-            )
-            if is_admin_path:
-                if self.settings.admin_api_key and api_key != self.settings.admin_api_key:
-                    return JSONResponse({"detail": "Unauthorized"}, status_code=401)
-            elif self.settings.dashboard_api_key and api_key != self.settings.dashboard_api_key:
-                if api_key != self.settings.admin_api_key:
+            if self.settings.dashboard_api_key or self.settings.admin_api_key:
+                api_key = request.headers.get("X-API-Key", "")
+                is_admin = any(path.startswith(p) for p in self.ADMIN_PREFIXES)
+                if is_admin:
+                    if api_key != self.settings.admin_api_key:
+                        return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+                elif api_key not in (self.settings.dashboard_api_key, self.settings.admin_api_key):
                     return JSONResponse({"detail": "Unauthorized"}, status_code=401)
 
         return await call_next(request)

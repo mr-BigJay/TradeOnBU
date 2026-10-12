@@ -2,6 +2,15 @@
 
 Rule-based ICT analysis, Telegram inline approval, real Bitunix candlestick charts, and full paper-trading lifecycle. **No live Bitunix orders.**
 
+## Phase 2.1 reliability hotfix
+
+- Telegram allowlist **fail-closed** (empty list denies everyone)
+- Startup guard: strong `DASHBOARD_API_KEY` + `ADMIN_API_KEY` required (`SKIP_CONFIG_GUARD=1` for tests only)
+- Approval endpoints require **admin** key; webhook requires 32+ char secret + `X-Telegram-Bot-Api-Secret-Token`
+- Live price from Bitunix **tickers** (not stale candle close); closed vs forming candles by timeframe boundary
+- Paper fills only after `telegram_approved_at`; centralized `ExecutionModel`; structural TP only
+- Worker lock + Telegram offset persistence + idempotent notifications
+
 ## Phase 2 highlights
 
 - Strict ICT validation: Sweep → MSS + Displacement → fresh unmitigated FVG

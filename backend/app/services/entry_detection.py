@@ -117,7 +117,9 @@ class EntryDetectionService:
             invalidation = min(recent_lows[-2:])
             stop_loss = invalidation * 0.999
             liq = s5.liquidity_levels
-            tp_candidates = [lv for lv in liq if lv > entry_price] or [c5[-2].high * 1.002]
+            tp_candidates = [lv for lv in liq if lv > entry_price]
+            if not tp_candidates:
+                return _reject(symbol, direction, "NO_TRADE", {"reason": "NO_STRUCTURAL_LIQUIDITY_TP"})
             take_profit = min(tp_candidates)
         else:
             recent_highs = [s.price for s in swings if s.kind == "HIGH"]
@@ -126,10 +128,12 @@ class EntryDetectionService:
             invalidation = max(recent_highs[-2:])
             stop_loss = invalidation * 1.001
             liq = s5.liquidity_levels
-            tp_candidates = [lv for lv in liq if lv < entry_price] or [c5[-2].low * 0.998]
+            tp_candidates = [lv for lv in liq if lv < entry_price]
+            if not tp_candidates:
+                return _reject(symbol, direction, "NO_TRADE", {"reason": "NO_STRUCTURAL_LIQUIDITY_TP"})
             take_profit = max(tp_candidates)
 
-        rr = self.paper.calc_rr(direction, entry_price, stop_loss, take_profit, min_net_rr)
+        rr = self.paper.calc_rr(direction, entry_price, stop_loss, take_profit, EntryType.LIMIT.value, min_net_rr)
         if not rr.acceptable:
             return _reject(
                 symbol,
