@@ -170,7 +170,7 @@ async def test_long_setup_tracking_uses_historical_backfill(session):
     )
 
     async def fake_hist(_symbol, _interval, from_ms, max_bars=500):
-        assert from_ms <= int(created.timestamp() * 1000) + 1
+        assert from_ms >= int(created.timestamp() * 1000)
         return bundle
 
     market = AsyncMock()
@@ -310,11 +310,13 @@ async def test_failure_retry_single_backoff_not_hourly_loop(session):
     )
     session.add(cfg)
     await session.commit()
-    record_run_outcome(cfg, "failed", "openai_error")
+    record_run_outcome(cfg, "failed", "openai_error", trigger="scheduled")
     first_next = cfg.next_run_at
+    assert cfg.auto_retry_pending is True
     assert await should_run_scheduled(session) is False
-    record_run_outcome(cfg, "failed", "openai_error")
-    assert cfg.next_run_at > first_next
+    record_run_outcome(cfg, "failed", "openai_error", trigger="scheduled")
+    assert cfg.auto_retry_pending is False
+    assert cfg.next_run_at > first_next + timedelta(minutes=60)
 
 
 @pytest.mark.asyncio
@@ -345,7 +347,11 @@ async def test_siwc_live_max_reasoning_smoke():
             timeout=120.0,
         )
     except OpenAIResponsesError as exc:
-        assert exc.code in ("reasoning_max_unavailable", "model_downgraded", "http_error")
-        return
+        if exc.code in ("reasoning_max_unavailable", "model_downgraded", "reasoning_downgraded"):
+            return
+        pytest.fail(f"Unexpected OpenAI error for Max compatibility check: {exc.code}: {exc}")
     assert result.requested_reasoning_effort == "max"
-    assert result.confirmed_reasoning_effort in (None, "max")
+    if result.confirmed_reasoning_effort is not None:
+        assert result.confirmed_reasoning_effort == "max", (
+            f"Max requested but response confirmed effort={result.confirmed_reasoning_effort}"
+        )

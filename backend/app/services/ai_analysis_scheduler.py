@@ -64,17 +64,44 @@ async def scheduling_allowed(session: AsyncSession) -> tuple[bool, str | None]:
     return True, None
 
 
-def record_run_outcome(cfg: AiAnalysisSettings, run_status: str, error_detail: str | None = None) -> None:
+def _next_regular_run_at(cfg: AiAnalysisSettings, now: datetime) -> datetime:
+    interval = max(DEFAULT_AI_INTERVAL_MINUTES, cfg.interval_minutes)
+    anchor = cfg.last_success_at or cfg.last_run_at or now
+    anchor = _ensure_utc(anchor)
+    nxt = anchor + timedelta(minutes=interval)
+    if nxt <= now:
+        nxt = now + timedelta(minutes=interval)
+    return nxt
+
+
+def record_run_outcome(
+    cfg: AiAnalysisSettings,
+    run_status: str,
+    error_detail: str | None = None,
+    *,
+    trigger: str = "scheduled",
+) -> None:
     now = _utc_now()
     cfg.last_run_at = now
-    interval = max(DEFAULT_AI_INTERVAL_MINUTES, cfg.interval_minutes)
+    interval = max(DEFAULT_AI_INTERVAL_MINUTES, cfg.interval_minutes or DEFAULT_AI_INTERVAL_MINUTES)
     if run_status.startswith("completed"):
         cfg.last_success_at = now
         cfg.last_error = None
+        cfg.auto_retry_pending = False
         cfg.next_run_at = now + timedelta(minutes=interval)
-    else:
-        cfg.last_error = error_detail or "run_failed"
+        return
+
+    cfg.last_error = error_detail or "run_failed"
+    if trigger != "scheduled":
+        return
+
+    if not cfg.auto_retry_pending:
+        cfg.auto_retry_pending = True
         cfg.next_run_at = now + timedelta(minutes=FAILURE_BACKOFF_MINUTES)
+        return
+
+    cfg.auto_retry_pending = False
+    cfg.next_run_at = _next_regular_run_at(cfg, now)
 
 
 async def _try_acquire_analysis_lock(session: AsyncSession, owner: str, ttl_seconds: int) -> bool:

@@ -133,7 +133,7 @@ async def test_failure_backoff_does_not_schedule_hourly_routine(session):
         )
     )
     await session.commit()
-    record_run_outcome(cfg, "failed", "reasoning_max_unavailable")
+    record_run_outcome(cfg, "failed", "reasoning_max_unavailable", trigger="scheduled")
     await session.commit()
     assert cfg.next_run_at <= datetime.now(timezone.utc) + timedelta(minutes=20)
     assert cfg.next_run_at > datetime.now(timezone.utc) + timedelta(minutes=10)

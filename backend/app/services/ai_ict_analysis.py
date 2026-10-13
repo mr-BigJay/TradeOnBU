@@ -319,7 +319,7 @@ async def _persist_run_draft(run_id: int, draft: _RunDraft, *, symbol: str) -> A
             draft.structured = _merge_artifacts(draft.structured, {"setup_persistence": setup_meta})
             run.structured = draft.structured
         cfg = await get_or_create_settings(session)
-        record_run_outcome(cfg, run.status, draft.error_detail)
+        record_run_outcome(cfg, run.status, draft.error_detail, trigger=run.trigger or "scheduled")
         await session.commit()
         await session.refresh(run)
         return run

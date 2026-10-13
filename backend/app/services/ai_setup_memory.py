@@ -77,7 +77,7 @@ def serialize_setup_row(row: AiProposedSetup) -> dict[str, Any]:
 
 
 async def load_open_setups(session: AsyncSession, symbol: str) -> list[AiProposedSetup]:
-    now = _utc()
+    """Open setups only — expiry is applied after final price tracking pass."""
     rows = (
         await session.execute(
             select(AiProposedSetup)
@@ -87,15 +87,26 @@ async def load_open_setups(session: AsyncSession, symbol: str) -> list[AiPropose
             .limit(20)
         )
     ).scalars().all()
-    for row in rows:
-        if row.expires_at and _ensure_utc(row.expires_at) < now:
-            row.status = "expired"
-            row.closed_at = now
-            notes = _notes(row)
-            notes["lifecycle_phase"] = LIFECYCLE_EXPIRED
-            _save_notes(row, notes)
-    await session.flush()
-    return [r for r in rows if r.status == "open"]
+    return list(rows)
+
+
+def _tracking_start_ms(setup: AiProposedSetup) -> int:
+    """First 5m bar open strictly after setup creation (ignore pre-creation overlap)."""
+    created_ms = int(_ensure_utc(setup.created_at).timestamp() * 1000)
+    step = interval_ms("5m")
+    return ((created_ms // step) + 1) * step
+
+
+def _mark_expired_if_due(setup: AiProposedSetup, now: datetime | None = None) -> None:
+    now = now or _utc()
+    if setup.status != "open" or not setup.expires_at:
+        return
+    if _ensure_utc(setup.expires_at) <= now:
+        setup.status = "expired"
+        setup.closed_at = now
+        notes = _notes(setup)
+        notes["lifecycle_phase"] = LIFECYCLE_EXPIRED
+        _save_notes(setup, notes)
 
 
 async def load_recent_closed_setups(session: AsyncSession, symbol: str, limit: int = 12) -> list[AiProposedSetup]:
@@ -185,11 +196,16 @@ def apply_objective_price_tracking(
     candles: list[Candle],
     *,
     bundle: KlineBundle | None = None,
+    watermark_ms: int = 0,
 ) -> None:
     """Chronological objective touches — never implies a paper fill."""
+    notes = _notes(setup)
+    phase = notes.get("lifecycle_phase", LIFECYCLE_ENTRY_NOT_REACHED)
+    if phase == LIFECYCLE_SAME_CANDLE_AMBIGUOUS and not candles:
+        return
+
     if not candles:
         if bundle and (bundle.gaps_remaining or not bundle.data_complete):
-            notes = _notes(setup)
             notes["lifecycle_phase"] = LIFECYCLE_UNKNOWN_MISSING_DATA
             notes["tracking_warning"] = "No candles in window; history may be incomplete."
             _save_notes(setup, notes)
@@ -200,7 +216,6 @@ def apply_objective_price_tracking(
     sl = setup.stop_loss
     tp = setup.take_profit
     inv = setup.invalidation_level
-    notes = _notes(setup)
     notes.setdefault("disclaimer", "Touches are objective price observations, not paper fills.")
     phase = notes.get("lifecycle_phase", LIFECYCLE_ENTRY_NOT_REACHED)
     entry_reached = setup.entry_touched or phase in (
@@ -210,8 +225,13 @@ def apply_objective_price_tracking(
         LIFECYCLE_SAME_CANDLE_AMBIGUOUS,
     )
 
-    sorted_candles = sorted(candles, key=lambda c: c.time_ms)
+    sorted_candles = sorted(
+        (c for c in candles if c.time_ms > watermark_ms),
+        key=lambda c: c.time_ms,
+    )
     for c in sorted_candles:
+        if phase == LIFECYCLE_SAME_CANDLE_AMBIGUOUS:
+            break
         if inv is not None:
             if direction == "LONG" and c.close < inv:
                 setup.status = "invalidated"
@@ -238,6 +258,7 @@ def apply_objective_price_tracking(
                 setup.entry_touched = True
                 entry_reached = True
                 notes["lifecycle_phase"] = LIFECYCLE_SAME_CANDLE_AMBIGUOUS
+                phase = LIFECYCLE_SAME_CANDLE_AMBIGUOUS
                 _record_first_touch(notes, "entry", c.time_ms)
                 if sl_hit:
                     _record_first_touch(notes, "sl_same_candle", c.time_ms)
@@ -264,48 +285,93 @@ def apply_objective_price_tracking(
                 notes["lifecycle_phase"] = LIFECYCLE_ENTRY_NOT_REACHED
             continue
 
+        if sl_hit and tp_hit:
+            setup.sequencing_ambiguous = True
+            _record_first_touch(notes, "sl_post_entry", c.time_ms)
+            _record_first_touch(notes, "tp_post_entry", c.time_ms)
+            notes["lifecycle_phase"] = LIFECYCLE_SAME_CANDLE_AMBIGUOUS
+            notes["post_entry_same_candle"] = True
+            phase = LIFECYCLE_SAME_CANDLE_AMBIGUOUS
+            continue
         if sl_hit:
             _record_first_touch(notes, "sl_post_entry", c.time_ms)
             setup.sl_touched = True
             notes["lifecycle_phase"] = LIFECYCLE_SL_AFTER_ENTRY
-        if tp_hit:
+            phase = LIFECYCLE_SL_AFTER_ENTRY
+        elif tp_hit:
             _record_first_touch(notes, "tp_post_entry", c.time_ms)
             setup.tp_touched = True
-            if notes.get("lifecycle_phase") != LIFECYCLE_SL_AFTER_ENTRY:
-                notes["lifecycle_phase"] = LIFECYCLE_TP_AFTER_ENTRY
+            notes["lifecycle_phase"] = LIFECYCLE_TP_AFTER_ENTRY
+            phase = LIFECYCLE_TP_AFTER_ENTRY
 
     if bundle and (bundle.gaps_remaining or not bundle.data_complete):
         notes["data_gaps"] = {
-            "gaps_remaining": len(bundle.gaps_remaining or []),
+            "gaps_remaining": list(bundle.gaps_remaining or [])[:20],
             "data_complete": bundle.data_complete,
         }
-        if notes.get("lifecycle_phase") == LIFECYCLE_ENTRY_NOT_REACHED and not sorted_candles:
+        if notes.get("lifecycle_phase") == LIFECYCLE_ENTRY_NOT_REACHED:
             notes["lifecycle_phase"] = LIFECYCLE_UNKNOWN_MISSING_DATA
 
     _save_notes(setup, notes)
+
+
+def _advance_tracking_watermark(
+    setup: AiProposedSetup,
+    scoped: list[Candle],
+    bundle: KlineBundle | None,
+    from_ms: int,
+) -> None:
+    notes = _notes(setup)
+    if bundle and (bundle.gaps_remaining or not bundle.data_complete):
+        notes["pending_tracking_from_ms"] = from_ms
+        notes["missing_intervals"] = list(bundle.gaps_remaining or [])[:20]
+        notes["lifecycle_phase"] = LIFECYCLE_UNKNOWN_MISSING_DATA
+        _save_notes(setup, notes)
+        if bundle.gaps_remaining and scoped:
+            first_gap = min(bundle.gaps_remaining)
+            safe = [c for c in scoped if c.time_ms < first_gap]
+            if safe:
+                setup.last_tracked_candle_ms = max(c.time_ms for c in safe)
+        return
+    if scoped:
+        setup.last_tracked_candle_ms = max(c.time_ms for c in scoped)
 
 
 async def _fetch_setup_tracking_candles(
     market: MarketDataService,
     symbol: str,
     setup: AiProposedSetup,
-) -> tuple[list[Candle], KlineBundle | None]:
-    created_ms = int(_ensure_utc(setup.created_at).timestamp() * 1000)
+) -> tuple[list[Candle], KlineBundle | None, int]:
     step = interval_ms("5m")
-    from_ms = setup.last_tracked_candle_ms + step if setup.last_tracked_candle_ms else created_ms
+    start_ms = _tracking_start_ms(setup)
+    if setup.last_tracked_candle_ms:
+        from_ms = setup.last_tracked_candle_ms + step
+    else:
+        from_ms = start_ms
+
     now = _utc()
-    if setup.expires_at and _ensure_utc(setup.expires_at) < now:
-        return [], None
+    end_ms: int | None = None
+    if setup.expires_at:
+        end_ms = int(_ensure_utc(setup.expires_at).timestamp() * 1000)
+
     try:
         bundle = await market.fetch_historical_closed(symbol, "5m", from_ms, max_bars=2000)
     except Exception as exc:
         notes = _notes(setup)
         notes["fetch_error"] = str(exc)[:300]
         notes["lifecycle_phase"] = LIFECYCLE_UNKNOWN_MISSING_DATA
+        notes["pending_tracking_from_ms"] = from_ms
         _save_notes(setup, notes)
-        return [], None
-    scoped = [c for c in bundle.closed if c.time_ms >= from_ms - step]
-    return scoped, bundle
+        return [], None, from_ms
+
+    scoped = [
+        c
+        for c in bundle.closed
+        if c.time_ms >= from_ms and c.time_ms >= start_ms and (end_ms is None or c.time_ms <= end_ms)
+    ]
+    if end_ms and _ensure_utc(setup.expires_at) <= now and not scoped and from_ms > end_ms:
+        return [], bundle, from_ms
+    return scoped, bundle, from_ms
 
 
 async def refresh_setup_objective_state(
@@ -316,19 +382,25 @@ async def refresh_setup_objective_state(
     market: MarketDataService | None = None,
 ) -> list[AiProposedSetup]:
     market = market or MarketDataService()
+    now = _utc()
     setups = await load_open_setups(session, symbol)
     for setup in setups:
-        scoped, bundle = await _fetch_setup_tracking_candles(market, symbol, setup)
+        watermark = setup.last_tracked_candle_ms or 0
+        scoped, bundle, from_ms = await _fetch_setup_tracking_candles(market, symbol, setup)
         if not scoped and candles_by_interval:
             track = candles_by_interval.get("5m") or candles_by_interval.get("1m") or []
-            since_ms = setup.last_tracked_candle_ms or int(_ensure_utc(setup.created_at).timestamp() * 1000)
-            scoped = [c for c in track if c.time_ms >= since_ms]
+            start_ms = _tracking_start_ms(setup)
+            scoped = [
+                c
+                for c in track
+                if c.time_ms > watermark and c.time_ms >= start_ms
+            ]
             bundle = None
-        apply_objective_price_tracking(setup, scoped, bundle=bundle)
-        if scoped:
-            setup.last_tracked_candle_ms = max(c.time_ms for c in scoped)
+        apply_objective_price_tracking(setup, scoped, bundle=bundle, watermark_ms=watermark)
+        _advance_tracking_watermark(setup, scoped, bundle, from_ms)
+        _mark_expired_if_due(setup, now)
     await session.flush()
-    return setups
+    return [s for s in setups if s.status == "open"]
 
 
 def _parse_float(val: Any) -> float | None:
@@ -361,6 +433,20 @@ def _levels_similar(a: float | None, b: float | None, ref: float) -> bool:
         return False
     tol = ref * (LEVEL_DEDUPE_TOLERANCE_PCT / 100.0)
     return abs(a - b) <= tol
+
+
+def _levels_materially_different(
+    row: AiProposedSetup,
+    entry: float,
+    sl: float,
+    tp: float,
+) -> bool:
+    ref = entry
+    if row.entry_price is not None and _levels_similar(row.entry_price, entry, ref):
+        sl_same = row.stop_loss is not None and _levels_similar(row.stop_loss, sl, ref)
+        tp_same = row.take_profit is not None and _levels_similar(row.take_profit, tp, ref)
+        return not (sl_same and tp_same)
+    return True
 
 
 async def _find_duplicate_open(
@@ -425,31 +511,41 @@ async def create_setup_from_structured(
         existing = (
             await session.execute(select(AiProposedSetup).where(AiProposedSetup.setup_id == str(continue_id)))
         ).scalar_one_or_none()
-        if existing and existing.status == "open":
-            existing.run_id = run_id
-            existing.thesis_fa = proposed.get("thesis_fa") or structured.get("thesis_fa") or existing.thesis_fa
-            existing.structured_snapshot = structured
-            meta["updated"] = True
-            meta["setup_id"] = existing.setup_id
-            await session.flush()
-            return existing, meta
-        meta["skipped"] = True
-        meta["reason"] = "continue_setup_not_found"
-        return None, meta
+        if not existing or existing.status != "open":
+            meta["skipped"] = True
+            meta["reason"] = "continue_setup_not_found"
+            return None, meta
+        if existing.symbol != symbol or (existing.direction or "").upper() != decision:
+            meta["skipped"] = True
+            meta["reason"] = "continue_setup_mismatch"
+            return None, meta
+        existing.run_id = run_id
+        existing.thesis_fa = proposed.get("thesis_fa") or structured.get("thesis_fa") or existing.thesis_fa
+        existing.structured_snapshot = structured
+        meta["updated"] = True
+        meta["setup_id"] = existing.setup_id
+        await session.flush()
+        return existing, meta
+
+    dup = await _find_duplicate_open(session, symbol=symbol, direction=decision, entry=entry)
+    if dup and not _levels_materially_different(dup, entry, sl, tp):
+        dup.run_id = run_id
+        dup.thesis_fa = proposed.get("thesis_fa") or structured.get("thesis_fa") or dup.thesis_fa
+        dup.structured_snapshot = structured
+        meta["updated"] = True
+        meta["setup_id"] = dup.setup_id
+        meta["reason"] = "deduped_open_setup"
+        await session.flush()
+        return dup, meta
 
     if not new_setup:
-        dup = await _find_duplicate_open(session, symbol=symbol, direction=decision, entry=entry)
-        if dup:
-            dup.run_id = run_id
-            dup.thesis_fa = proposed.get("thesis_fa") or structured.get("thesis_fa") or dup.thesis_fa
-            dup.structured_snapshot = structured
-            meta["updated"] = True
-            meta["setup_id"] = dup.setup_id
-            meta["reason"] = "deduped_open_setup"
-            await session.flush()
-            return dup, meta
         meta["skipped"] = True
         meta["reason"] = "new_setup_not_declared"
+        return None, meta
+
+    if dup and not proposed.get("distinct_new_setup"):
+        meta["skipped"] = True
+        meta["reason"] = "duplicate_open_requires_distinct_new_setup"
         return None, meta
 
     row = AiProposedSetup(

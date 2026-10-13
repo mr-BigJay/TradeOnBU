@@ -168,6 +168,7 @@ class AiAnalysisSettings(Base):
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     interval_migrated_from_60: Mapped[bool] = mapped_column(default=False)
+    auto_retry_pending: Mapped[bool] = mapped_column(default=False)
 
 
 class AiProposedSetup(Base):
