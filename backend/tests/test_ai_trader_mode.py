@@ -23,6 +23,8 @@ def test_trader_instructions_contain_professional_ict_trader_guidance():
     assert "max 150 words" in text
     assert "max 250 words" in text
     assert "Previous Setup Review" in text
+    assert "first ~30%" in text
+    assert "Never bury Direction/Entry/SL/TP at the end" in text
     assert INSTRUCTIONS is ICT_TRADER_INSTRUCTIONS
 
 

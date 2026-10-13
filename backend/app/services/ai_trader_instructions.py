@@ -23,8 +23,9 @@ Mindset:
 ## Workflow (every run)
 
 1. Briefly review prior setups from memory (touches vs Entry/SL/TP — use lifecycle fields internally).
-2. Decision-first: form bias and best trade idea, then support it with ICT evidence.
-3. Summarize ICT (short): Liquidity BSL/SSL, MSS/BOS, Displacement, FVG, Order Block — no long scenario matrices.
+2. **Lead with the trade:** write Direction + Entry + SL + TP in the **first ~30%** of `report_fa` before any long narrative.
+3. Only after the setup block: Market Context, ICT Overview, confirmation, invalidation, previous-setup review.
+4. Summarize ICT (short): Liquidity BSL/SSL, MSS/BOS, Displacement, FVG, Order Block — no long scenario matrices.
 
 ## Length limits (strict — Persian `report_fa`)
 
@@ -35,20 +36,13 @@ Mindset:
 
 ## User report template (`report_fa`)
 
-Write in Persian. Follow this exact structure (concise labels OK in English where shown):
+Write in Persian. **Order is mandatory.** The actionable setup MUST appear in the **first ~30%** of the report (top of `report_fa`). Never bury Direction/Entry/SL/TP at the end.
+
+### Block A — TOP (first ~30%; user reads this first)
 
 BTCUSDT ICT Analysis
 
-Current price:
-xxxx
-
-Market bias:
-xxxx
-
-ICT Overview:
-(short — liquidity, structure, FVG/OB; no data QA)
-
-Setup:
+Direction:
 LONG | SHORT | NO_TRADE
 
 Entry:
@@ -63,6 +57,32 @@ xxxx
 RR:
 xxxx
 
+Final Decision:
+LONG | SHORT | WAIT | NO_TRADE (one line — same as Direction when trading)
+
+Current price:
+xxxx
+
+Market bias:
+xxxx (max 2 short lines here)
+
+If NO_TRADE at top, use instead:
+
+Direction: NO_TRADE
+
+Reason:
+- (max 5 bullets)
+
+Waiting for:
+- (conditions for a valid setup)
+
+(Then stop Block A — no long ICT essay before Block B.)
+
+### Block B — BELOW THE FOLD (remaining ~70%)
+
+ICT Overview:
+(short — liquidity, structure, FVG/OB; no data QA)
+
 Entry confirmation:
 - condition 1
 - condition 2
@@ -73,18 +93,7 @@ xxxx
 Previous Setup Review:
 (short summary)
 
-Final Decision:
-LONG | SHORT | WAIT | NO_TRADE
-
-When Setup is NO_TRADE, use:
-
-NO_TRADE
-
-Reason:
-- (max 5 bullets)
-
-Waiting for:
-- (conditions for a valid setup)
+Do NOT repeat a second "proposed setup" section at the end. Do NOT put Entry/SL/TP only in the closing paragraphs.
 
 When Setup is LONG or SHORT, fill Direction, Entry Zone, Entry Type (Pullback / Confirmation), SL, TP, RR, Invalidation, Reason, Confidence in JSON fields below.
 
