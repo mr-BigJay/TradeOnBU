@@ -217,6 +217,61 @@ def _long_setup(**kwargs) -> AiProposedSetup:
     return AiProposedSetup(**defaults)
 
 
+def test_terminal_tp_not_overwritten_by_later_invalidation():
+    setup = _long_setup(
+        entry_touched=True,
+        invalidation_level=99.0,
+        objective_notes={"lifecycle_phase": "entry_touched"},
+    )
+    apply_objective_price_tracking(
+        setup,
+        [
+            Candle(open=104, high=106, low=103, close=105, time_ms=1000),
+            Candle(open=98, high=98.5, low=97.5, close=97.8, time_ms=2000),
+        ],
+        watermark_ms=0,
+    )
+    assert setup.objective_notes["lifecycle_phase"] == LIFECYCLE_TP_AFTER_ENTRY
+    assert setup.status == "open"
+
+
+def test_expiry_straddle_does_not_count_touch():
+    exp = datetime(2026, 6, 15, 12, 7, 30, tzinfo=timezone.utc)
+    exp_ms = int(exp.timestamp() * 1000)
+    step = 300_000
+    open_ms = exp_ms - 120_000
+    setup = _long_setup(
+        expires_at=exp,
+        created_at=exp - timedelta(hours=1),
+        objective_notes={},
+    )
+    straddle = Candle(open=100, high=101, low=99.5, close=100.5, time_ms=open_ms)
+    assert straddle.time_ms < exp_ms < open_ms + step
+    apply_objective_price_tracking(setup, [straddle], watermark_ms=0)
+    assert not setup.entry_touched
+    assert setup.objective_notes.get("expiry_boundary_uncertain") is True
+
+
+def test_fully_closed_bar_before_non_aligned_expiry_counts():
+    exp = datetime(2026, 6, 15, 12, 7, 30, tzinfo=timezone.utc)
+    exp_ms = int(exp.timestamp() * 1000)
+    step = 300_000
+    open_ms = ((exp_ms - step) // step) * step
+    while open_ms + step > exp_ms:
+        open_ms -= step
+    setup = _long_setup(
+        expires_at=exp,
+        created_at=exp - timedelta(hours=1),
+        entry_zone_low=99.0,
+        entry_zone_high=101.0,
+    )
+    eligible = Candle(open=100, high=100.5, low=99.6, close=100.2, time_ms=open_ms)
+    assert open_ms + step <= exp_ms
+    apply_objective_price_tracking(setup, [eligible], watermark_ms=0)
+    assert setup.entry_touched is True
+    assert not setup.objective_notes.get("expiry_boundary_uncertain")
+
+
 def test_terminal_tp_immutable_after_later_sl():
     setup = _long_setup(entry_touched=True, objective_notes={"lifecycle_phase": "entry_touched"})
     apply_objective_price_tracking(

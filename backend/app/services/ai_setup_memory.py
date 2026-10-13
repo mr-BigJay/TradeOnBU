@@ -8,7 +8,7 @@ from typing import Any
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.candle_utils import interval_ms
+from app.domain.candle_utils import candle_close_ms, interval_ms
 from app.domain.candles import Candle
 from app.models import AiAnalysisRun, AiProposedSetup
 from app.services.market_data import KlineBundle, MarketDataService
@@ -76,16 +76,32 @@ def _tracking_start_ms(setup: AiProposedSetup) -> int:
     return ((created_ms // step) + 1) * step
 
 
-def _last_required_tracking_ms(setup: AiProposedSetup) -> int:
+def _last_required_tracking_ms(setup: AiProposedSetup, interval: str = "5m") -> int:
     start_ms = _tracking_start_ms(setup)
     if not setup.expires_at:
         return start_ms
     exp_ms = int(_ensure_utc(setup.expires_at).timestamp() * 1000)
-    step = interval_ms("5m")
-    last_open = exp_ms - step
-    while last_open >= exp_ms:
+    step = interval_ms(interval)
+    last_open = (exp_ms // step) * step
+    while last_open + step > exp_ms:
         last_open -= step
     return max(start_ms, last_open)
+
+
+def _candle_straddles_expiry(setup: AiProposedSetup, candle: Candle, interval: str = "5m") -> bool:
+    if not setup.expires_at:
+        return False
+    exp_ms = int(_ensure_utc(setup.expires_at).timestamp() * 1000)
+    close_ms = candle_close_ms(candle, interval)
+    return candle.time_ms < exp_ms < close_ms
+
+
+def _candle_fully_eligible_before_expiry(setup: AiProposedSetup, candle: Candle, interval: str = "5m") -> bool:
+    """Bar must fully close at or before expiry to prove pre-expiry touches."""
+    if not setup.expires_at:
+        return True
+    exp_ms = int(_ensure_utc(setup.expires_at).timestamp() * 1000)
+    return candle_close_ms(candle, interval) <= exp_ms
 
 
 def _validity_window_needs_more_tracking(setup: AiProposedSetup, now: datetime) -> bool:
@@ -133,12 +149,31 @@ def _is_post_entry_terminal_phase(phase: str | None) -> bool:
     return phase in POST_ENTRY_TERMINAL_PHASES
 
 
-def _candle_within_validity(setup: AiProposedSetup, candle: Candle) -> bool:
-    """Conservative: only bars that open strictly before expiry instant."""
-    if not setup.expires_at:
-        return True
-    exp_ms = int(_ensure_utc(setup.expires_at).timestamp() * 1000)
-    return candle.time_ms < exp_ms
+def _candle_within_validity(setup: AiProposedSetup, candle: Candle, interval: str = "5m") -> bool:
+    """Fully closed before expiry (open straddling expiry is handled separately)."""
+    if _candle_straddles_expiry(setup, candle, interval):
+        return False
+    return _candle_fully_eligible_before_expiry(setup, candle, interval)
+
+
+def _partition_candles_for_validity(
+    setup: AiProposedSetup,
+    candles: list[Candle],
+    *,
+    watermark_ms: int,
+    interval: str = "5m",
+) -> tuple[list[Candle], list[int]]:
+    eligible: list[Candle] = []
+    straddle_ms: list[int] = []
+    for c in sorted(candles, key=lambda x: x.time_ms):
+        if c.time_ms <= watermark_ms:
+            continue
+        if _candle_straddles_expiry(setup, c, interval):
+            straddle_ms.append(c.time_ms)
+            continue
+        if _candle_fully_eligible_before_expiry(setup, c, interval):
+            eligible.append(c)
+    return eligible, straddle_ms
 
 
 def _verified_contiguous_prefix(scoped: list[Candle], bundle: KlineBundle | None) -> list[Candle]:
@@ -416,30 +451,18 @@ def apply_objective_price_tracking(
         LIFECYCLE_SAME_CANDLE_AMBIGUOUS,
     )
 
-    sorted_candles = sorted(
-        (c for c in candles if c.time_ms > watermark_ms and _candle_within_validity(setup, c)),
-        key=lambda c: c.time_ms,
+    sorted_candles, straddle_ms = _partition_candles_for_validity(
+        setup, candles, watermark_ms=watermark_ms, interval="5m"
     )
+    if straddle_ms:
+        notes["expiry_boundary_uncertain"] = True
+        notes["expiry_boundary_straddle_candles_ms"] = straddle_ms[:20]
+
     for c in sorted_candles:
         if phase == LIFECYCLE_SAME_CANDLE_AMBIGUOUS:
             break
-        if inv is not None:
-            if direction == "LONG" and c.close < inv:
-                setup.status = "invalidated"
-                setup.closed_at = _utc()
-                notes["lifecycle_phase"] = LIFECYCLE_INVALIDATED
-                notes["outcome_tracking_status"] = TRACKING_COMPLETE
-                _record_first_touch(notes, "invalidation", c.time_ms)
-                _save_notes(setup, notes)
-                return
-            if direction == "SHORT" and c.close > inv:
-                setup.status = "invalidated"
-                setup.closed_at = _utc()
-                notes["lifecycle_phase"] = LIFECYCLE_INVALIDATED
-                notes["outcome_tracking_status"] = TRACKING_COMPLETE
-                _record_first_touch(notes, "invalidation", c.time_ms)
-                _save_notes(setup, notes)
-                return
+        if _is_post_entry_terminal_phase(phase):
+            continue
 
         entry_hit = _touch_entry(c, entry_lo, entry_hi)
         sl_hit = _touch_sl(c, direction, sl)
@@ -477,10 +500,44 @@ def apply_objective_price_tracking(
                 phase = LIFECYCLE_ENTRY_TOUCHED
             elif phase == LIFECYCLE_ENTRY_NOT_REACHED and not sl_hit and not tp_hit:
                 notes["lifecycle_phase"] = LIFECYCLE_ENTRY_NOT_REACHED
+
+            if inv is not None and not entry_reached:
+                if direction == "LONG" and c.close < inv:
+                    setup.status = "invalidated"
+                    setup.closed_at = _utc()
+                    notes["lifecycle_phase"] = LIFECYCLE_INVALIDATED
+                    notes["outcome_tracking_status"] = TRACKING_COMPLETE
+                    _record_first_touch(notes, "invalidation", c.time_ms)
+                    _save_notes(setup, notes)
+                    return
+                if direction == "SHORT" and c.close > inv:
+                    setup.status = "invalidated"
+                    setup.closed_at = _utc()
+                    notes["lifecycle_phase"] = LIFECYCLE_INVALIDATED
+                    notes["outcome_tracking_status"] = TRACKING_COMPLETE
+                    _record_first_touch(notes, "invalidation", c.time_ms)
+                    _save_notes(setup, notes)
+                    return
             continue
 
-        if _is_post_entry_terminal_phase(phase):
-            continue
+        if inv is not None:
+            if direction == "LONG" and c.close < inv:
+                setup.status = "invalidated"
+                setup.closed_at = _utc()
+                notes["lifecycle_phase"] = LIFECYCLE_INVALIDATED
+                notes["outcome_tracking_status"] = TRACKING_COMPLETE
+                _record_first_touch(notes, "invalidation", c.time_ms)
+                _save_notes(setup, notes)
+                return
+            if direction == "SHORT" and c.close > inv:
+                setup.status = "invalidated"
+                setup.closed_at = _utc()
+                notes["lifecycle_phase"] = LIFECYCLE_INVALIDATED
+                notes["outcome_tracking_status"] = TRACKING_COMPLETE
+                _record_first_touch(notes, "invalidation", c.time_ms)
+                _save_notes(setup, notes)
+                return
+
         if sl_hit and tp_hit:
             setup.sequencing_ambiguous = True
             _record_first_touch(notes, "sl_post_entry", c.time_ms)
@@ -569,11 +626,16 @@ async def _fetch_setup_tracking_candles(
         _save_notes(setup, notes)
         return [], None, from_ms
 
-    scoped = [
-        c
-        for c in bundle.closed
-        if c.time_ms >= from_ms and c.time_ms >= start_ms and (end_ms is None or c.time_ms < end_ms)
-    ]
+    scoped = []
+    for c in bundle.closed:
+        if c.time_ms < from_ms or c.time_ms < start_ms:
+            continue
+        if end_ms is not None and not _candle_fully_eligible_before_expiry(setup, c, "5m"):
+            if _candle_straddles_expiry(setup, c, "5m"):
+                continue
+            if c.time_ms >= end_ms:
+                continue
+        scoped.append(c)
     return scoped, bundle, from_ms
 
 
