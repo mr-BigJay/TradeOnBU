@@ -1,8 +1,9 @@
 """Ensure contaminated model JSON never leaks into user report_fa."""
 
+import copy
 import json
 
-from app.services.ai_trader_report import finalize_user_report, is_report_clean
+from app.services.ai_trader_report import finalize_user_report, is_report_clean, prepare_structured_for_user_report
 
 FORBIDDEN = ("memory.", "lifecycle_phase", "OHLC", "uncertainty")
 
@@ -11,6 +12,24 @@ def _assert_clean(report: str) -> None:
     low = report.lower()
     for token in FORBIDDEN:
         assert token.lower() not in low, f"forbidden {token!r} in report: {report[:500]}"
+
+
+def test_finalize_does_not_override_gpt_decision_or_levels():
+    original = {
+        "decision": "LONG",
+        "final_ai_decision": "LONG",
+        "entry_price": 83250.0,
+        "entry_zone_low": 83200,
+        "entry_zone_high": 83300,
+        "stop_loss": 82900,
+        "take_profit": 84200,
+        "market_bias": "Bullish",
+    }
+    snapshot = copy.deepcopy(original)
+    prepare_structured_for_user_report(original)
+    finalize_user_report(original, symbol="BTCUSDT", live=99999.0)
+    for key in ("decision", "entry_price", "entry_zone_low", "entry_zone_high", "stop_loss", "take_profit"):
+        assert original[key] == snapshot[key]
 
 
 def test_mock_audit_model_response_produces_clean_report():

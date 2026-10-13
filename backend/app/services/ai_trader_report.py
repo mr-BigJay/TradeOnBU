@@ -280,6 +280,11 @@ def finalize_user_report(
     symbol: str = "BTCUSDT",
     live: float = 0,
 ) -> str:
+    """Build user-visible report_fa only.
+
+    Does not mutate trading decisions or levels in ``structured`` (decision, entry, SL, TP).
+    Optional ``live`` fills Price in the report when the model omitted ``current_price`` — display only.
+    """
     prepared = prepare_structured_for_user_report(structured)
     if live > 0 and not prepared.get("current_price"):
         prepared["current_price"] = round(live, 2)
