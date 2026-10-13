@@ -15,20 +15,26 @@ def test_trader_instructions_contain_professional_ict_trader_guidance():
     text = ICT_TRADER_INSTRUCTIONS
     assert AI_TRADER_MODE is True
     assert "ICT professional trader" in text
-    assert "Make a trading decision" in text
+    assert "decision-first" in text
     assert "BSL/SSL" in text
-    assert "Do not force trades" in text
-    assert "Previous Setup Review" in text or "Previous setup" in text.lower()
+    assert "Actively search for high-probability ICT setups" in text
+    assert "Do not force low-quality trades" in text
+    assert "NEVER put in `report_fa`" in text
+    assert "max 150 words" in text
+    assert "max 250 words" in text
+    assert "Previous Setup Review" in text
     assert INSTRUCTIONS is ICT_TRADER_INSTRUCTIONS
 
 
 def test_prompt_json_schema_supports_entry_sl_tp_and_optional_tp2():
     assert "entry_zone_low" in INSTRUCTIONS
+    assert "entry_type" in INSTRUCTIONS
     assert "stop_loss" in INSTRUCTIONS
     assert "take_profit" in INSTRUCTIONS
     assert "take_profit_2" in INSTRUCTIONS
     assert "decision (LONG|SHORT|NO_TRADE)" in INSTRUCTIONS
     assert "final_ai_decision" in INSTRUCTIONS
+    assert "uncertainty_notes (internal only" in INSTRUCTIONS
 
 
 def test_paper_safety_allows_long_with_levels():
