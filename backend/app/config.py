@@ -39,6 +39,17 @@ class Settings(BaseSettings):
 
     market_data_stale_seconds: int = 120
 
+    ai_analysis_model: str = "gpt-6.1-sol"
+    ai_reasoning_effort: str = "max"
+    ai_response_timeout_seconds: float = 600.0
+    ai_analysis_lock_ttl_seconds: int = 1800
+    ai_default_interval_minutes: int = 120
+    ai_candle_limit_4h: int = 80
+    ai_candle_limit_1h: int = 100
+    ai_candle_limit_15m: int = 120
+    ai_candle_limit_5m: int = 120
+    ai_candle_limit_1m: int = 180
+
     dashboard_api_key: str = ""
     admin_api_key: str = ""
     cors_allowed_origins: str = "http://127.0.0.1:8000,http://localhost:8000,http://localhost:5173"

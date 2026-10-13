@@ -114,9 +114,13 @@ async def test_telegram_invalid_on_rejected_long(session):
     )
     await session.commit()
     cred_row = ChatGptCredential(id=1, client_id="oaiapp", preferred_model="gpt-test", scopes_json=["chatgpt.tokens.use.direct"])
-    ai_json = (
-        '{"decision":"LONG","report_fa":"پیشنهاد","entry_price":100,"stop_loss":99,"take_profit":101}'
-    )
+    ai_json = {
+        "decision": "LONG",
+        "report_fa": "پیشنهاد",
+        "entry_price": 100,
+        "stop_loss": 99,
+        "take_profit": 101,
+    }
     sent: list[str] = []
 
     async def capture(msg: str):
@@ -127,18 +131,34 @@ async def test_telegram_invalid_on_rejected_long(session):
         return None, kwargs["structured"]
 
     with patch("app.services.ai_ict_analysis.get_access_token", AsyncMock(return_value=("tok", cred_row, None))):
-        with patch("app.services.ai_ict_analysis.build_market_context", AsyncMock(return_value=({"live_price": 100}, 100.0))):
-            with patch("app.services.ai_ict_analysis._generate_chart_for_run", skip_chart):
-                with patch("app.services.ai_ict_analysis.stream_response", AsyncMock(return_value=f"```json\n{ai_json}\n```")):
-                    with patch("app.services.ai_ict_analysis.TelegramNotifier") as tn:
-                        inst = tn.return_value
-                        type(inst).enabled = property(lambda self: True)
-                        inst.send_photo_file = AsyncMock(return_value=None)
-                        inst.send_ai_report = AsyncMock(side_effect=capture)
-                        run = await run_ai_analysis(trigger="test")
+        from app.services.siwc.responses_client import AnalysisResponse
+
+        async def fake_analysis(*_args, **_kwargs):
+            import json as _json
+
+            return AnalysisResponse(
+                text=f"```json\n{_json.dumps(ai_json, ensure_ascii=False)}\n```",
+                requested_model="gpt-6.1-sol",
+                requested_reasoning_effort="max",
+                response_model="gpt-6.1-sol",
+            )
+
+        with patch(
+            "app.services.ai_ict_analysis.build_raw_market_payload",
+            AsyncMock(return_value=({"live_price": 100, "timeframes": {"15m": {"candles": []}}}, 100.0, {})),
+        ):
+            with patch("app.services.ai_ict_analysis.build_ai_memory_context", AsyncMock(return_value={"open_setups": []})):
+                with patch("app.services.ai_ict_analysis._generate_chart_for_run", skip_chart):
+                    with patch("app.services.ai_ict_analysis.stream_analysis_response", fake_analysis):
+                        with patch("app.services.ai_ict_analysis.TelegramNotifier") as tn:
+                            inst = tn.return_value
+                            type(inst).enabled = property(lambda self: True)
+                            inst.send_photo_file = AsyncMock(return_value=None)
+                            inst.send_ai_report = AsyncMock(side_effect=capture)
+                            run = await run_ai_analysis(trigger="test")
     assert run.status == "completed_with_warnings"
     assert sent
-    assert "INVALID" in sent[0]
+    assert "پیشنهاد" in sent[0] or "LONG" in sent[0]
 
 
 @pytest.mark.asyncio

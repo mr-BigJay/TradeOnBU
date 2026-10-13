@@ -11,6 +11,8 @@ type Status = {
   scheduling_active: boolean;
   next_run_at?: string;
   interval_minutes: number;
+  ai_analysis_model?: string;
+  ai_reasoning_effort?: string;
   unattended_consent?: boolean;
   hourly_enabled?: boolean;
 };
@@ -73,7 +75,7 @@ export function ChatGptSettingsPage() {
   const [draft, setDraft] = useState<ConnectDraft>(() => loadDraft());
   const [consent, setConsent] = useState(false);
   const [scheduleEnabled, setScheduleEnabled] = useState(false);
-  const [intervalMin, setIntervalMin] = useState(60);
+  const [intervalMin, setIntervalMin] = useState(120);
   const [busy, setBusy] = useState<string | null>(null);
 
   const patchDraft = useCallback((patch: Partial<ConnectDraft>) => {
@@ -85,7 +87,7 @@ export function ChatGptSettingsPage() {
     setStatus(s);
     setConsent(!!s.unattended_consent);
     setScheduleEnabled(!!s.hourly_enabled);
-    setIntervalMin(s.interval_minutes || 60);
+    setIntervalMin(s.interval_minutes || 120);
   }, []);
 
   useEffect(() => {
@@ -317,7 +319,12 @@ export function ChatGptSettingsPage() {
           saveSchedule();
         }}
       >
-        <h3 className="section-title">تحلیل خودکار</h3>
+        <h3 className="section-title">تحلیل خودکار (هر ۲ ساعت)</h3>
+        {status?.ai_analysis_model && (
+          <p className="hint">
+            مدل: {status.ai_analysis_model} · reasoning: {(status.ai_reasoning_effort || "max").toUpperCase()}
+          </p>
+        )}
         <label className="toggle-row">
           <input type="checkbox" checked={consent} onChange={(e) => setConsent(e.target.checked)} />
           <span>اجازه استفاده از ChatGPT در پس‌زمینه</span>
@@ -332,11 +339,11 @@ export function ChatGptSettingsPage() {
           <span>فعال‌سازی زمان‌بندی</span>
         </label>
         <label>
-          هر چند دقیقه؟ (۱۵–۲۴۰)
+          هر چند ساعت؟ (۱۲۰–۳۶۰ دقیقه · پیش‌فرض ۲ ساعت)
           <input
             type="number"
-            min={15}
-            max={240}
+            min={120}
+            max={360}
             inputMode="numeric"
             value={intervalMin}
             onChange={(e) => setIntervalMin(Number(e.target.value))}

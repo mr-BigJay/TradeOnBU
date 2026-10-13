@@ -22,7 +22,31 @@ from app.services.chart_renderer import (
 from app.services.ict_structure import build_chart_overlays
 from app.services.siwc.credentials import get_access_token
 from app.services.siwc.oauth import JWKS_URL
+from app.services.siwc.responses_client import AnalysisResponse
 from app.services.telegram_notifier import TelegramNotifier
+
+
+def _analysis_response_for_json(ai_json: dict) -> AnalysisResponse:
+    return AnalysisResponse(
+        text=f"```json\n{json.dumps(ai_json)}\n```",
+        requested_model="gpt-6.1-sol",
+        requested_reasoning_effort="max",
+        response_model="gpt-6.1-sol",
+    )
+
+
+def _candles_from_ctx(ctx: dict) -> list[Candle]:
+    rows = (ctx.get("timeframes") or {}).get("15m", {}).get("candles") or []
+    return [
+        Candle(
+            open=float(r["open"]),
+            high=float(r["high"]),
+            low=float(r["low"]),
+            close=float(r["close"]),
+            time_ms=int(r["time_ms"]),
+        )
+        for r in rows
+    ]
 
 
 def _synthetic_candles(n: int = 80, start_price: float = 100_000.0) -> list[Candle]:
@@ -227,19 +251,23 @@ async def test_ai_pipeline_chart_and_telegram(session, client, tmp_path, monkeyp
         return httpx.Response(200, json={"ok": True, "result": {"message_id": len(posts)}})
 
     with patch("app.services.ai_ict_analysis.get_access_token", AsyncMock(return_value=("tok", cred, None))):
-        with patch("app.services.ai_ict_analysis.build_market_context", AsyncMock(return_value=(ctx, candles[-1].close))):
-            with patch(
-                "app.services.ai_ict_analysis.stream_response",
-                AsyncMock(return_value=f"```json\n{json.dumps(ai_json)}\n```"),
-            ):
-                with patch("app.services.telegram_notifier.telegram_integration_active", return_value=True):
-                    with patch("app.services.telegram_notifier.get_effective_settings") as gs:
-                        settings = gs.return_value
-                        settings.telegram_bot_token = "123456789:abc"
-                        settings.telegram_chat_id = "1"
-                        with patch("app.services.telegram_notifier.httpx.AsyncClient") as client_cls:
-                            client_cls.return_value.__aenter__.return_value.post = fake_post
-                            run = await run_ai_analysis(trigger="manual")
+        with patch(
+            "app.services.ai_ict_analysis.build_raw_market_payload",
+            AsyncMock(return_value=(ctx, candles[-1].close, {"15m": candles})),
+        ):
+            with patch("app.services.ai_ict_analysis.build_ai_memory_context", AsyncMock(return_value={"open_setups": []})):
+                with patch(
+                    "app.services.ai_ict_analysis.stream_analysis_response",
+                    AsyncMock(return_value=_analysis_response_for_json(ai_json)),
+                ):
+                    with patch("app.services.telegram_notifier.telegram_integration_active", return_value=True):
+                        with patch("app.services.telegram_notifier.get_effective_settings") as gs:
+                            settings = gs.return_value
+                            settings.telegram_bot_token = "123456789:abc"
+                            settings.telegram_chat_id = "1"
+                            with patch("app.services.telegram_notifier.httpx.AsyncClient") as client_cls:
+                                client_cls.return_value.__aenter__.return_value.post = fake_post
+                                run = await run_ai_analysis(trigger="manual")
 
     assert run.status.startswith("completed")
     assert run.telegram_sent is True
@@ -277,13 +305,15 @@ async def test_chart_failure_still_sends_text(session, monkeypatch):
         return httpx.Response(200, json={"ok": True, "result": {"message_id": 1}})
 
     with patch("app.services.ai_ict_analysis.get_access_token", AsyncMock(return_value=("tok", cred, None))):
-        with patch("app.services.ai_ict_analysis.build_market_context", AsyncMock(return_value=(ctx, 100.0))):
-            with patch(
-                "app.services.ai_ict_analysis.stream_response",
-                AsyncMock(return_value=f"```json\n{json.dumps(ai_json)}\n```"),
-            ):
-                with patch("app.services.ai_ict_analysis.ChartDataService") as chart_cls:
-                    chart_cls.return_value.bundle = AsyncMock(side_effect=RuntimeError("market down"))
+        with patch(
+            "app.services.ai_ict_analysis.build_raw_market_payload",
+            AsyncMock(return_value=(ctx, 100.0, {"15m": []})),
+        ):
+            with patch("app.services.ai_ict_analysis.build_ai_memory_context", AsyncMock(return_value={"open_setups": []})):
+                with patch(
+                    "app.services.ai_ict_analysis.stream_analysis_response",
+                    AsyncMock(return_value=_analysis_response_for_json(ai_json)),
+                ):
                     with patch("app.services.telegram_notifier.telegram_integration_active", return_value=True):
                         with patch("app.services.telegram_notifier.get_effective_settings") as gs:
                             settings = gs.return_value
@@ -331,23 +361,27 @@ async def test_unexpected_chart_render_exception_still_completes_and_sends_text(
         return httpx.Response(200, json={"ok": True, "result": {"message_id": 7}})
 
     with patch("app.services.ai_ict_analysis.get_access_token", AsyncMock(return_value=("tok", cred, None))):
-        with patch("app.services.ai_ict_analysis.build_market_context", AsyncMock(return_value=(ctx, candles[-1].close))):
-            with patch(
-                "app.services.ai_ict_analysis.stream_response",
-                AsyncMock(return_value=f"```json\n{json.dumps(ai_json)}\n```"),
-            ):
+        with patch(
+            "app.services.ai_ict_analysis.build_raw_market_payload",
+            AsyncMock(return_value=(ctx, candles[-1].close, {"15m": candles})),
+        ):
+            with patch("app.services.ai_ict_analysis.build_ai_memory_context", AsyncMock(return_value={"open_setups": []})):
                 with patch(
-                    "app.services.ai_ict_analysis.render_ict_chart_png",
-                    side_effect=OSError("disk full"),
+                    "app.services.ai_ict_analysis.stream_analysis_response",
+                    AsyncMock(return_value=_analysis_response_for_json(ai_json)),
                 ):
-                    with patch("app.services.telegram_notifier.telegram_integration_active", return_value=True):
-                        with patch("app.services.telegram_notifier.get_effective_settings") as gs:
-                            settings = gs.return_value
-                            settings.telegram_bot_token = "123456789:abc"
-                            settings.telegram_chat_id = "1"
-                            with patch("app.services.telegram_notifier.httpx.AsyncClient") as client_cls:
-                                client_cls.return_value.__aenter__.return_value.post = fake_post
-                                run = await run_ai_analysis(trigger="manual")
+                    with patch(
+                        "app.services.ai_ict_analysis.render_ict_chart_png",
+                        side_effect=OSError("disk full"),
+                    ):
+                        with patch("app.services.telegram_notifier.telegram_integration_active", return_value=True):
+                            with patch("app.services.telegram_notifier.get_effective_settings") as gs:
+                                settings = gs.return_value
+                                settings.telegram_bot_token = "123456789:abc"
+                                settings.telegram_chat_id = "1"
+                                with patch("app.services.telegram_notifier.httpx.AsyncClient") as client_cls:
+                                    client_cls.return_value.__aenter__.return_value.post = fake_post
+                                    run = await run_ai_analysis(trigger="manual")
 
     assert run.status.startswith("completed")
     assert run.telegram_sent is True
@@ -396,20 +430,24 @@ async def test_chart_is_file_oserror_still_sends_text(session, monkeypatch, tmp_
         return real_is_file(self)
 
     with patch("app.services.ai_ict_analysis.get_access_token", AsyncMock(return_value=("tok", cred, None))):
-        with patch("app.services.ai_ict_analysis.build_market_context", AsyncMock(return_value=(ctx, candles[-1].close))):
-            with patch(
-                "app.services.ai_ict_analysis.stream_response",
-                AsyncMock(return_value=f"```json\n{json.dumps(ai_json)}\n```"),
-            ):
-                with patch.object(Path, "is_file", broken_is_file):
-                    with patch("app.services.telegram_notifier.telegram_integration_active", return_value=True):
-                        with patch("app.services.telegram_notifier.get_effective_settings") as gs:
-                            settings = gs.return_value
-                            settings.telegram_bot_token = "123456789:abc"
-                            settings.telegram_chat_id = "1"
-                            with patch("app.services.telegram_notifier.httpx.AsyncClient") as client_cls:
-                                client_cls.return_value.__aenter__.return_value.post = fake_post
-                                run = await run_ai_analysis(trigger="manual")
+        with patch(
+            "app.services.ai_ict_analysis.build_raw_market_payload",
+            AsyncMock(return_value=(ctx, candles[-1].close, {"15m": candles})),
+        ):
+            with patch("app.services.ai_ict_analysis.build_ai_memory_context", AsyncMock(return_value={"open_setups": []})):
+                with patch(
+                    "app.services.ai_ict_analysis.stream_analysis_response",
+                    AsyncMock(return_value=_analysis_response_for_json(ai_json)),
+                ):
+                    with patch.object(Path, "is_file", broken_is_file):
+                        with patch("app.services.telegram_notifier.telegram_integration_active", return_value=True):
+                            with patch("app.services.telegram_notifier.get_effective_settings") as gs:
+                                settings = gs.return_value
+                                settings.telegram_bot_token = "123456789:abc"
+                                settings.telegram_chat_id = "1"
+                                with patch("app.services.telegram_notifier.httpx.AsyncClient") as client_cls:
+                                    client_cls.return_value.__aenter__.return_value.post = fake_post
+                                    run = await run_ai_analysis(trigger="manual")
 
     assert run.status.startswith("completed")
     assert run.telegram_sent is True
@@ -454,20 +492,24 @@ async def test_unexpected_photo_upload_exception_still_sends_text(session, monke
         return httpx.Response(200, json={"ok": True, "result": {"message_id": 9}})
 
     with patch("app.services.ai_ict_analysis.get_access_token", AsyncMock(return_value=("tok", cred, None))):
-        with patch("app.services.ai_ict_analysis.build_market_context", AsyncMock(return_value=(ctx, candles[-1].close))):
-            with patch(
-                "app.services.ai_ict_analysis.stream_response",
-                AsyncMock(return_value=f"```json\n{json.dumps(ai_json)}\n```"),
-            ):
-                with patch("app.services.telegram_notifier.telegram_integration_active", return_value=True):
-                    with patch("app.services.telegram_notifier.get_effective_settings") as gs:
-                        settings = gs.return_value
-                        settings.telegram_bot_token = "123456789:abc"
-                        settings.telegram_chat_id = "1"
-                        with patch.object(TelegramNotifier, "send_photo_file", boom_photo):
-                            with patch("app.services.telegram_notifier.httpx.AsyncClient") as client_cls:
-                                client_cls.return_value.__aenter__.return_value.post = fake_post
-                                run = await run_ai_analysis(trigger="manual")
+        with patch(
+            "app.services.ai_ict_analysis.build_raw_market_payload",
+            AsyncMock(return_value=(ctx, candles[-1].close, {"15m": candles})),
+        ):
+            with patch("app.services.ai_ict_analysis.build_ai_memory_context", AsyncMock(return_value={"open_setups": []})):
+                with patch(
+                    "app.services.ai_ict_analysis.stream_analysis_response",
+                    AsyncMock(return_value=_analysis_response_for_json(ai_json)),
+                ):
+                    with patch("app.services.telegram_notifier.telegram_integration_active", return_value=True):
+                        with patch("app.services.telegram_notifier.get_effective_settings") as gs:
+                            settings = gs.return_value
+                            settings.telegram_bot_token = "123456789:abc"
+                            settings.telegram_chat_id = "1"
+                            with patch.object(TelegramNotifier, "send_photo_file", boom_photo):
+                                with patch("app.services.telegram_notifier.httpx.AsyncClient") as client_cls:
+                                    client_cls.return_value.__aenter__.return_value.post = fake_post
+                                    run = await run_ai_analysis(trigger="manual")
 
     assert run.status.startswith("completed")
     assert run.telegram_sent is True

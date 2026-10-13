@@ -12,6 +12,7 @@ from app.services.siwc.oauth import has_plan_scope
 from app.services.system_state import get_system_state
 
 FAILURE_BACKOFF_MINUTES = 15
+DEFAULT_AI_INTERVAL_MINUTES = 120
 
 
 def _utc_now() -> datetime:
@@ -22,12 +23,37 @@ def _ensure_utc(dt: datetime) -> datetime:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
+def migrate_ai_schedule_settings(cfg: AiAnalysisSettings) -> None:
+    """Move legacy 60-minute schedules to 120 minutes without disabling consent."""
+    if cfg.interval_minutes == 60:
+        cfg.interval_minutes = DEFAULT_AI_INTERVAL_MINUTES
+    now = _utc_now()
+    if cfg.next_run_at is not None:
+        nr = _ensure_utc(cfg.next_run_at)
+        if nr <= now:
+            return
+        if cfg.last_run_at:
+            lr = _ensure_utc(cfg.last_run_at)
+            expected = lr + timedelta(minutes=cfg.interval_minutes)
+            if nr < expected - timedelta(minutes=5):
+                cfg.next_run_at = expected
+        elif nr <= now + timedelta(minutes=5) and cfg.enabled:
+            cfg.next_run_at = now + timedelta(minutes=cfg.interval_minutes)
+
+
 async def get_or_create_settings(session: AsyncSession) -> AiAnalysisSettings:
     row = (await session.execute(select(AiAnalysisSettings).where(AiAnalysisSettings.id == 1))).scalar_one_or_none()
     if row is None:
-        row = AiAnalysisSettings(id=1, enabled=False, unattended_consent=False)
+        row = AiAnalysisSettings(
+            id=1,
+            enabled=False,
+            unattended_consent=False,
+            interval_minutes=DEFAULT_AI_INTERVAL_MINUTES,
+        )
         session.add(row)
         await session.flush()
+    migrate_ai_schedule_settings(row)
+    await session.flush()
     return row
 
 
@@ -48,15 +74,14 @@ async def scheduling_allowed(session: AsyncSession) -> tuple[bool, str | None]:
 def record_run_outcome(cfg: AiAnalysisSettings, run_status: str, error_detail: str | None = None) -> None:
     now = _utc_now()
     cfg.last_run_at = now
-    interval = max(15, cfg.interval_minutes)
+    interval = max(DEFAULT_AI_INTERVAL_MINUTES, cfg.interval_minutes)
     if run_status.startswith("completed"):
         cfg.last_success_at = now
         cfg.last_error = None
         cfg.next_run_at = now + timedelta(minutes=interval)
     else:
         cfg.last_error = error_detail or "run_failed"
-        backoff = max(FAILURE_BACKOFF_MINUTES, min(interval, 60))
-        cfg.next_run_at = now + timedelta(minutes=backoff)
+        cfg.next_run_at = now + timedelta(minutes=FAILURE_BACKOFF_MINUTES)
 
 
 async def _try_acquire_analysis_lock(session: AsyncSession, owner: str, ttl_seconds: int) -> bool:
@@ -93,7 +118,11 @@ async def _release_analysis_lock(session: AsyncSession, owner: str) -> bool:
     return False
 
 
-async def acquire_analysis_lock(owner: str, ttl_seconds: int = 900) -> bool:
+async def acquire_analysis_lock(owner: str, ttl_seconds: int | None = None) -> bool:
+    if ttl_seconds is None:
+        from app.config import get_effective_settings
+
+        ttl_seconds = int(get_effective_settings().ai_analysis_lock_ttl_seconds)
     async with SessionLocal() as session:
         ok = await _try_acquire_analysis_lock(session, owner, ttl_seconds)
         if ok:

@@ -21,7 +21,7 @@ class AiRunOutcome:
 
 async def execute_ai_analysis_with_lock(*, trigger: str) -> AiRunOutcome:
     owner = f"ai-{uuid.uuid4().hex}"
-    if not await acquire_analysis_lock(owner, ttl_seconds=900):
+    if not await acquire_analysis_lock(owner):
         return AiRunOutcome(status="busy", run=None)
     try:
         run = await run_ai_analysis(trigger=trigger)
@@ -35,7 +35,7 @@ async def execute_scheduled_if_due() -> AiRunOutcome:
         if not await should_run_scheduled(session):
             return AiRunOutcome(status="skipped", run=None)
     owner = f"ai-{uuid.uuid4().hex}"
-    if not await acquire_analysis_lock(owner, ttl_seconds=900):
+    if not await acquire_analysis_lock(owner):
         return AiRunOutcome(status="busy", run=None)
     try:
         async with SessionLocal() as session:
