@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
-import { apiFetch } from "./api";
-import { CopyField } from "./CopyField";
+import { ApiError, apiFetch } from "./api";
+import { ConnectParamField } from "./ConnectParamField";
+
+const DRAFT_KEY = "tradeonbu_siwc_connect_draft";
 
 type Status = {
   connected: boolean;
@@ -9,22 +11,74 @@ type Status = {
   scheduling_active: boolean;
   next_run_at?: string;
   interval_minutes: number;
+  unattended_consent?: boolean;
+  hourly_enabled?: boolean;
 };
 
-type ConnectBundle = {
+type ConnectDraft = {
   connect_token: string;
   connect_secret: string;
   oauth_state: string;
   authorize_url: string;
+  oauth_code?: string;
+  callback_client_id?: string;
+  callback_paste?: string;
 };
+
+const emptyDraft = (): ConnectDraft => ({
+  connect_token: "",
+  connect_secret: "",
+  oauth_state: "",
+  authorize_url: "",
+  oauth_code: "",
+  callback_client_id: "",
+  callback_paste: "",
+});
+
+function loadDraft(): ConnectDraft {
+  try {
+    const raw = localStorage.getItem(DRAFT_KEY);
+    if (!raw) return emptyDraft();
+    const parsed = JSON.parse(raw) as Partial<ConnectDraft>;
+    return { ...emptyDraft(), ...parsed };
+  } catch {
+    return emptyDraft();
+  }
+}
+
+function saveDraftToStorage(draft: ConnectDraft) {
+  localStorage.setItem(DRAFT_KEY, JSON.stringify(draft));
+}
+
+function parseOAuthCallback(raw: string): { code?: string; state?: string; clientId?: string } {
+  const trimmed = raw.trim();
+  if (!trimmed) return {};
+  try {
+    const url = trimmed.includes("://") ? new URL(trimmed) : new URL(`http://local${trimmed.startsWith("/") ? trimmed : `/${trimmed}`}`);
+    const qs = url.searchParams;
+    return {
+      code: qs.get("code") || undefined,
+      state: qs.get("state") || undefined,
+      clientId: qs.get("client_id") || undefined,
+    };
+  } catch {
+    return {};
+  }
+}
 
 export function ChatGptSettingsPage() {
   const [status, setStatus] = useState<Status | null>(null);
   const [msg, setMsg] = useState("");
-  const [connectInfo, setConnectInfo] = useState<ConnectBundle | null>(null);
+  const [msgError, setMsgError] = useState(false);
+  const [draft, setDraft] = useState<ConnectDraft>(() => loadDraft());
   const [consent, setConsent] = useState(false);
   const [scheduleEnabled, setScheduleEnabled] = useState(false);
   const [intervalMin, setIntervalMin] = useState(60);
+  const [busy, setBusy] = useState<string | null>(null);
+
+  const patchDraft = useCallback((patch: Partial<ConnectDraft>) => {
+    setDraft((prev) => ({ ...prev, ...patch }));
+  }, []);
 
   const refresh = useCallback(async () => {
     const s = await apiFetch("/api/gui/chatgpt/status");
@@ -35,23 +89,101 @@ export function ChatGptSettingsPage() {
   }, []);
 
   useEffect(() => {
-    refresh().catch((e) => setMsg(String(e)));
+    refresh().catch((e) => {
+      setMsgError(true);
+      setMsg(String(e));
+    });
   }, [refresh]);
 
-  async function beginConnect() {
-    const data = await apiFetch("/api/gui/chatgpt/connect/begin", { method: "POST" });
-    setConnectInfo({
-      connect_token: data.connect_token,
-      connect_secret: data.connect_secret,
-      oauth_state: data.oauth_state,
-      authorize_url: data.authorize_url,
+  function toast(text: string, isError = false) {
+    setMsg(text);
+    setMsgError(isError);
+  }
+
+  async function autoGenerate() {
+    setBusy("generate");
+    try {
+      const data = await apiFetch("/api/gui/chatgpt/connect/begin", { method: "POST" });
+      const next: ConnectDraft = {
+        ...draft,
+        connect_token: data.connect_token,
+        connect_secret: data.connect_secret,
+        oauth_state: data.oauth_state,
+        authorize_url: data.authorize_url,
+      };
+      setDraft(next);
+      saveDraftToStorage(next);
+      toast(`مقادیر از سرور ساخته شد (اعتبار ~${Math.round((data.expires_in || 900) / 60)} دقیقه).`);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e), true);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  function saveDraftLocal() {
+    saveDraftToStorage(draft);
+    toast("پیش‌نویس اتصال در مرورگر ذخیره شد.");
+  }
+
+  function applyCallbackPaste() {
+    const parsed = parseOAuthCallback(draft.callback_paste || "");
+    if (!parsed.code && !parsed.state && !parsed.clientId) {
+      toast("آدرس callback معتبر نیست.", true);
+      return;
+    }
+    patchDraft({
+      oauth_code: parsed.code || draft.oauth_code,
+      oauth_state: parsed.state || draft.oauth_state,
+      callback_client_id: parsed.clientId || draft.callback_client_id,
     });
-    setMsg("مقادیر زیر را کپی کنید و روی ویندوز helper را اجرا کنید.");
+    toast("کد و state از آدرس callback استخراج شد.");
+  }
+
+  async function completeConnect() {
+    if (!draft.connect_token || !draft.connect_secret || !draft.oauth_state || !draft.oauth_code) {
+      toast("TOKEN، SECRET، STATE و کد OAuth را پر کنید (یا تولید خودکار بزنید).", true);
+      return;
+    }
+    setBusy("complete");
+    try {
+      const data = await apiFetch("/api/gui/chatgpt/connect/complete", {
+        method: "POST",
+        body: JSON.stringify({
+          connect_token: draft.connect_token.trim(),
+          connect_secret: draft.connect_secret.trim(),
+          oauth_state: draft.oauth_state.trim(),
+          code: draft.oauth_code.trim(),
+          callback_client_id: draft.callback_client_id?.trim() || null,
+        }),
+      });
+      toast(`اتصال برقرار شد${data.email ? `: ${data.email}` : ""}.`);
+      await refresh();
+    } catch (e) {
+      const detail = e instanceof ApiError ? e.message : String(e);
+      toast(detail, true);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function testConnection() {
+    setBusy("test");
+    try {
+      const data = await apiFetch("/api/gui/chatgpt/connect/test", { method: "POST" });
+      const names = (data.sample_models || []).map((m: { id?: string }) => m.id || m).join(", ");
+      toast(`تست موفق — ${data.model_count} مدل${names ? `: ${names}` : ""}.`);
+      await refresh();
+    } catch (e) {
+      toast(e instanceof ApiError ? e.message : String(e), true);
+    } finally {
+      setBusy(null);
+    }
   }
 
   async function saveSchedule() {
     if (scheduleEnabled && !consent) {
-      setMsg("رضایت تحلیل خودکار را فعال کنید.");
+      toast("رضایت تحلیل خودکار را فعال کنید.", true);
       return;
     }
     await apiFetch("/api/gui/chatgpt/settings", {
@@ -62,7 +194,7 @@ export function ChatGptSettingsPage() {
         interval_minutes: intervalMin,
       }),
     });
-    setMsg("ذخیره شد.");
+    toast("تنظیمات زمان‌بندی ذخیره شد.");
     await refresh();
   }
 
@@ -75,15 +207,12 @@ export function ChatGptSettingsPage() {
         <p className="hint">اتصال رسمی SIWC · بدون API key</p>
       </header>
 
-      {msg && <p className="toast toast-ok">{msg}</p>}
+      {msg && <p className={`toast ${msgError ? "toast-error" : "toast-ok"}`}>{msg}</p>}
 
       <div className="card status-card">
         <span className={`status-pill ${connected ? "on" : "off"}`}>{connected ? "متصل" : "قطع"}</span>
         {status?.email && <p className="status-email">{status.email}</p>}
         <div className="stack-btns">
-          <button type="button" className="btn-primary btn-block" onClick={beginConnect}>
-            Connect with ChatGPT
-          </button>
           <button
             type="button"
             className="secondary btn-block"
@@ -91,18 +220,95 @@ export function ChatGptSettingsPage() {
           >
             قطع اتصال
           </button>
+          <button
+            type="button"
+            className="btn-primary btn-block"
+            onClick={testConnection}
+            disabled={!!busy || !status?.connected}
+          >
+            {busy === "test" ? "در حال تست…" : "تست اتصال"}
+          </button>
         </div>
       </div>
 
-      {connectInfo && (
-        <div className="card connect-panel">
-          <h3 className="section-title">اتصال یک‌بارمصرف</h3>
-          <CopyField label="CONNECT_TOKEN" value={connectInfo.connect_token} />
-          <CopyField label="CONNECT_SECRET" value={connectInfo.connect_secret} />
-          <CopyField label="OAUTH_STATE" value={connectInfo.oauth_state} />
-          <CopyField label="AUTHORIZE_URL" value={connectInfo.authorize_url} />
+      <div className="card connect-panel">
+        <h3 className="section-title">پارامترهای OAuth</h3>
+        <p className="hint">
+          «تولید خودکار» یک جلسه ۱۵ دقیقه‌ای روی سرور می‌سازد. می‌توانید مقادیر را دستی ویرایش یا از helper کپی کنید؛
+          SECRET باید با همان جلسهٔ سرور یکی باشد.
+        </p>
+
+        <ConnectParamField
+          label="CONNECT_TOKEN"
+          value={draft.connect_token}
+          onChange={(v) => patchDraft({ connect_token: v })}
+        />
+        <ConnectParamField
+          label="CONNECT_SECRET"
+          value={draft.connect_secret}
+          onChange={(v) => patchDraft({ connect_secret: v })}
+        />
+        <ConnectParamField
+          label="OAUTH_STATE"
+          value={draft.oauth_state}
+          onChange={(v) => patchDraft({ oauth_state: v })}
+        />
+        <ConnectParamField
+          label="AUTHORIZE_URL"
+          value={draft.authorize_url}
+          onChange={(v) => patchDraft({ authorize_url: v })}
+          multiline
+        />
+
+        <div className="row-btns">
+          <button type="button" className="btn-primary" onClick={autoGenerate} disabled={!!busy}>
+            {busy === "generate" ? "…" : "تولید خودکار"}
+          </button>
+          <button type="button" className="secondary" onClick={saveDraftLocal}>
+            ذخیره پیش‌نویس
+          </button>
+          <button
+            type="button"
+            className="secondary"
+            disabled={!draft.authorize_url}
+            onClick={() => window.open(draft.authorize_url, "_blank", "noopener,noreferrer")}
+          >
+            باز کردن لینک
+          </button>
         </div>
-      )}
+
+        <h3 className="section-title section-title-spaced">تکمیل از داشبورد</h3>
+        <ConnectParamField
+          label="OAuth code"
+          value={draft.oauth_code || ""}
+          onChange={(v) => patchDraft({ oauth_code: v })}
+          placeholder="کد authorization پس از ورود"
+        />
+        <ConnectParamField
+          label="callback client_id (اختیاری)"
+          value={draft.callback_client_id || ""}
+          onChange={(v) => patchDraft({ callback_client_id: v })}
+        />
+        <ConnectParamField
+          label="یا چسباندن URL callback"
+          value={draft.callback_paste || ""}
+          onChange={(v) => patchDraft({ callback_paste: v })}
+          multiline
+          placeholder="http://127.0.0.1:1455/auth/callback?code=…&state=…"
+        />
+        <button type="button" className="secondary btn-block" onClick={applyCallbackPaste}>
+          استخراج از URL
+        </button>
+
+        <button
+          type="button"
+          className="btn-primary btn-block"
+          onClick={completeConnect}
+          disabled={!!busy}
+        >
+          {busy === "complete" ? "در حال اتصال…" : "تکمیل اتصال"}
+        </button>
+      </div>
 
       <form
         className="card form-stack"
@@ -145,7 +351,7 @@ export function ChatGptSettingsPage() {
           </p>
         )}
         <button type="submit" className="btn-primary btn-block" disabled={!connected}>
-          ذخیره
+          ذخیره زمان‌بندی
         </button>
       </form>
     </div>

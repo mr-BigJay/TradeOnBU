@@ -234,6 +234,45 @@ async def test_run_ai_skips_telegram_when_failed(session):
 
 
 @pytest.mark.asyncio
+async def test_gui_connect_complete_success(session, client):
+    secret, secret_hash = new_connect_secret()
+    row = SiwcConnectSession(
+        connect_token="tok" + "h" * 29,
+        state="gui-state",
+        nonce="nonce-gui",
+        code_verifier="verifier" * 8,
+        redirect_uri="http://127.0.0.1:1455/auth/callback",
+        secret_hash=secret_hash,
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
+    )
+    session.add(row)
+    await session.commit()
+    token_response = {
+        "access_token": "at",
+        "refresh_token": "rt",
+        "scope": "openid chatgpt.tokens.use.direct offline_access",
+        "expires_in": 3600,
+        "id_token": "dummy",
+    }
+    claims = {"sub": "gui-sub", "email": "gui@example.com", "nonce": "nonce-gui", "iss": "https://auth.openai.com"}
+    with patch("app.services.siwc.connect_flow.exchange_code", AsyncMock(return_value=token_response)):
+        with patch("app.services.siwc.connect_flow.validate_id_token", AsyncMock(return_value=claims)):
+            with patch("app.services.siwc.credentials.encrypt_value", side_effect=lambda x: f"enc:{x}"):
+                resp = await client.post(
+                    "/api/gui/chatgpt/connect/complete",
+                    json={
+                        "connect_token": row.connect_token,
+                        "connect_secret": secret,
+                        "oauth_state": "gui-state",
+                        "code": "code123456",
+                        "callback_client_id": "oaiapp_gui",
+                    },
+                )
+    assert resp.status_code == 200
+    assert resp.json()["email"] == "gui@example.com"
+
+
+@pytest.mark.asyncio
 async def test_gui_connect_requires_session_when_enabled(monkeypatch, client):
     monkeypatch.setenv("SESSION_AUTH_ENABLED", "1")
     from app.config import get_settings

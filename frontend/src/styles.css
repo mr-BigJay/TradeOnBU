@@ -516,6 +516,44 @@ label {
   line-height: 1.4;
 }
 
+.connect-input {
+  width: 100%;
+  min-height: 44px;
+  padding: 0.5rem 0.65rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 0.78rem;
+  font-family: ui-monospace, monospace;
+}
+
+.connect-textarea {
+  min-height: 72px;
+  resize: vertical;
+  line-height: 1.4;
+}
+
+.connect-param + .connect-param {
+  margin-top: 0.65rem;
+}
+
+.row-btns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 1rem 0 0.5rem;
+}
+
+.row-btns button {
+  flex: 1 1 auto;
+  min-width: 7rem;
+}
+
+.section-title-spaced {
+  margin-top: 1.25rem;
+}
+
 .login-wrap {
   min-height: 100dvh;
   display: flex;

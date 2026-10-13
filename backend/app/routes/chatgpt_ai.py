@@ -13,7 +13,7 @@ from app.models import AiAnalysisRun, AiAnalysisSettings, SiwcConnectSession
 from app.routes.auth import require_dashboard_access
 from app.services.ai_analysis_scheduler import get_or_create_settings, scheduling_allowed
 from app.services.ai_analysis_executor import execute_ai_analysis_with_lock
-from app.services.siwc.connect_flow import new_connect_secret
+from app.services.siwc.connect_flow import consume_connect_session, new_connect_secret
 from app.services.siwc.credentials import disconnect, get_access_token, get_credential_row
 from app.services.siwc.host_id import load_or_create_host_id
 from app.services.siwc.oauth import (
@@ -33,6 +33,14 @@ class SettingsBody(BaseModel):
     unattended_consent: bool = False
     interval_minutes: int = Field(default=60, ge=15, le=240)
     preferred_model: str | None = None
+
+
+class ConnectCompleteBody(BaseModel):
+    connect_token: str = Field(min_length=16, max_length=64)
+    connect_secret: str = Field(min_length=16, max_length=128)
+    oauth_state: str = Field(min_length=8, max_length=128)
+    code: str = Field(min_length=8)
+    callback_client_id: str | None = Field(default=None, max_length=64)
 
 
 @router.get("/status")
@@ -59,7 +67,8 @@ async def status(session: AsyncSession = Depends(get_db), _=Depends(require_dash
         "next_run_at": cfg.next_run_at.isoformat() if cfg.next_run_at else None,
         "last_error": cfg.last_error,
         "oauth_flow": "siwc_open_source",
-        "connect_complete_url": "/api/public/siwc/connect/complete",
+        "connect_complete_url": "/api/gui/chatgpt/connect/complete",
+        "connect_complete_public_url": "/api/public/siwc/connect/complete",
         "paper_only": True,
     }
 
@@ -105,9 +114,36 @@ async def connect_begin(session: AsyncSession = Depends(get_db), _=Depends(requi
         "authorize_url": url,
         "redirect_uri": redirect_uri,
         "expires_in": 900,
-        "complete_via": "POST /api/public/siwc/connect/complete with X-Connect-Secret (no dashboard session)",
+        "complete_via": "POST /api/gui/chatgpt/connect/complete or public endpoint with X-Connect-Secret",
         "helper_hint": "Run scripts/siwc_oauth_helper.py on Windows/Linux with a browser.",
     }
+
+
+@router.post("/connect/complete")
+async def connect_complete(
+    body: ConnectCompleteBody,
+    _=Depends(require_dashboard_access),
+):
+    return await consume_connect_session(
+        connect_token=body.connect_token,
+        connect_secret=body.connect_secret,
+        oauth_state=body.oauth_state,
+        code=body.code,
+        callback_client_id=body.callback_client_id,
+    )
+
+
+@router.post("/connect/test")
+async def connect_test(session: AsyncSession = Depends(get_db), _=Depends(require_dashboard_access)):
+    token, _, err = await get_access_token(session)
+    if err or not token:
+        raise HTTPException(400, err or "not_connected")
+    try:
+        models_list = await list_models(token)
+    except Exception as exc:
+        raise HTTPException(502, f"Connection test failed: {exc}") from exc
+    sample = models_list[:5] if models_list else []
+    return {"ok": True, "model_count": len(models_list), "sample_models": sample}
 
 
 @router.post("/disconnect")
