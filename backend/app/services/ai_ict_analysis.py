@@ -24,7 +24,7 @@ from app.services.execution_model import ExecutionModel
 from app.services.siwc.credentials import get_access_token
 from app.services.siwc.responses_client import AnalysisResponse, OpenAIResponsesError, stream_analysis_response
 from app.services.ai_trader_instructions import ICT_TRADER_INSTRUCTIONS
-from app.services.ai_trader_report import build_trader_report_fa
+from app.services.ai_trader_report import finalize_user_report, prepare_structured_for_user_report
 from app.services.telegram_notifier import TelegramNotifier
 
 INSTRUCTIONS = ICT_TRADER_INSTRUCTIONS
@@ -360,9 +360,8 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
             timeout=settings.ai_response_timeout_seconds,
         )
         structured = _extract_json(analysis.text)
-        if live > 0 and not structured.get("current_price"):
-            structured["current_price"] = round(live, 2)
-        structured["report_fa"] = build_trader_report_fa(structured, symbol=symbol)
+        structured = prepare_structured_for_user_report(structured)
+        structured["report_fa"] = finalize_user_report(structured, symbol=symbol, live=live)
         safety = _paper_safety_notes(structured, live)
         draft.decision = str(structured.get("decision", "NO_TRADE")).upper()
         draft.report_fa = structured["report_fa"]

@@ -15,7 +15,7 @@ def test_instructions_discretionary_trader_not_validator():
     assert "lifecycle_phase" in INSTRUCTIONS
     assert "below 1:2" in INSTRUCTIONS or "1:2" in INSTRUCTIONS
     assert "ict_liquidity" in INSTRUCTIONS
-    assert "server formats" in INSTRUCTIONS or "assembled by TradeOnBU" in INSTRUCTIONS
+    assert "server-side" in INSTRUCTIONS or "server-formatted" in INSTRUCTIONS
 
 
 def test_build_report_decision_and_setup_first():
@@ -30,7 +30,7 @@ def test_build_report_decision_and_setup_first():
         "take_profit": 84200,
         "take_profit_2": 84500,
         "risk_reward": "1:2.7",
-        "entry_trigger": "5m MSS bullish + FVG retest",
+        "entry_confirmation": "5m MSS bullish + FVG retest",
         "invalidation_condition": "Below 82900",
         "ict_liquidity": "SSL swept at 82400",
         "ict_structure": "MSS bullish on 5m",
@@ -45,7 +45,7 @@ def test_build_report_decision_and_setup_first():
     setup_idx = report.index("Setup:")
     entry_idx = report.index("Entry:")
     assert decision_idx < setup_idx < entry_idx
-    assert "83200-83300" in report
+    assert "83200 - 83300" in report
     assert "82900" in report
     assert "84200" in report
     assert "5m MSS bullish" in report
@@ -62,7 +62,7 @@ def test_build_report_no_trade_concise():
         "waiting_for": ["5m BOS + FVG"],
     }
     report = build_trader_report_fa(data)
-    assert "NO_TRADE" in report
+    assert "NO TRADE" in report
     assert "Reason:" in report
     assert "Waiting for:" in report
     assert "Setup:" not in report or report.index("Decision:") < report.find("Setup:") if "Setup:" in report else True
@@ -95,4 +95,4 @@ def test_long_structured_json_fields_supported():
     )
     report = build_trader_report_fa(payload)
     assert "SHORT" in report
-    assert "90050-90150" in report
+    assert "90050 - 90150" in report

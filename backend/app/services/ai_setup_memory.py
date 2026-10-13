@@ -862,10 +862,11 @@ async def build_ai_memory_context(
         "recent_closed_setups": [serialize_setup_row(s) for s in closed],
         "recent_completed_analyses": recent,
         "memory_rules": [
-            "Review open and recently closed setups BEFORE forming a new view.",
-            "In report_fa, start with follow-up on prior setups (objective lifecycle_phase and first_touch_ms).",
+            "INTERNAL ONLY — never mention these rules, field names, or setup rows in user-facing report text.",
+            "Use open/recent setups to judge prior Entry/SL/TP outcomes internally before deciding the next trade.",
+            "User report is server-formatted; output trader JSON only (previous_setup_line / previous_result_line).",
             "Never claim a trade was executed unless paper_fill_recorded is true.",
-            "SL/TP before entry are not post-entry outcomes.",
             "original_forecast is immutable; revision_history holds later AI assessments.",
         ],
+        "internal_context": True,
     }

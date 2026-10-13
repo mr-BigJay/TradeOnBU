@@ -387,7 +387,7 @@ async def test_unexpected_chart_render_exception_still_completes_and_sends_text(
     assert run.telegram_sent is True
     assert run.report_fa.startswith("BTCUSDT ICT Analysis")
     assert "Decision:" in run.report_fa
-    assert "NO_TRADE" in run.report_fa
+    assert "NO TRADE" in run.report_fa
     chart_art = ((run.structured or {}).get("_artifacts") or {}).get("chart") or {}
     assert chart_art.get("error")
 
