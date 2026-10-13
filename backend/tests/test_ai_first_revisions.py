@@ -195,7 +195,8 @@ async def test_closed_setups_in_memory_context(session):
         stop_loss=98.0,
         take_profit=105.0,
         closed_at=datetime.now(timezone.utc),
-        objective_notes={"lifecycle_phase": "expired"},
+        objective_notes={"lifecycle_phase": "expired", "outcome_tracking_status": "complete"},
+        last_tracked_candle_ms=1,
     )
     session.add(closed)
     await session.commit()

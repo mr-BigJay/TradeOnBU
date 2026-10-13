@@ -87,13 +87,16 @@ async def test_expiry_after_final_tracking_window(session):
     )
     session.add(setup)
     await session.commit()
+    await session.refresh(setup)
+    from app.services.ai_setup_memory import _last_required_tracking_ms
 
+    last_req = _last_required_tracking_ms(setup)
     entry_candle = Candle(
         open=100,
         high=100.5,
         low=99.8,
         close=100.2,
-        time_ms=int((expires - timedelta(minutes=10)).timestamp() * 1000),
+        time_ms=last_req,
     )
     bundle = KlineBundle(
         closed=[entry_candle],

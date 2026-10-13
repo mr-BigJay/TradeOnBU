@@ -51,20 +51,86 @@ def _save_notes(setup: AiProposedSetup, notes: dict[str, Any]) -> None:
     setup.objective_notes = notes
 
 
-def _tracking_incomplete(setup: AiProposedSetup) -> bool:
-    notes = setup.objective_notes or {}
-    if notes.get("outcome_tracking_status") == TRACKING_COMPLETE:
-        return False
-    if notes.get("pending_tracking_from_ms") is not None:
-        return True
+POST_ENTRY_TERMINAL_PHASES = (
+    LIFECYCLE_SL_AFTER_ENTRY,
+    LIFECYCLE_TP_AFTER_ENTRY,
+    LIFECYCLE_SAME_CANDLE_AMBIGUOUS,
+    LIFECYCLE_INVALIDATED,
+)
+
+
+def _has_blocking_tracking_issues(notes: dict[str, Any]) -> bool:
     if notes.get("fetch_error"):
         return True
-    gaps = (notes.get("data_gaps") or {}).get("gaps_remaining")
-    if gaps:
+    if notes.get("pending_tracking_from_ms") is not None:
         return True
     if notes.get("missing_intervals"):
         return True
-    return notes.get("outcome_tracking_status") == TRACKING_INCOMPLETE
+    gaps = (notes.get("data_gaps") or {}).get("gaps_remaining")
+    return bool(gaps)
+
+
+def _tracking_start_ms(setup: AiProposedSetup) -> int:
+    created_ms = int(_ensure_utc(setup.created_at).timestamp() * 1000)
+    step = interval_ms("5m")
+    return ((created_ms // step) + 1) * step
+
+
+def _last_required_tracking_ms(setup: AiProposedSetup) -> int:
+    start_ms = _tracking_start_ms(setup)
+    if not setup.expires_at:
+        return start_ms
+    exp_ms = int(_ensure_utc(setup.expires_at).timestamp() * 1000)
+    step = interval_ms("5m")
+    last_open = exp_ms - step
+    while last_open >= exp_ms:
+        last_open -= step
+    return max(start_ms, last_open)
+
+
+def _validity_window_needs_more_tracking(setup: AiProposedSetup, now: datetime) -> bool:
+    wm = setup.last_tracked_candle_ms or 0
+    if wm <= 0:
+        return True
+    last_req = _last_required_tracking_ms(setup)
+    if not setup.expires_at:
+        return False
+    if _ensure_utc(setup.expires_at) > now:
+        now_ms = int(now.timestamp() * 1000)
+        step = interval_ms("5m")
+        current_target = max(_tracking_start_ms(setup), (now_ms // step) * step - step)
+        target = min(last_req, current_target)
+        return wm < target
+    return wm < last_req
+
+
+def _tracking_incomplete(setup: AiProposedSetup, now: datetime | None = None) -> bool:
+    notes = setup.objective_notes or {}
+    phase = notes.get("lifecycle_phase")
+    if phase == LIFECYCLE_INVALIDATED and setup.status == "invalidated":
+        return False
+    if _has_blocking_tracking_issues(notes):
+        return True
+    return _validity_window_needs_more_tracking(setup, now or _utc())
+
+
+def _clear_resolved_tracking_errors(notes: dict[str, Any], bundle: KlineBundle | None) -> None:
+    if bundle is None:
+        return
+    if bundle.gaps_remaining or not bundle.data_complete:
+        return
+    for key in (
+        "fetch_error",
+        "pending_tracking_from_ms",
+        "missing_intervals",
+        "data_gaps",
+        "tracking_warning",
+    ):
+        notes.pop(key, None)
+
+
+def _is_post_entry_terminal_phase(phase: str | None) -> bool:
+    return phase in POST_ENTRY_TERMINAL_PHASES
 
 
 def _candle_within_validity(setup: AiProposedSetup, candle: Candle) -> bool:
@@ -212,28 +278,22 @@ async def load_open_setups(session: AsyncSession, symbol: str) -> list[AiPropose
     return list(rows)
 
 
-def _tracking_start_ms(setup: AiProposedSetup) -> int:
-    created_ms = int(_ensure_utc(setup.created_at).timestamp() * 1000)
-    step = interval_ms("5m")
-    return ((created_ms // step) + 1) * step
-
-
 def _finalize_validity_and_tracking(setup: AiProposedSetup, now: datetime | None = None) -> None:
     now = now or _utc()
     notes = _notes(setup)
     if setup.expires_at and _ensure_utc(setup.expires_at) <= now:
         notes["validity_status"] = VALIDITY_EXPIRED
-    if notes.get("validity_status") == VALIDITY_EXPIRED and not _tracking_incomplete(setup):
-        if setup.status == "open":
+    incomplete = _tracking_incomplete(setup, now)
+    if incomplete:
+        notes["outcome_tracking_status"] = TRACKING_INCOMPLETE
+    else:
+        notes["outcome_tracking_status"] = TRACKING_COMPLETE
+        if notes.get("validity_status") == VALIDITY_EXPIRED and setup.status == "open":
             setup.status = "expired"
             setup.closed_at = now
-            if notes.get("lifecycle_phase") not in (LIFECYCLE_INVALIDATED, LIFECYCLE_SL_AFTER_ENTRY, LIFECYCLE_TP_AFTER_ENTRY):
+            phase = notes.get("lifecycle_phase")
+            if phase not in POST_ENTRY_TERMINAL_PHASES:
                 notes["lifecycle_phase"] = LIFECYCLE_EXPIRED
-        notes["outcome_tracking_status"] = TRACKING_COMPLETE
-    elif not _tracking_incomplete(setup):
-        notes["outcome_tracking_status"] = TRACKING_COMPLETE
-    else:
-        notes["outcome_tracking_status"] = TRACKING_INCOMPLETE
     _save_notes(setup, notes)
 
 
@@ -419,7 +479,7 @@ def apply_objective_price_tracking(
                 notes["lifecycle_phase"] = LIFECYCLE_ENTRY_NOT_REACHED
             continue
 
-        if phase == LIFECYCLE_SL_AFTER_ENTRY:
+        if _is_post_entry_terminal_phase(phase):
             continue
         if sl_hit and tp_hit:
             setup.sequencing_ambiguous = True
@@ -445,10 +505,11 @@ def apply_objective_price_tracking(
             "gaps_remaining": list(bundle.gaps_remaining or [])[:20],
             "data_complete": bundle.data_complete,
         }
-        notes["outcome_tracking_status"] = TRACKING_INCOMPLETE
         phase_now = notes.get("lifecycle_phase") or LIFECYCLE_ENTRY_NOT_REACHED
         if phase_now == LIFECYCLE_ENTRY_NOT_REACHED:
             notes["lifecycle_phase"] = LIFECYCLE_UNKNOWN_MISSING_DATA
+    else:
+        _clear_resolved_tracking_errors(notes, bundle)
 
     _save_notes(setup, notes)
 
@@ -461,12 +522,17 @@ def _advance_tracking_watermark(
 ) -> None:
     notes = _notes(setup)
     if bundle and (bundle.gaps_remaining or not bundle.data_complete):
-        notes["pending_tracking_from_ms"] = from_ms
+        if bundle.gaps_remaining:
+            notes["pending_tracking_from_ms"] = min(bundle.gaps_remaining)
+        else:
+            notes["pending_tracking_from_ms"] = from_ms
         notes["missing_intervals"] = list(bundle.gaps_remaining or [])[:20]
-        notes["outcome_tracking_status"] = TRACKING_INCOMPLETE
         phase_now = notes.get("lifecycle_phase") or LIFECYCLE_ENTRY_NOT_REACHED
         if phase_now == LIFECYCLE_ENTRY_NOT_REACHED:
             notes["lifecycle_phase"] = LIFECYCLE_UNKNOWN_MISSING_DATA
+        _save_notes(setup, notes)
+    else:
+        _clear_resolved_tracking_errors(notes, bundle)
         _save_notes(setup, notes)
     if verified:
         setup.last_tracked_candle_ms = max(c.time_ms for c in verified)
@@ -479,10 +545,14 @@ async def _fetch_setup_tracking_candles(
 ) -> tuple[list[Candle], KlineBundle | None, int]:
     step = interval_ms("5m")
     start_ms = _tracking_start_ms(setup)
+    notes = _notes(setup)
+    pending = notes.get("pending_tracking_from_ms")
     if setup.last_tracked_candle_ms:
         from_ms = setup.last_tracked_candle_ms + step
     else:
         from_ms = start_ms
+    if pending is not None:
+        from_ms = min(from_ms, int(pending))
 
     end_ms: int | None = None
     if setup.expires_at:
