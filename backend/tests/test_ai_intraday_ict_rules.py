@@ -45,6 +45,10 @@ def test_instructions_require_intraday_not_scalp():
     assert "Do NOT reject a valid ICT setup only because a percentage" in t
     assert "sl_tight_structural" in t
     assert "1:2" in t
+    assert "RR alone is NOT enough" in t
+    assert "Clear liquidity event" in t
+    assert "POI reaction" in t
+    assert "Structural confirmation" in t
     assert INSTRUCTIONS is ICT_TRADER_INSTRUCTIONS
 
 

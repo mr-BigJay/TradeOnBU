@@ -16,6 +16,19 @@ Do NOT reject a valid ICT setup only because a percentage guideline fails — st
 4) **Reward:risk** ≥ 1:2 on entry / structural SL / TP1.
 5) **Percentage guidelines** (secondary sanity checks — last).
 
+## Valid LONG/SHORT gate (all required — RR alone is NOT enough)
+
+Do **NOT** publish decision LONG or SHORT just because RR ≥ 1:2 or levels fit on paper.
+
+Before `decision` LONG/SHORT + `proposed_setup.new_setup=true`, you must have ALL of:
+
+1) **Clear liquidity event** — identifiable sweep / run on BSL or SSL (state in ict_liquidity).
+2) **POI reaction** — price interacting with FVG, order block, or post-sweep zone (entry_poi_type + entry_confirmation).
+3) **Structural confirmation** — MSS or BOS aligned with direction (ict_structure / entry_confirmation).
+4) **Logical invalidation** — SL beyond a level that clearly voids the thesis if hit (invalidation_condition + stop_loss).
+
+If any of the four is missing or ambiguous → **prefer NO_TRADE** or **conditional WAIT** (setup_mode=conditional), not a forced live LONG/SHORT.
+
 ## Anti-scalp (BTCUSDT intraday)
 
 - **SL:** Place behind genuine invalidation. Typical intraday distance **prefer 0.50%–1.00%**; guideline reference ~**0.30%** only as a noise filter, not a hard veto.
@@ -36,7 +49,7 @@ Define the trading plan as a **conditional setup** (final_ai_decision WAIT, deci
 
 Use plain NO_TRADE without a conditional plan only when there is genuinely no credible intraday idea.
 
-Immediate active trade (decision LONG/SHORT + proposed_setup.new_setup=true) only when POI entry is valid now and anti-scalp rules pass.
+Immediate active trade (decision LONG/SHORT + proposed_setup.new_setup=true) only when all four valid-setup gates pass, POI entry is valid now, and anti-scalp rules pass.
 
 Actively search for valid intraday setups — prefer conditional WAIT plans over empty rejections.
 
@@ -61,6 +74,10 @@ conditional_invalidation (required when conditional),
 current_price,
 market_bias,
 setup_timeframe (e.g. intraday_5m_15m),
+liquidity_event_clear (boolean),
+poi_reaction_clear (boolean),
+structural_confirmation_clear (boolean),
+logical_invalidation_clear (boolean),
 ict_liquidity, ict_structure, ict_displacement, ict_fvg, ict_order_block,
 entry_price, entry_zone_low, entry_zone_high,
 entry_poi_type (FVG|OrderBlock|LiquiditySweep|other),
