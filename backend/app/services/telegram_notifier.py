@@ -62,6 +62,14 @@ class TelegramNotifier:
             f"\n_Paper simulation only — no Bitunix order placed._"
         )
 
+    @staticmethod
+    def _retry_after_seconds(resp: httpx.Response) -> float:
+        raw = resp.headers.get("Retry-After", "0")
+        try:
+            return max(0.0, float(raw))
+        except (TypeError, ValueError):
+            return 0.0
+
     async def _post_with_retries(self, url: str, **kwargs: Any) -> httpx.Response | None:
         last_status = 0
         for attempt in range(3):
@@ -72,14 +80,34 @@ class TelegramNotifier:
                 logger.warning("Telegram HTTP error (attempt %s): %s", attempt + 1, exc)
                 await asyncio.sleep(0.6 * (attempt + 1))
                 continue
+            except Exception as exc:
+                logger.warning("Telegram unexpected error (attempt %s): %s", attempt + 1, exc)
+                await asyncio.sleep(0.6 * (attempt + 1))
+                continue
             last_status = resp.status_code
             if resp.status_code == 429 or resp.status_code >= 500:
-                retry_after = int(resp.headers.get("Retry-After", "0") or 0)
+                retry_after = self._retry_after_seconds(resp)
                 await asyncio.sleep(max(retry_after, 0.8 * (attempt + 1)))
                 continue
             return resp
         logger.error("Telegram request failed after retries (last status %s)", last_status)
         return None
+
+    @staticmethod
+    def _message_id_from_response(resp: httpx.Response) -> int | None:
+        try:
+            data = resp.json()
+        except Exception:
+            logger.error("Telegram response JSON parse failed")
+            return None
+        if not isinstance(data, dict) or not data.get("ok"):
+            logger.error("Telegram API response not ok")
+            return None
+        result = data.get("result") or {}
+        if not isinstance(result, dict):
+            return None
+        msg_id = result.get("message_id")
+        return int(msg_id) if msg_id is not None else None
 
     async def send_message(
         self,
@@ -99,16 +127,16 @@ class TelegramNotifier:
             payload["parse_mode"] = parse_mode
         if reply_markup:
             payload["reply_markup"] = reply_markup
-        resp = await self._post_with_retries(url, json=payload)
-        if resp is None or resp.status_code >= 400:
-            if resp is not None:
-                logger.error("Telegram sendMessage error %s", resp.status_code)
+        try:
+            resp = await self._post_with_retries(url, json=payload)
+            if resp is None or resp.status_code >= 400:
+                if resp is not None:
+                    logger.error("Telegram sendMessage error %s", resp.status_code)
+                return None
+            return self._message_id_from_response(resp)
+        except Exception:
+            logger.exception("Telegram sendMessage failed")
             return None
-        data = resp.json()
-        if not data.get("ok"):
-            logger.error("Telegram API sendMessage not ok")
-            return None
-        return data.get("result", {}).get("message_id")
 
     async def send_photo_file(self, photo_path: Path, caption: str) -> int | None:
         if not self.enabled:
@@ -118,19 +146,19 @@ class TelegramNotifier:
             logger.error("Telegram photo missing: %s", photo_path.name)
             return None
         url = f"https://api.telegram.org/bot{self.settings.telegram_bot_token}/sendPhoto"
-        data = {"chat_id": self.settings.telegram_chat_id, "caption": caption[:1024]}
-        content = photo_path.read_bytes()
-        files = {"photo": ("chart.png", content, "image/png")}
-        resp = await self._post_with_retries(url, data=data, files=files)
-        if resp is None or resp.status_code >= 400:
-            if resp is not None:
-                logger.error("Telegram sendPhoto error %s", resp.status_code)
+        try:
+            data = {"chat_id": self.settings.telegram_chat_id, "caption": caption[:1024]}
+            content = photo_path.read_bytes()
+            files = {"photo": ("chart.png", content, "image/png")}
+            resp = await self._post_with_retries(url, data=data, files=files)
+            if resp is None or resp.status_code >= 400:
+                if resp is not None:
+                    logger.error("Telegram sendPhoto error %s", resp.status_code)
+                return None
+            return self._message_id_from_response(resp)
+        except Exception:
+            logger.exception("Telegram sendPhoto failed")
             return None
-        body = resp.json()
-        if not body.get("ok"):
-            logger.error("Telegram API sendPhoto not ok")
-            return None
-        return body.get("result", {}).get("message_id")
 
     async def send_ai_report(self, text: str) -> int | None:
         """Plain text — AI Persian reports may contain Markdown-special characters."""

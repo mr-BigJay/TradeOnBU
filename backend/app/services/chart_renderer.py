@@ -8,10 +8,10 @@ from typing import Any
 import matplotlib
 
 matplotlib.use("Agg")
-import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import mplfinance as mpf
 import pandas as pd
+from matplotlib.ticker import FuncFormatter, MaxNLocator
 
 from app.domain.candles import Candle
 
@@ -79,6 +79,37 @@ def _format_price(value: float) -> str:
     if value >= 1000:
         return f"{value:,.2f}"
     return f"{value:.4f}"
+
+
+def _fvg_zone_color(direction: str | None) -> str:
+    d = str(direction or "").upper()
+    if d in ("LONG", "BULLISH", "BULL"):
+        return "#a78bfa"
+    if d in ("SHORT", "BEARISH", "BEAR"):
+        return "#fb7185"
+    return "#94a3b8"
+
+
+def format_candle_axis_tick(index: pd.DatetimeIndex, x: float, _pos: float) -> str:
+    """Map mplfinance integer candle positions to real UTC timestamps."""
+    if len(index) == 0:
+        return ""
+    ix = int(round(x))
+    ix = max(0, min(ix, len(index) - 1))
+    ts = index[ix]
+    if hasattr(ts, "to_pydatetime"):
+        ts = ts.to_pydatetime()
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    else:
+        ts = ts.astimezone(timezone.utc)
+    return ts.strftime("%m-%d %H:%M")
+
+
+def apply_candle_time_axis(ax, index: pd.DatetimeIndex, *, max_ticks: int = 8) -> None:
+    """mplfinance plots candles on integer x positions when gaps are collapsed."""
+    ax.xaxis.set_major_locator(MaxNLocator(nbins=max_ticks, integer=True, min_n_ticks=3))
+    ax.xaxis.set_major_formatter(FuncFormatter(lambda x, p: format_candle_axis_tick(index, x, p)))
 
 
 def render_ict_chart_png(
@@ -195,7 +226,7 @@ def render_ict_chart_png(
         t_start = _time_to_index(df, zone.get("time_ms"))
         if t_start is None:
             t_start = df.index[max(0, len(df) - 20)]
-        color = "#a78bfa" if str(zone.get("direction", "")).upper() == "BULLISH" else "#fb7185"
+        color = _fvg_zone_color(zone.get("direction"))
         ax.axhspan(
             z_low,
             z_high,
@@ -234,7 +265,7 @@ def render_ict_chart_png(
     subtitle = f"{structure_line} · Live {_format_price(live_price)} · {ts_label} · PAPER ONLY"
     fig.suptitle(title, color="#f1f5f9", fontsize=12, fontweight="bold", y=0.98)
     ax.set_title(subtitle, color="#94a3b8", fontsize=9, pad=8)
-    ax.xaxis.set_major_formatter(mdates.DateFormatter("%m-%d %H:%M"))
+    apply_candle_time_axis(ax, df.index)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=CHART_DPI, facecolor=fig.get_facecolor(), bbox_inches="tight")

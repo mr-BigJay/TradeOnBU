@@ -193,56 +193,62 @@ async def _generate_chart_for_run(
     decision: str,
     analyzed_at: datetime,
 ) -> tuple[Path | None, dict[str, Any]]:
-    chart_path = chart_path_for_run(run_id)
-    candles = _candles_from_ctx(ctx, "15m")
-    overlays: dict[str, Any]
-    if len(candles) < 10:
-        try:
-            chart_svc = ChartDataService()
-            direction = decision if decision in ("LONG", "SHORT") else None
-            bundle = await chart_svc.bundle(symbol, "15m", limit=120, direction=direction)
-            candles = [
-                Candle(
-                    open=float(row["open"]),
-                    high=float(row["high"]),
-                    low=float(row["low"]),
-                    close=float(row["close"]),
-                    time_ms=int(row["time_ms"]),
-                )
-                for row in (bundle.get("candles") or [])
-            ]
-            overlays = bundle.get("overlays") or {}
-        except Exception as exc:
-            return None, _merge_artifacts(structured, {"chart": chart_artifact_meta(run_id, error=str(exc))})
-    else:
-        tf = (ctx.get("timeframes") or {}).get("15m") or {}
-        overlays = tf.get("overlays") or {}
-
-    trade_levels = _trade_levels_from_structured(structured, validation)
     try:
-        await asyncio.to_thread(
-            render_ict_chart_png,
-            output_path=chart_path,
-            symbol=symbol,
-            interval="15m",
-            candles=candles,
-            overlays=overlays,
-            live_price=live,
-            decision=decision,
-            trade_levels=trade_levels,
-            analyzed_at=analyzed_at,
-        )
-    except ChartRenderError as exc:
-        return None, _merge_artifacts(structured, {"chart": chart_artifact_meta(run_id, error=str(exc))})
+        chart_path = chart_path_for_run(run_id)
+        candles = _candles_from_ctx(ctx, "15m")
+        overlays: dict[str, Any]
+        if len(candles) < 10:
+            try:
+                chart_svc = ChartDataService()
+                direction = decision if decision in ("LONG", "SHORT") else None
+                bundle = await chart_svc.bundle(symbol, "15m", limit=120, direction=direction)
+                candles = [
+                    Candle(
+                        open=float(row["open"]),
+                        high=float(row["high"]),
+                        low=float(row["low"]),
+                        close=float(row["close"]),
+                        time_ms=int(row["time_ms"]),
+                    )
+                    for row in (bundle.get("candles") or [])
+                ]
+                overlays = bundle.get("overlays") or {}
+            except Exception as exc:
+                return None, _merge_artifacts(structured, {"chart": chart_artifact_meta(run_id, error=str(exc))})
+        else:
+            tf = (ctx.get("timeframes") or {}).get("15m") or {}
+            overlays = tf.get("overlays") or {}
+
+        trade_levels = _trade_levels_from_structured(structured, validation)
+        try:
+            await asyncio.to_thread(
+                render_ict_chart_png,
+                output_path=chart_path,
+                symbol=symbol,
+                interval="15m",
+                candles=candles,
+                overlays=overlays,
+                live_price=live,
+                decision=decision,
+                trade_levels=trade_levels,
+                analyzed_at=analyzed_at,
+            )
+        except ChartRenderError as exc:
+            return None, _merge_artifacts(structured, {"chart": chart_artifact_meta(run_id, error=str(exc))})
+        except Exception as exc:
+            return None, _merge_artifacts(
+                structured,
+                {"chart": chart_artifact_meta(run_id, error=f"render_failed:{exc}")},
+            )
+
+        meta = chart_artifact_meta(run_id)
+        meta["generated_at"] = analyzed_at.isoformat()
+        return chart_path, _merge_artifacts(structured, {"chart": meta})
     except Exception as exc:
         return None, _merge_artifacts(
             structured,
-            {"chart": chart_artifact_meta(run_id, error=f"render_failed:{exc}")},
+            {"chart": chart_artifact_meta(run_id, error=f"unexpected:{exc}")},
         )
-
-    meta = chart_artifact_meta(run_id)
-    meta["generated_at"] = analyzed_at.isoformat()
-    return chart_path, _merge_artifacts(structured, {"chart": meta})
 
 
 async def _deliver_ai_telegram(
@@ -253,34 +259,56 @@ async def _deliver_ai_telegram(
     chart_path: Path | None,
     analyzed_at: datetime,
 ) -> None:
-    notifier = TelegramNotifier()
-    if not notifier.enabled or not draft.report_fa:
+    if not draft.report_fa:
+        return
+
+    try:
+        notifier = TelegramNotifier()
+    except Exception as exc:
+        draft.structured = _merge_artifacts(
+            draft.structured,
+            {"telegram": {"notifier_error": str(exc)[:500]}},
+        )
+        return
+
+    if not notifier.enabled:
         return
 
     trade_levels = _trade_levels_from_structured(draft.structured, draft.validation)
     telegram_meta: dict[str, Any] = {}
 
     if chart_path and chart_path.is_file():
-        caption = format_ai_chart_caption(
-            symbol=symbol,
-            interval="15m",
-            decision=draft.decision,
-            live_price=live,
-            trade_levels=trade_levels,
-            analyzed_at=analyzed_at,
-        )
-        photo_id = await notifier.send_photo_file(chart_path, caption)
-        draft.telegram_photo_sent = photo_id is not None
-        telegram_meta["photo_message_id"] = photo_id
+        try:
+            caption = format_ai_chart_caption(
+                symbol=symbol,
+                interval="15m",
+                decision=draft.decision,
+                live_price=live,
+                trade_levels=trade_levels,
+                analyzed_at=analyzed_at,
+            )
+            photo_id = await notifier.send_photo_file(chart_path, caption)
+            draft.telegram_photo_sent = photo_id is not None
+            telegram_meta["photo_message_id"] = photo_id
+            if photo_id is None:
+                telegram_meta["photo_error"] = "send_photo_failed"
+        except Exception as exc:
+            telegram_meta["photo_error"] = str(exc)[:500]
 
-    msg = format_ai_telegram_message(
-        decision=draft.decision,
-        report_fa=draft.report_fa,
-        validation=draft.validation,
-    )
-    text_id = await notifier.send_ai_report(msg)
-    draft.telegram_sent = text_id is not None
-    telegram_meta["text_message_id"] = text_id
+    try:
+        msg = format_ai_telegram_message(
+            decision=draft.decision,
+            report_fa=draft.report_fa,
+            validation=draft.validation,
+        )
+        text_id = await notifier.send_ai_report(msg)
+        draft.telegram_sent = text_id is not None
+        telegram_meta["text_message_id"] = text_id
+        if text_id is None:
+            telegram_meta["text_error"] = "send_message_failed"
+    except Exception as exc:
+        telegram_meta["text_error"] = str(exc)[:500]
+
     draft.structured = _merge_artifacts(draft.structured, {"telegram": telegram_meta})
 
 
@@ -376,25 +404,38 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
             draft.error_detail = ",".join(validation["reasons"])
 
         analyzed_at = datetime.now(timezone.utc)
-        chart_path, structured_with_art = await _generate_chart_for_run(
-            run_id=run_id,
-            symbol=symbol,
-            ctx=ctx,
-            structured=draft.structured,
-            validation=validation,
-            live=live,
-            decision=draft.decision or "NO_TRADE",
-            analyzed_at=analyzed_at,
-        )
-        draft.structured = structured_with_art
+        chart_path: Path | None = None
+        try:
+            chart_path, structured_with_art = await _generate_chart_for_run(
+                run_id=run_id,
+                symbol=symbol,
+                ctx=ctx,
+                structured=draft.structured,
+                validation=validation,
+                live=live,
+                decision=draft.decision or "NO_TRADE",
+                analyzed_at=analyzed_at,
+            )
+            draft.structured = structured_with_art
+        except Exception as exc:
+            draft.structured = _merge_artifacts(
+                draft.structured,
+                {"chart": chart_artifact_meta(run_id, error=f"unexpected:{exc}")},
+            )
 
-        await _deliver_ai_telegram(
-            draft=draft,
-            symbol=symbol,
-            live=live,
-            chart_path=chart_path,
-            analyzed_at=analyzed_at,
-        )
+        try:
+            await _deliver_ai_telegram(
+                draft=draft,
+                symbol=symbol,
+                live=live,
+                chart_path=chart_path,
+                analyzed_at=analyzed_at,
+            )
+        except Exception as exc:
+            draft.structured = _merge_artifacts(
+                draft.structured,
+                {"telegram": {"delivery_error": str(exc)[:500]}},
+            )
     except MarketContextError as exc:
         draft.status = "failed"
         draft.error_code = exc.code
