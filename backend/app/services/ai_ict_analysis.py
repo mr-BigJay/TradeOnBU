@@ -83,11 +83,16 @@ def _paper_safety_notes(data: dict[str, Any], live: float) -> dict[str, Any]:
     out["sl_distance_pct"] = round(sl_dist_pct, 4)
     out["tp1_distance_pct"] = round(tp_dist_pct, 4)
     if sl_dist_pct < 0.30:
-        out["warnings"].append(f"sl_too_tight_intraday:{sl_dist_pct:.3f}%")
+        if data.get("sl_tight_structural"):
+            out["warnings"].append(f"sl_tight_structural:{sl_dist_pct:.3f}%")
+        else:
+            out["warnings"].append(f"sl_below_guideline_review_noise:{sl_dist_pct:.3f}%")
     elif sl_dist_pct < 0.50:
         out["warnings"].append(f"sl_below_preferred_intraday:{sl_dist_pct:.3f}%")
-    if tp_dist_pct < 0.80:
-        out["warnings"].append(f"tp1_move_below_intraday_min:{tp_dist_pct:.3f}%")
+    if tp_dist_pct < 0.80 and not data.get("tp_liquidity_target"):
+        out["warnings"].append(f"tp1_move_small_no_liquidity_target:{tp_dist_pct:.3f}%")
+    elif tp_dist_pct < 0.80:
+        out["warnings"].append(f"tp1_move_below_guideline:{tp_dist_pct:.3f}%")
     model = ExecutionModel()
     rr = model.calc_rr(decision, entry, sl, tp, "LIMIT", min_net_rr=get_effective_settings().min_net_rr)
     out["net_rr"] = rr.net_rr
