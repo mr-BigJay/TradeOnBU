@@ -15,7 +15,7 @@ from app.db import SessionLocal
 from app.models import AiAnalysisRun
 from app.services.ai_analysis_scheduler import get_or_create_settings, record_run_outcome
 from app.domain.candles import Candle
-from app.services.ai_telegram_format import format_ai_chart_caption, format_ai_telegram_message
+from app.services.ai_telegram_format import format_ai_chart_caption, split_ai_telegram_report_messages
 from app.services.chart_data import ChartDataService
 from app.services.chart_media import chart_artifact_meta, chart_path_for_run
 from app.services.chart_renderer import ChartRenderError, render_ict_chart_png
@@ -277,34 +277,41 @@ async def _deliver_ai_telegram(
     trade_levels = _trade_levels_from_structured(draft.structured, draft.validation)
     telegram_meta: dict[str, Any] = {}
 
-    if chart_path and chart_path.is_file():
+    if chart_path is not None:
         try:
-            caption = format_ai_chart_caption(
-                symbol=symbol,
-                interval="15m",
-                decision=draft.decision,
-                live_price=live,
-                trade_levels=trade_levels,
-                analyzed_at=analyzed_at,
-            )
-            photo_id = await notifier.send_photo_file(chart_path, caption)
-            draft.telegram_photo_sent = photo_id is not None
-            telegram_meta["photo_message_id"] = photo_id
-            if photo_id is None:
-                telegram_meta["photo_error"] = "send_photo_failed"
+            if chart_path.is_file():
+                caption = format_ai_chart_caption(
+                    symbol=symbol,
+                    interval="15m",
+                    decision=draft.decision,
+                    live_price=live,
+                    trade_levels=trade_levels,
+                    analyzed_at=analyzed_at,
+                )
+                photo_id = await notifier.send_photo_file(chart_path, caption)
+                draft.telegram_photo_sent = photo_id is not None
+                telegram_meta["photo_message_id"] = photo_id
+                if photo_id is None:
+                    telegram_meta["photo_error"] = "send_photo_failed"
         except Exception as exc:
             telegram_meta["photo_error"] = str(exc)[:500]
 
     try:
-        msg = format_ai_telegram_message(
+        parts = split_ai_telegram_report_messages(
             decision=draft.decision,
             report_fa=draft.report_fa,
             validation=draft.validation,
         )
-        text_id = await notifier.send_ai_report(msg)
-        draft.telegram_sent = text_id is not None
-        telegram_meta["text_message_id"] = text_id
-        if text_id is None:
+        text_ids: list[int] = []
+        for part in parts:
+            text_id = await notifier.send_ai_report(part)
+            if text_id is not None:
+                text_ids.append(text_id)
+        draft.telegram_sent = len(text_ids) > 0
+        telegram_meta["text_message_ids"] = text_ids
+        telegram_meta["text_message_id"] = text_ids[0] if text_ids else None
+        telegram_meta["text_part_count"] = len(parts)
+        if parts and not text_ids:
             telegram_meta["text_error"] = "send_message_failed"
     except Exception as exc:
         telegram_meta["text_error"] = str(exc)[:500]

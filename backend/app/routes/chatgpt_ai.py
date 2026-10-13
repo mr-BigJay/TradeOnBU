@@ -279,4 +279,9 @@ async def history_chart(run_id: int, session: AsyncSession = Depends(get_db), _=
         if alt is None:
             raise HTTPException(404, "Chart not available")
         path = alt
-    return FileResponse(path, media_type="image/png", filename=f"analysis_{run_id}.png")
+    return FileResponse(
+        path,
+        media_type="image/png",
+        filename=f"analysis_{run_id}.png",
+        content_disposition_type="inline",
+    )

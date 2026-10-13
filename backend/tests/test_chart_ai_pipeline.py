@@ -252,6 +252,8 @@ async def test_ai_pipeline_chart_and_telegram(session, client, tmp_path, monkeyp
     resp = await client.get(f"/api/gui/chatgpt/history/{run.id}/chart")
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("image/png")
+    disposition = resp.headers.get("content-disposition", "")
+    assert "inline" in disposition.lower()
 
 
 @pytest.mark.asyncio
@@ -352,6 +354,68 @@ async def test_unexpected_chart_render_exception_still_completes_and_sends_text(
     assert run.report_fa == "گزارش پایدار"
     chart_art = ((run.structured or {}).get("_artifacts") or {}).get("chart") or {}
     assert chart_art.get("error")
+
+
+@pytest.mark.asyncio
+async def test_chart_is_file_oserror_still_sends_text(session, monkeypatch, tmp_path):
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+    charts_dir()
+    cred = ChatGptCredential(
+        id=1,
+        client_id="oai",
+        access_token_enc="enc",
+        scopes_json=["chatgpt.tokens.use.direct"],
+        preferred_model="m",
+        access_expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+    session.add(cred)
+    await session.commit()
+    candles = _synthetic_candles(50)
+    ctx = {
+        "symbol": "BTCUSDT",
+        "timeframes": {
+            "15m": {
+                "candles": [
+                    {"time_ms": c.time_ms, "open": c.open, "high": c.high, "low": c.low, "close": c.close}
+                    for c in candles
+                ],
+                "overlays": {},
+            }
+        },
+    }
+    ai_json = {"decision": "NO_TRADE", "report_fa": "متن بعد از خطای is_file"}
+
+    async def fake_post(url, json=None, **_kwargs):
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 11}})
+
+    real_is_file = Path.is_file
+
+    def broken_is_file(self):
+        if "media/charts/run_" in str(self).replace("\\", "/"):
+            raise OSError("stat failed")
+        return real_is_file(self)
+
+    with patch("app.services.ai_ict_analysis.get_access_token", AsyncMock(return_value=("tok", cred, None))):
+        with patch("app.services.ai_ict_analysis.build_market_context", AsyncMock(return_value=(ctx, candles[-1].close))):
+            with patch(
+                "app.services.ai_ict_analysis.stream_response",
+                AsyncMock(return_value=f"```json\n{json.dumps(ai_json)}\n```"),
+            ):
+                with patch.object(Path, "is_file", broken_is_file):
+                    with patch("app.services.telegram_notifier.telegram_integration_active", return_value=True):
+                        with patch("app.services.telegram_notifier.get_effective_settings") as gs:
+                            settings = gs.return_value
+                            settings.telegram_bot_token = "123456789:abc"
+                            settings.telegram_chat_id = "1"
+                            with patch("app.services.telegram_notifier.httpx.AsyncClient") as client_cls:
+                                client_cls.return_value.__aenter__.return_value.post = fake_post
+                                run = await run_ai_analysis(trigger="manual")
+
+    assert run.status.startswith("completed")
+    assert run.telegram_sent is True
+    tg = ((run.structured or {}).get("_artifacts") or {}).get("telegram") or {}
+    assert tg.get("photo_error")
+    assert tg.get("text_message_id") == 11
 
 
 @pytest.mark.asyncio

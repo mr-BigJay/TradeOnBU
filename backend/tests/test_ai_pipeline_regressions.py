@@ -10,7 +10,7 @@ from app.db import SessionLocal
 from app.models import AiAnalysisRun, AiAnalysisSettings, ChatGptCredential
 from app.services.ai_analysis_scheduler import FAILURE_BACKOFF_MINUTES, should_run_scheduled
 from app.services.ai_ict_analysis import run_ai_analysis
-from app.services.ai_telegram_format import format_ai_telegram_message
+from app.services.ai_telegram_format import format_ai_telegram_message, split_ai_telegram_report_messages
 from app.services.ai_analysis_scheduler import record_run_outcome
 from app.services.telegram_notifier import TelegramNotifier
 
@@ -132,6 +132,20 @@ async def test_token_failure_persisted_in_history(session):
     assert run.error_code == "not_connected"
     stored = (await session.execute(select(AiAnalysisRun).where(AiAnalysisRun.id == run.id))).scalar_one()
     assert stored.status == "failed"
+
+
+def test_split_ai_telegram_report_preserves_full_long_body():
+    body = "ف" * 5000
+    parts = split_ai_telegram_report_messages(
+        decision="NO_TRADE",
+        report_fa=body,
+        validation={"ok": True},
+    )
+    assert len(parts) >= 2
+    assert all(len(p) <= 4096 for p in parts)
+    assert "".join(parts).endswith("ف")
+    assert body in "".join(parts)
+    assert parts[0].startswith("تحلیل ICT — NO TRADE")
 
 
 @pytest.mark.asyncio
