@@ -43,13 +43,18 @@ async def test_no_open_write_during_delayed_openai(session):
             s.add(AiAnalysisRun(status="pending", trigger="probe", is_ai=False))
             await s.commit()
 
+    async def _skip_chart(**kwargs):
+        return None, kwargs["structured"]
+
     with patch("app.services.ai_ict_analysis.get_access_token", AsyncMock(return_value=("tok", cred, None))):
         with patch("app.services.ai_ict_analysis.build_market_context", AsyncMock(return_value=({"x": 1}, 100.0))):
-            with patch("app.services.ai_ict_analysis.stream_response", slow_stream):
-                task = asyncio.create_task(run_ai_analysis(trigger="manual"))
-                await asyncio.wait_for(parallel_writer(), timeout=3.0)
-                proceed.set()
-                run = await task
+            with patch("app.services.ai_ict_analysis._generate_chart_for_run", _skip_chart):
+                with patch("app.services.ai_ict_analysis._deliver_ai_telegram", AsyncMock()):
+                    with patch("app.services.ai_ict_analysis.stream_response", slow_stream):
+                        task = asyncio.create_task(run_ai_analysis(trigger="manual"))
+                        await asyncio.wait_for(parallel_writer(), timeout=3.0)
+                        proceed.set()
+                        run = await task
     assert run.status.startswith("completed")
     probes = (await session.execute(select(AiAnalysisRun).where(AiAnalysisRun.trigger == "probe"))).scalars().all()
     assert probes

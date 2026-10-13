@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
@@ -12,8 +14,11 @@ from app.config import get_effective_settings
 from app.db import SessionLocal
 from app.models import AiAnalysisRun
 from app.services.ai_analysis_scheduler import get_or_create_settings, record_run_outcome
-from app.services.ai_telegram_format import format_ai_telegram_message
+from app.domain.candles import Candle
+from app.services.ai_telegram_format import format_ai_chart_caption, format_ai_telegram_message
 from app.services.chart_data import ChartDataService
+from app.services.chart_media import chart_artifact_meta, chart_path_for_run
+from app.services.chart_renderer import ChartRenderError, render_ict_chart_png
 from app.services.execution_model import ExecutionModel
 from app.services.market_data import MarketDataService
 from app.services.siwc.credentials import get_access_token
@@ -47,6 +52,7 @@ class _RunDraft:
     structured: dict[str, Any] = field(default_factory=dict)
     validation: dict[str, Any] = field(default_factory=dict)
     telegram_sent: bool = False
+    telegram_photo_sent: bool = False
     error_code: str | None = None
     error_detail: str | None = None
     completed_at: datetime | None = None
@@ -126,6 +132,156 @@ def _validate_levels(data: dict[str, Any], live: float) -> dict[str, Any]:
         out["reasons"].append("net_rr_below_threshold")
     out["ok"] = len(out["reasons"]) == 0
     return out
+
+
+def _candles_from_ctx(ctx: dict[str, Any], interval: str = "15m") -> list[Candle]:
+    tf = (ctx.get("timeframes") or {}).get(interval) or {}
+    rows = tf.get("candles") or []
+    out: list[Candle] = []
+    for row in rows:
+        try:
+            out.append(
+                Candle(
+                    open=float(row["open"]),
+                    high=float(row["high"]),
+                    low=float(row["low"]),
+                    close=float(row["close"]),
+                    time_ms=int(row["time_ms"]),
+                )
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+    return out
+
+
+def _trade_levels_from_structured(structured: dict[str, Any], validation: dict[str, Any]) -> dict[str, float] | None:
+    decision = str(structured.get("decision", "NO_TRADE")).upper()
+    if decision not in ("LONG", "SHORT") or not validation.get("ok"):
+        return None
+    try:
+        return {
+            "entry": float(structured["entry_price"]),
+            "stop_loss": float(structured["stop_loss"]),
+            "take_profit": float(structured["take_profit"]),
+        }
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _merge_artifacts(structured: dict[str, Any], artifacts: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(structured)
+    base = dict(merged.get("_artifacts") or {})
+    for key, value in artifacts.items():
+        if isinstance(value, dict) and isinstance(base.get(key), dict):
+            nested = dict(base[key])
+            nested.update(value)
+            base[key] = nested
+        else:
+            base[key] = value
+    merged["_artifacts"] = base
+    return merged
+
+
+async def _generate_chart_for_run(
+    *,
+    run_id: int,
+    symbol: str,
+    ctx: dict[str, Any],
+    structured: dict[str, Any],
+    validation: dict[str, Any],
+    live: float,
+    decision: str,
+    analyzed_at: datetime,
+) -> tuple[Path | None, dict[str, Any]]:
+    chart_path = chart_path_for_run(run_id)
+    candles = _candles_from_ctx(ctx, "15m")
+    overlays: dict[str, Any]
+    if len(candles) < 10:
+        try:
+            chart_svc = ChartDataService()
+            direction = decision if decision in ("LONG", "SHORT") else None
+            bundle = await chart_svc.bundle(symbol, "15m", limit=120, direction=direction)
+            candles = [
+                Candle(
+                    open=float(row["open"]),
+                    high=float(row["high"]),
+                    low=float(row["low"]),
+                    close=float(row["close"]),
+                    time_ms=int(row["time_ms"]),
+                )
+                for row in (bundle.get("candles") or [])
+            ]
+            overlays = bundle.get("overlays") or {}
+        except Exception as exc:
+            return None, _merge_artifacts(structured, {"chart": chart_artifact_meta(run_id, error=str(exc))})
+    else:
+        tf = (ctx.get("timeframes") or {}).get("15m") or {}
+        overlays = tf.get("overlays") or {}
+
+    trade_levels = _trade_levels_from_structured(structured, validation)
+    try:
+        await asyncio.to_thread(
+            render_ict_chart_png,
+            output_path=chart_path,
+            symbol=symbol,
+            interval="15m",
+            candles=candles,
+            overlays=overlays,
+            live_price=live,
+            decision=decision,
+            trade_levels=trade_levels,
+            analyzed_at=analyzed_at,
+        )
+    except ChartRenderError as exc:
+        return None, _merge_artifacts(structured, {"chart": chart_artifact_meta(run_id, error=str(exc))})
+    except Exception as exc:
+        return None, _merge_artifacts(
+            structured,
+            {"chart": chart_artifact_meta(run_id, error=f"render_failed:{exc}")},
+        )
+
+    meta = chart_artifact_meta(run_id)
+    meta["generated_at"] = analyzed_at.isoformat()
+    return chart_path, _merge_artifacts(structured, {"chart": meta})
+
+
+async def _deliver_ai_telegram(
+    *,
+    draft: _RunDraft,
+    symbol: str,
+    live: float,
+    chart_path: Path | None,
+    analyzed_at: datetime,
+) -> None:
+    notifier = TelegramNotifier()
+    if not notifier.enabled or not draft.report_fa:
+        return
+
+    trade_levels = _trade_levels_from_structured(draft.structured, draft.validation)
+    telegram_meta: dict[str, Any] = {}
+
+    if chart_path and chart_path.is_file():
+        caption = format_ai_chart_caption(
+            symbol=symbol,
+            interval="15m",
+            decision=draft.decision,
+            live_price=live,
+            trade_levels=trade_levels,
+            analyzed_at=analyzed_at,
+        )
+        photo_id = await notifier.send_photo_file(chart_path, caption)
+        draft.telegram_photo_sent = photo_id is not None
+        telegram_meta["photo_message_id"] = photo_id
+
+    msg = format_ai_telegram_message(
+        decision=draft.decision,
+        report_fa=draft.report_fa,
+        validation=draft.validation,
+    )
+    text_id = await notifier.send_ai_report(msg)
+    draft.telegram_sent = text_id is not None
+    telegram_meta["text_message_id"] = text_id
+    draft.structured = _merge_artifacts(draft.structured, {"telegram": telegram_meta})
 
 
 async def _create_run_record(*, trigger: str) -> int:
@@ -219,15 +375,26 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
             draft.error_code = "validation_warning"
             draft.error_detail = ",".join(validation["reasons"])
 
-        notifier = TelegramNotifier()
-        if notifier.enabled and draft.report_fa:
-            msg = format_ai_telegram_message(
-                decision=draft.decision,
-                report_fa=draft.report_fa,
-                validation=validation,
-            )
-            msg_id = await notifier.send_ai_report(msg)
-            draft.telegram_sent = msg_id is not None
+        analyzed_at = datetime.now(timezone.utc)
+        chart_path, structured_with_art = await _generate_chart_for_run(
+            run_id=run_id,
+            symbol=symbol,
+            ctx=ctx,
+            structured=draft.structured,
+            validation=validation,
+            live=live,
+            decision=draft.decision or "NO_TRADE",
+            analyzed_at=analyzed_at,
+        )
+        draft.structured = structured_with_art
+
+        await _deliver_ai_telegram(
+            draft=draft,
+            symbol=symbol,
+            live=live,
+            chart_path=chart_path,
+            analyzed_at=analyzed_at,
+        )
     except MarketContextError as exc:
         draft.status = "failed"
         draft.error_code = exc.code

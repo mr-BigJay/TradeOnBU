@@ -13,6 +13,14 @@ from app.services.siwc.oauth import access_expiry, has_plan_scope, refresh_token
 _refresh_lock = asyncio.Lock()
 
 
+def _as_utc(dt: datetime | None) -> datetime | None:
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
 async def get_credential_row(session: AsyncSession) -> ChatGptCredential | None:
     return (await session.execute(select(ChatGptCredential).where(ChatGptCredential.id == 1))).scalar_one_or_none()
 
@@ -74,14 +82,16 @@ async def get_access_token(session: AsyncSession) -> tuple[str | None, ChatGptCr
     if not has_plan_scope(row.scopes_json or []):
         return None, row, "plan_scope_missing"
     now = datetime.now(timezone.utc)
-    if row.access_expires_at and row.access_expires_at > now + timedelta(seconds=60):
+    expires_at = _as_utc(row.access_expires_at)
+    if expires_at and expires_at > now + timedelta(seconds=60):
         return _decrypt(row, "access_token_enc"), row, None
     refresh = _decrypt(row, "refresh_token_enc")
     if not refresh:
         return _decrypt(row, "access_token_enc"), row, None
     async with _refresh_lock:
         await session.refresh(row)
-        if row.access_expires_at and row.access_expires_at > now + timedelta(seconds=60):
+        expires_at = _as_utc(row.access_expires_at)
+        if expires_at and expires_at > now + timedelta(seconds=60):
             return _decrypt(row, "access_token_enc"), row, None
         try:
             refreshed = await refresh_tokens(refresh_token=refresh, client_id=row.client_id)
