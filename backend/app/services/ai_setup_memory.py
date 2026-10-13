@@ -626,14 +626,18 @@ async def _fetch_setup_tracking_candles(
         _save_notes(setup, notes)
         return [], None, from_ms
 
-    scoped = []
+    scoped: list[Candle] = []
     for c in bundle.closed:
         if c.time_ms < from_ms or c.time_ms < start_ms:
             continue
-        if end_ms is not None and not _candle_fully_eligible_before_expiry(setup, c, "5m"):
+        if end_ms is not None:
             if _candle_straddles_expiry(setup, c, "5m"):
+                # Pass through to apply_objective_price_tracking for uncertainty flags only.
+                scoped.append(c)
                 continue
             if c.time_ms >= end_ms:
+                continue
+            if not _candle_fully_eligible_before_expiry(setup, c, "5m"):
                 continue
         scoped.append(c)
     return scoped, bundle, from_ms

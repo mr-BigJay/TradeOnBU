@@ -1,7 +1,7 @@
 """Data-integrity regressions: contiguous gaps, expiry reconciliation, immutable forecasts."""
 
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -16,8 +16,10 @@ from app.services.ai_setup_memory import (
     VALIDITY_EXPIRED,
     _verified_contiguous_prefix,
     apply_objective_price_tracking,
+    build_ai_memory_context,
     create_setup_from_structured,
     refresh_setup_objective_state,
+    serialize_setup_row,
 )
 from app.services.market_data import KlineBundle
 
@@ -347,3 +349,99 @@ async def test_create_setup_finalizes_after_expiry_when_reconciled(session):
     assert row.objective_notes.get("validity_status") == VALIDITY_EXPIRED
     assert row.objective_notes.get("outcome_tracking_status") == TRACKING_COMPLETE
     assert row.status == "expired"
+
+
+@pytest.mark.asyncio
+async def test_refresh_persists_expiry_straddle_uncertainty_in_db_and_memory(session):
+    """Integration: straddling 12:05–12:10 bar with expiry 12:07:30 must not count touches."""
+    exp = datetime(2026, 6, 15, 12, 7, 30, tzinfo=timezone.utc)
+    created = datetime(2026, 6, 15, 11, 0, 0, tzinfo=timezone.utc)
+    fixed_now = datetime(2026, 6, 15, 14, 0, 0, tzinfo=timezone.utc)
+    open_ms = int(datetime(2026, 6, 15, 12, 5, 0, tzinfo=timezone.utc).timestamp() * 1000)
+    exp_ms = int(exp.timestamp() * 1000)
+    step = 300_000
+
+    setup = AiProposedSetup(
+        setup_id="exp-straddle-refresh",
+        run_id=1,
+        symbol="BTCUSDT",
+        direction="LONG",
+        status="open",
+        entry_zone_low=99.0,
+        entry_zone_high=101.0,
+        stop_loss=98.0,
+        take_profit=105.0,
+        created_at=created,
+        expires_at=exp,
+        last_tracked_candle_ms=0,
+    )
+    session.add(setup)
+    await session.commit()
+
+    straddle = Candle(open=100, high=102, low=98, close=101, time_ms=open_ms)
+    assert open_ms < exp_ms < open_ms + step
+
+    bundle = KlineBundle(
+        closed=[straddle],
+        forming=None,
+        gaps_detected=[],
+        gaps_remaining=[],
+        data_complete=True,
+        interval="5m",
+    )
+    market = AsyncMock()
+    market.fetch_historical_closed = AsyncMock(return_value=bundle)
+
+    with patch("app.services.ai_setup_memory._utc", return_value=fixed_now):
+        await refresh_setup_objective_state(session, symbol="BTCUSDT", candles_by_interval={}, market=market)
+
+    await session.commit()
+    await session.refresh(setup)
+    assert setup.entry_touched is False
+    assert setup.sl_touched is False
+    assert setup.tp_touched is False
+    assert setup.objective_notes.get("expiry_boundary_uncertain") is True
+    assert open_ms in (setup.objective_notes.get("expiry_boundary_straddle_candles_ms") or [])
+    assert setup.last_tracked_candle_ms == open_ms
+    first_fetch_from_ms = market.fetch_historical_closed.call_args_list[0][0][2]
+    assert first_fetch_from_ms <= open_ms
+
+    empty_bundle = KlineBundle(
+        closed=[],
+        forming=None,
+        gaps_detected=[],
+        gaps_remaining=[],
+        data_complete=True,
+        interval="5m",
+    )
+    market.fetch_historical_closed = AsyncMock(return_value=empty_bundle)
+    with patch("app.services.ai_setup_memory._utc", return_value=fixed_now):
+        memory = await build_ai_memory_context(
+            session, symbol="BTCUSDT", candles_by_interval={}, market=market
+        )
+
+    serialized = serialize_setup_row(setup)
+    assert serialized["objective_notes"].get("expiry_boundary_uncertain") is True
+
+    all_setups = (
+        memory["open_setups"]
+        + memory.get("reconciling_expired_setups", [])
+        + memory.get("recent_closed_setups", [])
+    )
+    mem_row = next(s for s in all_setups if s["setup_id"] == setup.setup_id)
+    assert mem_row["objective_notes"].get("expiry_boundary_uncertain") is True
+    assert open_ms in (mem_row["objective_notes"].get("expiry_boundary_straddle_candles_ms") or [])
+    assert mem_row["entry_touched"] is False
+
+    setup.status = "open"
+    setup.last_tracked_candle_ms = open_ms
+    await session.commit()
+    market.fetch_historical_closed.reset_mock()
+    market.fetch_historical_closed = AsyncMock(return_value=empty_bundle)
+    with patch("app.services.ai_setup_memory._utc", return_value=fixed_now):
+        await refresh_setup_objective_state(session, symbol="BTCUSDT", candles_by_interval={}, market=market)
+    await session.refresh(setup)
+    assert setup.entry_touched is False
+    assert setup.objective_notes.get("expiry_boundary_uncertain") is True
+    if market.fetch_historical_closed.called:
+        assert market.fetch_historical_closed.call_args[0][2] == open_ms + step
