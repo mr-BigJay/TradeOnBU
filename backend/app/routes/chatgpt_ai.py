@@ -4,6 +4,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,9 +24,26 @@ from app.services.siwc.oauth import (
     new_pkce,
     scopes_list,
 )
+from app.services.chart_media import chart_path_for_run, resolve_chart_path
 from app.services.siwc.responses_client import list_models
 
 router = APIRouter(prefix="/api/gui/chatgpt", tags=["chatgpt-ai"])
+
+
+def _chart_available(run: AiAnalysisRun) -> bool:
+    chart = ((run.structured or {}).get("_artifacts") or {}).get("chart") or {}
+    filename = chart.get("filename")
+    if not filename:
+        return False
+    return resolve_chart_path(str(filename)) is not None
+
+
+def _telegram_delivery(run: AiAnalysisRun) -> dict:
+    tg = ((run.structured or {}).get("_artifacts") or {}).get("telegram") or {}
+    return {
+        "text_sent": bool(run.telegram_sent),
+        "photo_sent": tg.get("photo_message_id") is not None,
+    }
 
 
 class SettingsBody(BaseModel):
@@ -213,6 +231,8 @@ async def history(limit: int = 50, session: AsyncSession = Depends(get_db), _=De
             "decision": r.decision,
             "model_slug": r.model_slug,
             "telegram_sent": r.telegram_sent,
+            "telegram_delivery": _telegram_delivery(r),
+            "has_chart": _chart_available(r),
             "is_ai": r.is_ai,
             "error_code": r.error_code,
             "created_at": r.created_at.isoformat(),
@@ -236,8 +256,32 @@ async def history_detail(run_id: int, session: AsyncSession = Depends(get_db), _
         "validation": run.validation,
         "model_slug": run.model_slug,
         "telegram_sent": run.telegram_sent,
+        "telegram_delivery": _telegram_delivery(run),
+        "has_chart": _chart_available(run),
+        "chart_url": f"/api/gui/chatgpt/history/{run.id}/chart" if _chart_available(run) else None,
         "is_ai": run.is_ai,
         "error_code": run.error_code,
         "error_detail": run.error_detail,
         "created_at": run.created_at.isoformat(),
     }
+
+
+@router.get("/history/{run_id}/chart")
+async def history_chart(run_id: int, session: AsyncSession = Depends(get_db), _=Depends(require_dashboard_access)):
+    run = (await session.execute(select(AiAnalysisRun).where(AiAnalysisRun.id == run_id))).scalar_one_or_none()
+    if not run:
+        raise HTTPException(404, "Not found")
+    path = chart_path_for_run(run_id)
+    if not path.is_file():
+        chart = ((run.structured or {}).get("_artifacts") or {}).get("chart") or {}
+        filename = chart.get("filename")
+        alt = resolve_chart_path(str(filename)) if filename else None
+        if alt is None:
+            raise HTTPException(404, "Chart not available")
+        path = alt
+    return FileResponse(
+        path,
+        media_type="image/png",
+        filename=f"analysis_{run_id}.png",
+        content_disposition_type="inline",
+    )

@@ -123,14 +123,19 @@ async def test_telegram_invalid_on_rejected_long(session):
         sent.append(msg)
         return 1
 
+    async def skip_chart(**kwargs):
+        return None, kwargs["structured"]
+
     with patch("app.services.ai_ict_analysis.get_access_token", AsyncMock(return_value=("tok", cred_row, None))):
         with patch("app.services.ai_ict_analysis.build_market_context", AsyncMock(return_value=({"live_price": 100}, 100.0))):
-            with patch("app.services.ai_ict_analysis.stream_response", AsyncMock(return_value=f"```json\n{ai_json}\n```")):
-                with patch("app.services.ai_ict_analysis.TelegramNotifier") as tn:
-                    inst = tn.return_value
-                    type(inst).enabled = property(lambda self: True)
-                    inst.send_ai_report = AsyncMock(side_effect=capture)
-                    run = await run_ai_analysis(trigger="test")
+            with patch("app.services.ai_ict_analysis._generate_chart_for_run", skip_chart):
+                with patch("app.services.ai_ict_analysis.stream_response", AsyncMock(return_value=f"```json\n{ai_json}\n```")):
+                    with patch("app.services.ai_ict_analysis.TelegramNotifier") as tn:
+                        inst = tn.return_value
+                        type(inst).enabled = property(lambda self: True)
+                        inst.send_photo_file = AsyncMock(return_value=None)
+                        inst.send_ai_report = AsyncMock(side_effect=capture)
+                        run = await run_ai_analysis(trigger="test")
     assert run.status == "completed_with_warnings"
     assert sent
     assert "INVALID" in sent[0]

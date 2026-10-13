@@ -15,6 +15,15 @@ type HistoryRow = {
   report_preview?: string;
   created_at: string;
   telegram_sent: boolean;
+  has_chart?: boolean;
+};
+
+type HistoryDetail = {
+  id: number;
+  report_fa?: string;
+  has_chart?: boolean;
+  chart_url?: string | null;
+  decision?: string;
 };
 
 function decisionBadge(d?: string) {
@@ -29,7 +38,8 @@ export function AiAnalysisPage() {
   const [status, setStatus] = useState<Status | null>(null);
   const [history, setHistory] = useState<HistoryRow[]>([]);
   const [msg, setMsg] = useState("");
-  const [detail, setDetail] = useState("");
+  const [detail, setDetail] = useState<HistoryDetail | null>(null);
+  const [chartZoom, setChartZoom] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const refresh = useCallback(async () => {
@@ -44,6 +54,12 @@ export function AiAnalysisPage() {
   useEffect(() => {
     refresh().catch((e) => setMsg(String(e)));
   }, [refresh]);
+
+  async function openDetail(id: number) {
+    const d = await apiFetch(`/api/gui/chatgpt/history/${id}`);
+    setDetail(d);
+    setChartZoom(false);
+  }
 
   async function analyzeNow() {
     setBusy(true);
@@ -65,7 +81,7 @@ export function AiAnalysisPage() {
     <div className="page">
       <header className="page-header">
         <h1>تحلیل ICT</h1>
-        <p className="hint">BTCUSDT · فارسی · Paper</p>
+        <p className="hint">BTCUSDT · 15m chart · فارسی · Paper</p>
       </header>
 
       {msg && <p className={`toast ${msg.includes("خطا") || msg.includes("409") ? "toast-error" : "toast-ok"}`}>{msg}</p>}
@@ -88,14 +104,13 @@ export function AiAnalysisPage() {
         <ul className="history-list">
           {history.map((r) => (
             <li key={r.id}>
-              <button
-                type="button"
-                className="history-card"
-                onClick={() => apiFetch(`/api/gui/chatgpt/history/${r.id}`).then((d) => setDetail(d.report_fa || ""))}
-              >
+              <button type="button" className="history-card" onClick={() => openDetail(r.id)}>
                 <div className="history-card-top">
                   <span className={decisionBadge(r.decision)}>{r.decision || "—"}</span>
-                  {r.telegram_sent && <span className="tg-dot" title="ارسال به تلگرام">✓</span>}
+                  <span className="history-icons">
+                    {r.has_chart && <span className="chart-dot" title="نمودار">📈</span>}
+                    {r.telegram_sent && <span className="tg-dot" title="ارسال به تلگرام">✓</span>}
+                  </span>
                 </div>
                 <p className="history-preview">{r.report_preview || r.status}</p>
                 <p className="history-time">
@@ -108,19 +123,43 @@ export function AiAnalysisPage() {
       </section>
 
       {detail && (
-        <div className="sheet-backdrop" role="presentation" onClick={() => setDetail("")}>
+        <div className="sheet-backdrop" role="presentation" onClick={() => setDetail(null)}>
           <div className="sheet" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
             <div className="sheet-handle" />
             <div className="sheet-head">
-              <h3>گزارش</h3>
-              <button type="button" className="ghost-btn" onClick={() => setDetail("")}>
+              <h3>گزارش {detail.decision || ""}</h3>
+              <button type="button" className="ghost-btn" onClick={() => setDetail(null)}>
                 بستن
               </button>
             </div>
             <div className="sheet-body">
-              <pre>{detail}</pre>
+              {detail.has_chart && detail.chart_url ? (
+                <div className="chart-preview-wrap">
+                  <button type="button" className="chart-preview-btn" onClick={() => setChartZoom(true)}>
+                    <img
+                      src={detail.chart_url}
+                      alt="ICT chart"
+                      className="chart-preview-img"
+                      loading="lazy"
+                    />
+                  </button>
+                  <p className="hint">برای بزرگ‌نمایی روی نمودار بزنید</p>
+                </div>
+              ) : (
+                <p className="hint">نمودار برای این گزارش موجود نیست.</p>
+              )}
+              <pre>{detail.report_fa || ""}</pre>
             </div>
           </div>
+        </div>
+      )}
+
+      {chartZoom && detail?.chart_url && (
+        <div className="chart-lightbox" role="dialog" aria-modal="true" onClick={() => setChartZoom(false)}>
+          <img src={detail.chart_url} alt="ICT chart full" className="chart-lightbox-img" />
+          <button type="button" className="ghost-btn chart-lightbox-close" onClick={() => setChartZoom(false)}>
+            بستن
+          </button>
         </div>
       )}
     </div>

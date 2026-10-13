@@ -12,7 +12,7 @@ import jwt
 
 OPENAI_AUTH = "https://auth.openai.com"
 OPENAI_API = "https://api.openai.com/v1"
-JWKS_URL = f"{OPENAI_AUTH}/api/accounts/oauth/jwks"
+JWKS_URL = f"{OPENAI_AUTH}/.well-known/jwks.json"
 TOKEN_URL = f"{OPENAI_AUTH}/api/accounts/oauth/token"
 AUTHORIZE_URL = f"{OPENAI_AUTH}/api/accounts/authorize"
 
