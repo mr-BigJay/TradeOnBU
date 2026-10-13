@@ -18,6 +18,7 @@ from app.services.signal_monitor import SignalMonitorService
 from app.services.system_state import release_worker_lock, try_acquire_worker_lock
 from app.services.notification_outbox import NotificationOutboxService
 from app.services.telegram_notifier import TelegramNotifier
+from app.services.ai_first_mode import legacy_rule_scan_enabled
 from app.services.trend_engine import TrendEngine
 
 logger = logging.getLogger(__name__)
@@ -76,7 +77,11 @@ class BotWorker:
                         )
                 await session.commit()
 
-                scan_allowed = runtime.scanning_enabled and not runtime.paper_trading_paused
+                scan_allowed = (
+                    legacy_rule_scan_enabled()
+                    and runtime.scanning_enabled
+                    and not runtime.paper_trading_paused
+                )
                 if scan_allowed:
                     ctx = await self.trend_engine.analyze(symbol)
                     await self.trend_engine.persist(session, ctx)
@@ -104,7 +109,14 @@ class BotWorker:
                             await session.refresh(sig)
                             logger.info("Created signal %s", sig.public_id)
                 else:
-                    logger.info("New signal scan skipped (scanning_enabled=%s paused=%s)", runtime.scanning_enabled, runtime.paper_trading_paused)
+                    if not legacy_rule_scan_enabled():
+                        logger.debug("Rule-based ICT scan skipped (AI-first analyst mode)")
+                    else:
+                        logger.info(
+                            "New signal scan skipped (scanning_enabled=%s paused=%s)",
+                            runtime.scanning_enabled,
+                            runtime.paper_trading_paused,
+                        )
 
                 await session.commit()
                 await self.outbox.flush_pending(session)

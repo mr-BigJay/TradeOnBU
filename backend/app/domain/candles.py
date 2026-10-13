@@ -9,6 +9,7 @@ class Candle:
     low: float
     close: float
     time_ms: int
+    volume: float | None = None
 
     @property
     def open_time(self) -> datetime:

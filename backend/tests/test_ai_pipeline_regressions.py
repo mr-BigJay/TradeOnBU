@@ -47,24 +47,44 @@ async def test_no_open_write_during_delayed_openai(session):
         return None, kwargs["structured"]
 
     with patch("app.services.ai_ict_analysis.get_access_token", AsyncMock(return_value=("tok", cred, None))):
-        with patch("app.services.ai_ict_analysis.build_market_context", AsyncMock(return_value=({"x": 1}, 100.0))):
-            with patch("app.services.ai_ict_analysis._generate_chart_for_run", _skip_chart):
-                with patch("app.services.ai_ict_analysis._deliver_ai_telegram", AsyncMock()):
-                    with patch("app.services.ai_ict_analysis.stream_response", slow_stream):
-                        task = asyncio.create_task(run_ai_analysis(trigger="manual"))
-                        await asyncio.wait_for(parallel_writer(), timeout=3.0)
-                        proceed.set()
-                        run = await task
+        from app.services.siwc.responses_client import AnalysisResponse
+
+        async def slow_analysis(*_args, **_kwargs):
+            gate.set()
+            await proceed.wait()
+            return AnalysisResponse(
+                text='```json\n{"decision":"NO_TRADE","report_fa":"ok"}\n```',
+                requested_model="gpt-6.1-sol",
+                requested_reasoning_effort="max",
+                response_model="gpt-6.1-sol",
+            )
+
+        with patch(
+            "app.services.ai_ict_analysis.build_raw_market_payload",
+            AsyncMock(return_value=({"x": 1, "timeframes": {}}, 100.0, {})),
+        ):
+            async def memory_side(*_args, **_kwargs):
+                gate.set()
+                return {"open_setups": []}
+
+            with patch("app.services.ai_ict_analysis.build_ai_memory_context", memory_side):
+                with patch("app.services.ai_ict_analysis._generate_chart_for_run", _skip_chart):
+                    with patch("app.services.ai_ict_analysis._deliver_ai_telegram", AsyncMock()):
+                        with patch("app.services.ai_ict_analysis.stream_analysis_response", slow_analysis):
+                            task = asyncio.create_task(run_ai_analysis(trigger="manual"))
+                            await asyncio.wait_for(parallel_writer(), timeout=3.0)
+                            proceed.set()
+                            run = await task
     assert run.status.startswith("completed")
     probes = (await session.execute(select(AiAnalysisRun).where(AiAnalysisRun.trigger == "probe"))).scalars().all()
     assert probes
 
 
 def test_record_run_outcome_sets_future_next_attempt():
-    cfg = AiAnalysisSettings(interval_minutes=60)
-    record_run_outcome(cfg, "completed")
-    assert cfg.next_run_at > datetime.now(timezone.utc) + timedelta(minutes=59)
-    record_run_outcome(cfg, "failed", "openai_error")
+    cfg = AiAnalysisSettings(interval_minutes=120)
+    record_run_outcome(cfg, "completed", trigger="scheduled")
+    assert cfg.next_run_at > datetime.now(timezone.utc) + timedelta(minutes=119)
+    record_run_outcome(cfg, "failed", "openai_error", trigger="scheduled")
     assert cfg.next_run_at > datetime.now(timezone.utc) + timedelta(minutes=FAILURE_BACKOFF_MINUTES - 1)
 
 
@@ -88,7 +108,7 @@ async def test_stale_past_next_run_fixed_after_failure_persisted(session):
     )
     await session.commit()
     assert await should_run_scheduled(session) is True
-    record_run_outcome(cfg, "failed", "quota")
+    record_run_outcome(cfg, "failed", "quota", trigger="scheduled")
     await session.commit()
     await session.refresh(cfg)
     nra = cfg.next_run_at

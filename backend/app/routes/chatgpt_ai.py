@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_effective_settings
 from app.db import get_db
 from app.models import AiAnalysisRun, AiAnalysisSettings, SiwcConnectSession
 from app.routes.auth import require_dashboard_access
@@ -49,7 +50,7 @@ def _telegram_delivery(run: AiAnalysisRun) -> dict:
 class SettingsBody(BaseModel):
     enabled: bool = False
     unattended_consent: bool = False
-    interval_minutes: int = Field(default=60, ge=15, le=240)
+    interval_minutes: int = Field(default=120, ge=120, le=360)
     preferred_model: str | None = None
 
 
@@ -88,6 +89,9 @@ async def status(session: AsyncSession = Depends(get_db), _=Depends(require_dash
         "connect_complete_url": "/api/gui/chatgpt/connect/complete",
         "connect_complete_public_url": "/api/public/siwc/connect/complete",
         "paper_only": True,
+        "ai_analysis_model": get_effective_settings().ai_analysis_model,
+        "ai_reasoning_effort": get_effective_settings().ai_reasoning_effort,
+        "schedule_default_minutes": 120,
     }
 
 
@@ -263,6 +267,7 @@ async def history_detail(run_id: int, session: AsyncSession = Depends(get_db), _
         "error_code": run.error_code,
         "error_detail": run.error_detail,
         "created_at": run.created_at.isoformat(),
+        "inference": ((run.structured or {}).get("_artifacts") or {}).get("inference"),
     }
 
 

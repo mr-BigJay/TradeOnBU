@@ -15,32 +15,43 @@ from app.db import SessionLocal
 from app.models import AiAnalysisRun
 from app.services.ai_analysis_scheduler import get_or_create_settings, record_run_outcome
 from app.domain.candles import Candle
+from app.services.ai_market_payload import MarketContextError, build_raw_market_payload
+from app.services.ai_setup_memory import build_ai_memory_context, create_setup_from_structured
 from app.services.ai_telegram_format import format_ai_chart_caption, split_ai_telegram_report_messages
-from app.services.chart_data import ChartDataService
 from app.services.chart_media import chart_artifact_meta, chart_path_for_run
 from app.services.chart_renderer import ChartRenderError, render_ict_chart_png
 from app.services.execution_model import ExecutionModel
-from app.services.market_data import MarketDataService
 from app.services.siwc.credentials import get_access_token
-from app.services.siwc.responses_client import OpenAIResponsesError, list_models, stream_response
+from app.services.siwc.responses_client import AnalysisResponse, OpenAIResponsesError, stream_analysis_response
 from app.services.telegram_notifier import TelegramNotifier
 
-REQUIRED_INTERVALS = ("4h", "15m", "5m", "1m")
-MIN_CANDLES = 20
+INSTRUCTIONS = """You are the sole ICT analyst for TradeOnBU (BTCUSDT paper trading only).
 
-INSTRUCTIONS = """You are an ICT market analyst for BTCUSDT paper trading only.
-Respond in Persian (Farsi) with structured JSON inside a single ```json code block.
-Never recommend live order execution. Output JSON fields:
-decision (LONG|SHORT|NO_TRADE), bias, structure_summary, liquidity, sweep, mss_bos, displacement, fvg,
-entry_price, stop_loss, take_profit, invalidation_level, net_rr_estimate, report_fa (full Persian narrative).
-Use only the supplied candle/structure data; if uncertain use NO_TRADE."""
+You MUST independently interpret ONLY the raw OHLCV and memory payload provided.
+TradeOnBU does NOT provide authoritative ICT conclusions — you decide trend, structure, BOS, MSS,
+liquidity, FVG, sweeps, scenarios, Entry, Stop Loss, Take Profit, invalidation, and LONG/SHORT/NO_TRADE.
 
+Before any new analysis, review `memory.open_setups`, `memory.recent_closed_setups`, and `memory.recent_completed_analyses`.
+Your Persian report (`report_fa`) MUST begin with follow-up on prior setups (lifecycle_phase, first_touch_ms, accuracy,
+what changed, what remains valid). Then provide the current independent ICT analysis.
 
-class MarketContextError(Exception):
-    def __init__(self, code: str, detail: str) -> None:
-        super().__init__(detail)
-        self.code = code
-        self.detail = detail
+Never recommend live orders. NO_TRADE is valid — do not force a direction.
+
+Setup persistence rules:
+- To open a genuinely NEW setup: proposed_setup.new_setup=true plus valid numeric levels.
+- To revise an existing open setup: proposed_setup.continue_setup_id=<setup_id> (do not duplicate).
+- Repeating the same LONG/SHORT without new_setup or continue_setup_id will NOT create another row.
+
+Respond with a single ```json code block containing at least:
+decision (LONG|SHORT|NO_TRADE),
+previous_setups_review_fa,
+report_fa (full Persian narrative per rules above),
+bias, structure_summary, liquidity, sweep, mss_bos, displacement, fvg,
+entry_price, entry_zone_low, entry_zone_high, stop_loss, take_profit, invalidation, invalidation_level,
+proposed_setup { new_setup, continue_setup_id, thesis_fa, expires_hours },
+chart_overlays { optional visual hints: liquidity_levels[], fvg_zones[], bos, mss },
+uncertainty_notes.
+"""
 
 
 @dataclass
@@ -58,38 +69,6 @@ class _RunDraft:
     completed_at: datetime | None = None
 
 
-async def build_market_context(symbol: str) -> tuple[dict[str, Any], float]:
-    settings = get_effective_settings()
-    market = MarketDataService(settings)
-    chart = ChartDataService(market)
-    ctx: dict[str, Any] = {"symbol": symbol, "timeframes": {}, "paper_only": True}
-
-    for interval in REQUIRED_INTERVALS:
-        try:
-            bundle = await market.fetch_kline_bundle(symbol, interval, 120)
-        except Exception as exc:
-            raise MarketContextError("market_fetch_failed", f"{interval}: {exc}") from exc
-        if not bundle.data_complete:
-            raise MarketContextError("incomplete_candles", f"{interval} history has gaps")
-        closed = bundle.closed[-120:]
-        if len(closed) < MIN_CANDLES:
-            raise MarketContextError("insufficient_candles", f"{interval} has fewer than {MIN_CANDLES} closed candles")
-        full = await chart.bundle(symbol, interval, limit=120)
-        ctx["timeframes"][interval] = {
-            "candles": (full.get("candles") or [])[-40:],
-            "overlays": full.get("overlays"),
-            "count": len(closed),
-        }
-
-    quote = await market.fetch_live_price(symbol)
-    if market.is_quote_stale(quote):
-        raise MarketContextError("stale_live_price", "Live Bitunix quote is stale or unavailable")
-    ctx["live_price"] = quote.price
-    ctx["quote_fetched_at"] = quote.fetched_at.isoformat()
-    ctx["quote_stale"] = False
-    return ctx, quote.price
-
-
 def _extract_json(text: str) -> dict[str, Any]:
     match = re.search(r"```json\s*(\{.*?\})\s*```", text, re.DOTALL | re.IGNORECASE)
     raw = match.group(1) if match else text.strip()
@@ -101,41 +80,40 @@ def _extract_json(text: str) -> dict[str, Any]:
     return json.loads(raw)
 
 
-def _validate_levels(data: dict[str, Any], live: float) -> dict[str, Any]:
+def _paper_safety_notes(data: dict[str, Any], live: float) -> dict[str, Any]:
+    """Objective checks only — never override AI decision."""
     decision = str(data.get("decision", "NO_TRADE")).upper()
-    out: dict[str, Any] = {"ok": False, "reasons": []}
+    out: dict[str, Any] = {"ok": True, "warnings": [], "paper_action": "none", "ai_decision": decision}
     if decision == "NO_TRADE":
-        out["ok"] = True
-        out["paper_action"] = "none"
         return out
     if decision not in ("LONG", "SHORT"):
-        out["reasons"].append("invalid_decision")
+        out["warnings"].append("non_standard_decision_label")
         return out
     if live <= 0:
-        out["reasons"].append("missing_live_price")
+        out["warnings"].append("missing_live_price")
         return out
     try:
         entry = float(data["entry_price"])
         sl = float(data["stop_loss"])
         tp = float(data["take_profit"])
     except (KeyError, TypeError, ValueError):
-        out["reasons"].append("missing_levels")
+        out["warnings"].append("missing_levels")
         return out
     drift = abs(entry - live) / live * 100
     if drift > 2.5:
-        out["reasons"].append(f"entry_far_from_live:{drift:.2f}%")
+        out["warnings"].append(f"entry_far_from_live:{drift:.2f}%")
     model = ExecutionModel()
     rr = model.calc_rr(decision, entry, sl, tp, "LIMIT", min_net_rr=get_effective_settings().min_net_rr)
     out["net_rr"] = rr.net_rr
-    out["acceptable"] = rr.acceptable
+    out["acceptable_rr"] = rr.acceptable
     if not rr.acceptable:
-        out["reasons"].append("net_rr_below_threshold")
-    out["ok"] = len(out["reasons"]) == 0
+        out["warnings"].append("net_rr_below_threshold")
+    out["paper_action"] = "ai_proposal_only"
     return out
 
 
-def _candles_from_ctx(ctx: dict[str, Any], interval: str = "15m") -> list[Candle]:
-    tf = (ctx.get("timeframes") or {}).get(interval) or {}
+def _candles_from_payload(market: dict[str, Any], interval: str = "15m") -> list[Candle]:
+    tf = (market.get("timeframes") or {}).get(interval) or {}
     rows = tf.get("candles") or []
     out: list[Candle] = []
     for row in rows:
@@ -147,6 +125,7 @@ def _candles_from_ctx(ctx: dict[str, Any], interval: str = "15m") -> list[Candle
                     low=float(row["low"]),
                     close=float(row["close"]),
                     time_ms=int(row["time_ms"]),
+                    volume=float(row["volume"]) if row.get("volume") is not None else None,
                 )
             )
         except (KeyError, TypeError, ValueError):
@@ -154,9 +133,9 @@ def _candles_from_ctx(ctx: dict[str, Any], interval: str = "15m") -> list[Candle
     return out
 
 
-def _trade_levels_from_structured(structured: dict[str, Any], validation: dict[str, Any]) -> dict[str, float] | None:
+def _levels_for_chart(structured: dict[str, Any]) -> dict[str, float] | None:
     decision = str(structured.get("decision", "NO_TRADE")).upper()
-    if decision not in ("LONG", "SHORT") or not validation.get("ok"):
+    if decision not in ("LONG", "SHORT"):
         return None
     try:
         return {
@@ -182,44 +161,28 @@ def _merge_artifacts(structured: dict[str, Any], artifacts: dict[str, Any]) -> d
     return merged
 
 
+def _chart_overlays_from_ai(structured: dict[str, Any]) -> dict[str, Any]:
+    raw = structured.get("chart_overlays")
+    if isinstance(raw, dict):
+        return raw
+    return {}
+
+
 async def _generate_chart_for_run(
     *,
     run_id: int,
     symbol: str,
-    ctx: dict[str, Any],
+    market_payload: dict[str, Any],
     structured: dict[str, Any],
-    validation: dict[str, Any],
     live: float,
     decision: str,
     analyzed_at: datetime,
 ) -> tuple[Path | None, dict[str, Any]]:
     try:
         chart_path = chart_path_for_run(run_id)
-        candles = _candles_from_ctx(ctx, "15m")
-        overlays: dict[str, Any]
-        if len(candles) < 10:
-            try:
-                chart_svc = ChartDataService()
-                direction = decision if decision in ("LONG", "SHORT") else None
-                bundle = await chart_svc.bundle(symbol, "15m", limit=120, direction=direction)
-                candles = [
-                    Candle(
-                        open=float(row["open"]),
-                        high=float(row["high"]),
-                        low=float(row["low"]),
-                        close=float(row["close"]),
-                        time_ms=int(row["time_ms"]),
-                    )
-                    for row in (bundle.get("candles") or [])
-                ]
-                overlays = bundle.get("overlays") or {}
-            except Exception as exc:
-                return None, _merge_artifacts(structured, {"chart": chart_artifact_meta(run_id, error=str(exc))})
-        else:
-            tf = (ctx.get("timeframes") or {}).get("15m") or {}
-            overlays = tf.get("overlays") or {}
-
-        trade_levels = _trade_levels_from_structured(structured, validation)
+        candles = _candles_from_payload(market_payload, "15m")
+        overlays = _chart_overlays_from_ai(structured)
+        trade_levels = _levels_for_chart(structured)
         try:
             await asyncio.to_thread(
                 render_ict_chart_png,
@@ -274,7 +237,7 @@ async def _deliver_ai_telegram(
     if not notifier.enabled:
         return
 
-    trade_levels = _trade_levels_from_structured(draft.structured, draft.validation)
+    trade_levels = _levels_for_chart(draft.structured)
     telegram_meta: dict[str, Any] = {}
 
     if chart_path is not None:
@@ -333,7 +296,7 @@ async def _create_run_record(*, trigger: str) -> int:
         return run.id
 
 
-async def _persist_run_draft(run_id: int, draft: _RunDraft) -> AiAnalysisRun:
+async def _persist_run_draft(run_id: int, draft: _RunDraft, *, symbol: str) -> AiAnalysisRun:
     completed = draft.completed_at or datetime.now(timezone.utc)
     async with SessionLocal() as session:
         run = (
@@ -349,22 +312,32 @@ async def _persist_run_draft(run_id: int, draft: _RunDraft) -> AiAnalysisRun:
         run.error_code = draft.error_code
         run.error_detail = draft.error_detail
         run.completed_at = completed
+        if draft.status.startswith("completed") and draft.structured:
+            _setup_row, setup_meta = await create_setup_from_structured(
+                session, run_id=run_id, symbol=symbol, structured=draft.structured
+            )
+            draft.structured = _merge_artifacts(draft.structured, {"setup_persistence": setup_meta})
+            run.structured = draft.structured
         cfg = await get_or_create_settings(session)
-        record_run_outcome(cfg, run.status, draft.error_detail)
+        record_run_outcome(cfg, run.status, draft.error_detail, trigger=run.trigger or "scheduled")
         await session.commit()
         await session.refresh(run)
         return run
 
 
 async def _execute_inference(*, run_id: int, trigger: str, model_override: str | None) -> _RunDraft:
-    """Network I/O only — no SQLite write transaction held on the run row."""
-    _ = run_id
     settings = get_effective_settings()
     symbol = settings.default_symbol
     draft = _RunDraft()
+    model = model_override or settings.ai_analysis_model
+    if model != settings.ai_analysis_model:
+        draft.error_code = "model_mismatch"
+        draft.error_detail = f"Only {settings.ai_analysis_model} is permitted for ICT analysis"
+        draft.completed_at = datetime.now(timezone.utc)
+        return draft
 
     async with SessionLocal() as session:
-        token, cred, err = await get_access_token(session)
+        token, _, err = await get_access_token(session)
         await session.commit()
 
     if err or not token:
@@ -373,42 +346,64 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
         draft.completed_at = datetime.now(timezone.utc)
         return draft
 
-    model = model_override or (cred.preferred_model if cred else None)
-    if not model:
-        try:
-            models = await list_models(token)
-            model = models[0]["slug"] if models else None
-        except Exception as exc:
-            draft.error_code = "model_list_failed"
-            draft.error_detail = str(exc)[:500]
-            draft.completed_at = datetime.now(timezone.utc)
-            return draft
-    if not model:
-        draft.error_code = "no_model"
-        draft.error_detail = "No listable model for this ChatGPT account"
-        draft.completed_at = datetime.now(timezone.utc)
-        return draft
-
     draft.model_slug = model
     try:
-        ctx, live = await build_market_context(symbol)
-        user_payload = json.dumps(ctx, ensure_ascii=False)
-        text = await stream_response(
+        from app.services.market_data import MarketDataService
+
+        market_svc = MarketDataService(settings)
+        market_payload, live, candles_by_interval = await build_raw_market_payload(
+            symbol, settings, market=market_svc
+        )
+        async with SessionLocal() as session:
+            memory = await build_ai_memory_context(
+                session,
+                symbol=symbol,
+                candles_by_interval=candles_by_interval,
+                market=market_svc,
+            )
+            await session.commit()
+
+        user_payload = json.dumps(
+            {
+                "market": market_payload,
+                "memory": memory,
+                "requested_inference": {
+                    "model": model,
+                    "reasoning_effort": "max",
+                    "trigger": trigger,
+                },
+            },
+            ensure_ascii=False,
+        )
+        analysis: AnalysisResponse = await stream_analysis_response(
             token,
             model=model,
             instructions=INSTRUCTIONS,
             user_input=user_payload,
+            reasoning_effort=settings.ai_reasoning_effort,
+            timeout=settings.ai_response_timeout_seconds,
         )
-        structured = _extract_json(text)
-        validation = _validate_levels(structured, live)
+        structured = _extract_json(analysis.text)
+        safety = _paper_safety_notes(structured, live)
         draft.decision = str(structured.get("decision", "NO_TRADE")).upper()
-        draft.report_fa = structured.get("report_fa") or text
+        draft.report_fa = structured.get("report_fa") or analysis.text
         draft.structured = structured
-        draft.validation = validation
-        draft.status = "completed" if validation.get("ok") else "completed_with_warnings"
-        if validation.get("reasons"):
-            draft.error_code = "validation_warning"
-            draft.error_detail = ",".join(validation["reasons"])
+        draft.validation = safety
+        draft.status = "completed"
+        if safety.get("warnings"):
+            draft.status = "completed_with_warnings"
+            draft.error_code = "safety_warning"
+            draft.error_detail = ",".join(safety["warnings"])
+
+        inference_meta = {
+            "requested_model": analysis.requested_model,
+            "requested_reasoning_effort": analysis.requested_reasoning_effort,
+            "confirmed_reasoning_effort": analysis.confirmed_reasoning_effort,
+            "response_model": analysis.response_model,
+            "response_id": analysis.response_id,
+            "response_metadata": analysis.response_metadata,
+        }
+        draft.structured = _merge_artifacts(draft.structured, {"inference": inference_meta})
 
         analyzed_at = datetime.now(timezone.utc)
         chart_path: Path | None = None
@@ -416,9 +411,8 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
             chart_path, structured_with_art = await _generate_chart_for_run(
                 run_id=run_id,
                 symbol=symbol,
-                ctx=ctx,
+                market_payload=market_payload,
                 structured=draft.structured,
-                validation=validation,
                 live=live,
                 decision=draft.decision or "NO_TRADE",
                 analyzed_at=analyzed_at,
@@ -461,6 +455,13 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
 
 
 async def run_ai_analysis(*, trigger: str = "scheduled", model_override: str | None = None) -> AiAnalysisRun:
+    settings = get_effective_settings()
     run_id = await _create_run_record(trigger=trigger)
     draft = await _execute_inference(run_id=run_id, trigger=trigger, model_override=model_override)
-    return await _persist_run_draft(run_id, draft)
+    return await _persist_run_draft(run_id, draft, symbol=settings.default_symbol)
+
+
+# Backward-compatible alias for tests/imports
+async def build_market_context(symbol: str) -> tuple[dict[str, Any], float]:
+    payload, live, _ = await build_raw_market_payload(symbol)
+    return payload, live

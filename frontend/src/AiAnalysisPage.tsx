@@ -6,6 +6,10 @@ type Status = {
   plan_usage_authorized: boolean;
   last_run_at?: string;
   last_error?: string;
+  next_run_at?: string;
+  interval_minutes?: number;
+  ai_analysis_model?: string;
+  ai_reasoning_effort?: string;
 };
 
 type HistoryRow = {
@@ -24,6 +28,11 @@ type HistoryDetail = {
   has_chart?: boolean;
   chart_url?: string | null;
   decision?: string;
+  inference?: {
+    requested_model?: string;
+    requested_reasoning_effort?: string;
+    response_model?: string;
+  };
 };
 
 function decisionBadge(d?: string) {
@@ -65,7 +74,7 @@ export function AiAnalysisPage() {
     setBusy(true);
     setMsg("");
     try {
-      await apiFetch("/api/gui/chatgpt/analyze-now", { method: "POST" }, 130_000);
+      await apiFetch("/api/gui/chatgpt/analyze-now", { method: "POST" }, 650_000);
       setMsg("تحلیل انجام شد.");
       await refresh();
     } catch (e) {
@@ -81,7 +90,9 @@ export function AiAnalysisPage() {
     <div className="page">
       <header className="page-header">
         <h1>تحلیل ICT</h1>
-        <p className="hint">BTCUSDT · 15m chart · فارسی · Paper</p>
+        <p className="hint">
+          BTCUSDT · AI-first ICT · gpt-6.1-sol · MAX reasoning · Paper
+        </p>
       </header>
 
       {msg && <p className={`toast ${msg.includes("خطا") || msg.includes("409") ? "toast-error" : "toast-ok"}`}>{msg}</p>}
@@ -94,6 +105,8 @@ export function AiAnalysisPage() {
       {status?.last_run_at && (
         <p className="meta-line">
           آخرین اجرا: {new Date(status.last_run_at).toLocaleString("fa-IR", { dateStyle: "short", timeStyle: "short" })}
+          {status.next_run_at &&
+            ` · بعدی (هر ${status.interval_minutes || 120} دقیقه): ${new Date(status.next_run_at).toLocaleString("fa-IR", { dateStyle: "short", timeStyle: "short" })}`}
         </p>
       )}
       {status?.last_error && <p className="toast toast-error">{status.last_error}</p>}
@@ -133,6 +146,15 @@ export function AiAnalysisPage() {
               </button>
             </div>
             <div className="sheet-body">
+              {detail.inference && (
+                <p className="hint meta-line">
+                  {detail.inference.requested_model || "gpt-6.1-sol"} · reasoning{" "}
+                  {(detail.inference.requested_reasoning_effort || "max").toUpperCase()}
+                  {detail.inference.confirmed_reasoning_effort
+                    ? ` (confirmed: ${detail.inference.confirmed_reasoning_effort.toUpperCase()})`
+                    : ""}
+                </p>
+              )}
               {detail.has_chart && detail.chart_url ? (
                 <div className="chart-preview-wrap">
                   <button type="button" className="chart-preview-btn" onClick={() => setChartZoom(true)}>

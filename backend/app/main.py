@@ -44,6 +44,7 @@ from app.services.telegram_approval import TelegramApprovalService
 from app.services.job_scheduler import bind_scheduler, reschedule_ict_scan
 from app.services.telegram_coordinator import get_telegram_coordinator
 from app.services.telegram_notifier import TelegramNotifier
+from app.services.ai_first_mode import legacy_rule_scan_enabled
 from app.services.trend_engine import TrendEngine
 from app.worker import BotWorker
 
@@ -180,6 +181,20 @@ async def current_trend(session: AsyncSession = Depends(get_db)):
         live = None
         stale = True
         last_at = None
+
+    if snap is None and not legacy_rule_scan_enabled():
+        return TrendSnapshotOut(
+            symbol=symbol,
+            trend_4h="UNKNOWN",
+            trend_15m="UNKNOWN",
+            trend_5m="UNKNOWN",
+            ict_bias="UNKNOWN",
+            details={"source": "ai_first_mode", "note": "Rule-engine trend scan disabled; use ChatGPT AI analysis."},
+            recorded_at=datetime.now(timezone.utc),
+            live_price=live,
+            price_stale=stale,
+            last_price_at=last_at,
+        )
 
     if snap is None:
         ctx = await TrendEngine(market).analyze(symbol)

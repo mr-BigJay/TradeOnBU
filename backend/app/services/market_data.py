@@ -88,16 +88,20 @@ class MarketDataService:
             body = resp.json()
         if body.get("code") != 0:
             raise RuntimeError(f"Bitunix kline error: {body.get('msg')}")
-        candles = [
-            Candle(
-                open=float(row["open"]),
-                high=float(row["high"]),
-                low=float(row["low"]),
-                close=float(row["close"]),
-                time_ms=int(row["time"]),
+        candles = []
+        for row in body.get("data") or []:
+            vol_raw = row.get("volume") if row.get("volume") is not None else row.get("vol")
+            volume = float(vol_raw) if vol_raw is not None else None
+            candles.append(
+                Candle(
+                    open=float(row["open"]),
+                    high=float(row["high"]),
+                    low=float(row["low"]),
+                    close=float(row["close"]),
+                    time_ms=int(row["time"]),
+                    volume=volume,
+                )
             )
-            for row in (body.get("data") or [])
-        ]
         candles.sort(key=lambda c: c.time_ms)
         return candles
 

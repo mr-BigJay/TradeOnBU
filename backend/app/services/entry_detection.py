@@ -8,6 +8,7 @@ from app.models import EntryType, TrendState
 from app.services.ict_structure import analyze_structure, validate_ict_sequence
 from app.services.market_data import MarketDataService
 from app.services.paper_execution import PaperExecutionEngine
+from app.services.ai_first_mode import legacy_rule_scan_enabled
 from app.services.trend_engine import TrendEngine
 
 
@@ -70,6 +71,8 @@ class EntryDetectionService:
         self.paper = paper
 
     async def scan(self, symbol: str, min_net_rr: float) -> SetupCandidate | None:
+        if not legacy_rule_scan_enabled():
+            return None
         ctx = await self.trend_engine.analyze(symbol)
         if ctx.ict_bias not in (TrendState.BULLISH, TrendState.BEARISH):
             return None
