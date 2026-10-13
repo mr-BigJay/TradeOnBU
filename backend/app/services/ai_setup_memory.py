@@ -24,6 +24,12 @@ LIFECYCLE_INVALIDATED = "invalidated"
 LIFECYCLE_EXPIRED = "expired"
 LIFECYCLE_UNKNOWN_MISSING_DATA = "unknown_missing_data"
 
+TRACKING_COMPLETE = "complete"
+TRACKING_INCOMPLETE = "incomplete"
+
+VALIDITY_ACTIVE = "active"
+VALIDITY_EXPIRED = "expired"
+
 MAX_EXPIRES_HOURS = 168.0
 MIN_EXPIRES_HOURS = 1.0
 LEVEL_DEDUPE_TOLERANCE_PCT = 0.25
@@ -45,6 +51,99 @@ def _save_notes(setup: AiProposedSetup, notes: dict[str, Any]) -> None:
     setup.objective_notes = notes
 
 
+def _tracking_incomplete(setup: AiProposedSetup) -> bool:
+    notes = setup.objective_notes or {}
+    if notes.get("outcome_tracking_status") == TRACKING_COMPLETE:
+        return False
+    if notes.get("pending_tracking_from_ms") is not None:
+        return True
+    if notes.get("fetch_error"):
+        return True
+    gaps = (notes.get("data_gaps") or {}).get("gaps_remaining")
+    if gaps:
+        return True
+    if notes.get("missing_intervals"):
+        return True
+    return notes.get("outcome_tracking_status") == TRACKING_INCOMPLETE
+
+
+def _candle_within_validity(setup: AiProposedSetup, candle: Candle) -> bool:
+    """Conservative: only bars that open strictly before expiry instant."""
+    if not setup.expires_at:
+        return True
+    exp_ms = int(_ensure_utc(setup.expires_at).timestamp() * 1000)
+    return candle.time_ms < exp_ms
+
+
+def _verified_contiguous_prefix(scoped: list[Candle], bundle: KlineBundle | None) -> list[Candle]:
+    """Only candles in the verified contiguous prefix before the first unresolved gap."""
+    if not scoped:
+        return []
+    ordered = sorted(scoped, key=lambda c: c.time_ms)
+    if bundle is None:
+        return ordered
+    if bundle.gaps_remaining:
+        first_gap = min(bundle.gaps_remaining)
+        return [c for c in ordered if c.time_ms < first_gap]
+    if not bundle.data_complete:
+        step = interval_ms(bundle.interval or "5m")
+        prefix: list[Candle] = [ordered[0]]
+        for c in ordered[1:]:
+            if c.time_ms - prefix[-1].time_ms > int(step * 1.5):
+                break
+            prefix.append(c)
+        return prefix
+    return ordered
+
+
+def _append_revision(
+    setup: AiProposedSetup,
+    *,
+    source_run_id: int,
+    structured: dict[str, Any],
+    proposed: dict[str, Any],
+    kind: str,
+) -> None:
+    notes = _notes(setup)
+    history = notes.setdefault("revision_history", [])
+    history.append(
+        {
+            "revised_at": _utc().isoformat(),
+            "source_run_id": source_run_id,
+            "kind": kind,
+            "thesis_fa": proposed.get("thesis_fa") or structured.get("thesis_fa"),
+            "proposed_levels": {
+                "entry_price": proposed.get("entry_price") or structured.get("entry_price"),
+                "stop_loss": proposed.get("stop_loss") or structured.get("stop_loss"),
+                "take_profit": proposed.get("take_profit") or structured.get("take_profit"),
+            },
+            "report_excerpt_fa": (structured.get("report_fa") or "")[:600],
+        }
+    )
+    _save_notes(setup, notes)
+
+
+def _store_original_forecast(setup: AiProposedSetup) -> None:
+    notes = _notes(setup)
+    if notes.get("original_forecast"):
+        return
+    notes["original_forecast"] = {
+        "run_id": setup.run_id,
+        "thesis_fa": setup.thesis_fa,
+        "entry_price": setup.entry_price,
+        "entry_zone_low": setup.entry_zone_low,
+        "entry_zone_high": setup.entry_zone_high,
+        "stop_loss": setup.stop_loss,
+        "take_profit": setup.take_profit,
+        "invalidation": setup.invalidation,
+        "invalidation_level": setup.invalidation_level,
+        "created_at": setup.created_at.isoformat() if setup.created_at else None,
+    }
+    notes.setdefault("validity_status", VALIDITY_ACTIVE)
+    notes.setdefault("outcome_tracking_status", TRACKING_INCOMPLETE)
+    _save_notes(setup, notes)
+
+
 def serialize_setup_row(row: AiProposedSetup) -> dict[str, Any]:
     notes = row.objective_notes or {}
     return {
@@ -53,8 +152,12 @@ def serialize_setup_row(row: AiProposedSetup) -> dict[str, Any]:
         "symbol": row.symbol,
         "direction": row.direction,
         "status": row.status,
+        "validity_status": notes.get("validity_status", VALIDITY_ACTIVE),
+        "outcome_tracking_status": notes.get("outcome_tracking_status", TRACKING_INCOMPLETE),
         "lifecycle_phase": notes.get("lifecycle_phase", LIFECYCLE_ENTRY_NOT_REACHED),
         "thesis_fa": row.thesis_fa,
+        "original_forecast": notes.get("original_forecast"),
+        "revision_history": notes.get("revision_history") or [],
         "entry_price": row.entry_price,
         "entry_zone_low": row.entry_zone_low,
         "entry_zone_high": row.entry_zone_high,
@@ -76,8 +179,27 @@ def serialize_setup_row(row: AiProposedSetup) -> dict[str, Any]:
     }
 
 
+async def load_trackable_setups(session: AsyncSession, symbol: str) -> list[AiProposedSetup]:
+    """Setups still subject to objective price tracking (includes expired-but-reconciling)."""
+    rows = (
+        await session.execute(
+            select(AiProposedSetup)
+            .where(AiProposedSetup.symbol == symbol)
+            .where(AiProposedSetup.status.in_(("open", "expired")))
+            .order_by(desc(AiProposedSetup.created_at))
+            .limit(40)
+        )
+    ).scalars().all()
+    out: list[AiProposedSetup] = []
+    for row in rows:
+        if row.status == "open":
+            out.append(row)
+        elif row.status == "expired" and _tracking_incomplete(row):
+            out.append(row)
+    return out
+
+
 async def load_open_setups(session: AsyncSession, symbol: str) -> list[AiProposedSetup]:
-    """Open setups only — expiry is applied after final price tracking pass."""
     rows = (
         await session.execute(
             select(AiProposedSetup)
@@ -91,22 +213,28 @@ async def load_open_setups(session: AsyncSession, symbol: str) -> list[AiPropose
 
 
 def _tracking_start_ms(setup: AiProposedSetup) -> int:
-    """First 5m bar open strictly after setup creation (ignore pre-creation overlap)."""
     created_ms = int(_ensure_utc(setup.created_at).timestamp() * 1000)
     step = interval_ms("5m")
     return ((created_ms // step) + 1) * step
 
 
-def _mark_expired_if_due(setup: AiProposedSetup, now: datetime | None = None) -> None:
+def _finalize_validity_and_tracking(setup: AiProposedSetup, now: datetime | None = None) -> None:
     now = now or _utc()
-    if setup.status != "open" or not setup.expires_at:
-        return
-    if _ensure_utc(setup.expires_at) <= now:
-        setup.status = "expired"
-        setup.closed_at = now
-        notes = _notes(setup)
-        notes["lifecycle_phase"] = LIFECYCLE_EXPIRED
-        _save_notes(setup, notes)
+    notes = _notes(setup)
+    if setup.expires_at and _ensure_utc(setup.expires_at) <= now:
+        notes["validity_status"] = VALIDITY_EXPIRED
+    if notes.get("validity_status") == VALIDITY_EXPIRED and not _tracking_incomplete(setup):
+        if setup.status == "open":
+            setup.status = "expired"
+            setup.closed_at = now
+            if notes.get("lifecycle_phase") not in (LIFECYCLE_INVALIDATED, LIFECYCLE_SL_AFTER_ENTRY, LIFECYCLE_TP_AFTER_ENTRY):
+                notes["lifecycle_phase"] = LIFECYCLE_EXPIRED
+        notes["outcome_tracking_status"] = TRACKING_COMPLETE
+    elif not _tracking_incomplete(setup):
+        notes["outcome_tracking_status"] = TRACKING_COMPLETE
+    else:
+        notes["outcome_tracking_status"] = TRACKING_INCOMPLETE
+    _save_notes(setup, notes)
 
 
 async def load_recent_closed_setups(session: AsyncSession, symbol: str, limit: int = 12) -> list[AiProposedSetup]:
@@ -119,7 +247,7 @@ async def load_recent_closed_setups(session: AsyncSession, symbol: str, limit: i
             .limit(limit)
         )
     ).scalars().all()
-    return list(rows)
+    return [r for r in rows if not _tracking_incomplete(r)]
 
 
 async def load_recent_analysis_summaries(session: AsyncSession, limit: int = 5) -> list[dict[str, Any]]:
@@ -206,8 +334,11 @@ def apply_objective_price_tracking(
 
     if not candles:
         if bundle and (bundle.gaps_remaining or not bundle.data_complete):
-            notes["lifecycle_phase"] = LIFECYCLE_UNKNOWN_MISSING_DATA
-            notes["tracking_warning"] = "No candles in window; history may be incomplete."
+            notes["tracking_warning"] = "No verified candles in window; history may be incomplete."
+            notes["outcome_tracking_status"] = TRACKING_INCOMPLETE
+            phase_now = notes.get("lifecycle_phase") or LIFECYCLE_ENTRY_NOT_REACHED
+            if phase_now == LIFECYCLE_ENTRY_NOT_REACHED:
+                notes["lifecycle_phase"] = LIFECYCLE_UNKNOWN_MISSING_DATA
             _save_notes(setup, notes)
         return
 
@@ -226,7 +357,7 @@ def apply_objective_price_tracking(
     )
 
     sorted_candles = sorted(
-        (c for c in candles if c.time_ms > watermark_ms),
+        (c for c in candles if c.time_ms > watermark_ms and _candle_within_validity(setup, c)),
         key=lambda c: c.time_ms,
     )
     for c in sorted_candles:
@@ -237,6 +368,7 @@ def apply_objective_price_tracking(
                 setup.status = "invalidated"
                 setup.closed_at = _utc()
                 notes["lifecycle_phase"] = LIFECYCLE_INVALIDATED
+                notes["outcome_tracking_status"] = TRACKING_COMPLETE
                 _record_first_touch(notes, "invalidation", c.time_ms)
                 _save_notes(setup, notes)
                 return
@@ -244,6 +376,7 @@ def apply_objective_price_tracking(
                 setup.status = "invalidated"
                 setup.closed_at = _utc()
                 notes["lifecycle_phase"] = LIFECYCLE_INVALIDATED
+                notes["outcome_tracking_status"] = TRACKING_COMPLETE
                 _record_first_touch(notes, "invalidation", c.time_ms)
                 _save_notes(setup, notes)
                 return
@@ -281,10 +414,13 @@ def apply_objective_price_tracking(
                 entry_reached = True
                 _record_first_touch(notes, "entry", c.time_ms)
                 notes["lifecycle_phase"] = LIFECYCLE_ENTRY_TOUCHED
+                phase = LIFECYCLE_ENTRY_TOUCHED
             elif phase == LIFECYCLE_ENTRY_NOT_REACHED and not sl_hit and not tp_hit:
                 notes["lifecycle_phase"] = LIFECYCLE_ENTRY_NOT_REACHED
             continue
 
+        if phase == LIFECYCLE_SL_AFTER_ENTRY:
+            continue
         if sl_hit and tp_hit:
             setup.sequencing_ambiguous = True
             _record_first_touch(notes, "sl_post_entry", c.time_ms)
@@ -309,7 +445,9 @@ def apply_objective_price_tracking(
             "gaps_remaining": list(bundle.gaps_remaining or [])[:20],
             "data_complete": bundle.data_complete,
         }
-        if notes.get("lifecycle_phase") == LIFECYCLE_ENTRY_NOT_REACHED:
+        notes["outcome_tracking_status"] = TRACKING_INCOMPLETE
+        phase_now = notes.get("lifecycle_phase") or LIFECYCLE_ENTRY_NOT_REACHED
+        if phase_now == LIFECYCLE_ENTRY_NOT_REACHED:
             notes["lifecycle_phase"] = LIFECYCLE_UNKNOWN_MISSING_DATA
 
     _save_notes(setup, notes)
@@ -317,7 +455,7 @@ def apply_objective_price_tracking(
 
 def _advance_tracking_watermark(
     setup: AiProposedSetup,
-    scoped: list[Candle],
+    verified: list[Candle],
     bundle: KlineBundle | None,
     from_ms: int,
 ) -> None:
@@ -325,16 +463,13 @@ def _advance_tracking_watermark(
     if bundle and (bundle.gaps_remaining or not bundle.data_complete):
         notes["pending_tracking_from_ms"] = from_ms
         notes["missing_intervals"] = list(bundle.gaps_remaining or [])[:20]
-        notes["lifecycle_phase"] = LIFECYCLE_UNKNOWN_MISSING_DATA
+        notes["outcome_tracking_status"] = TRACKING_INCOMPLETE
+        phase_now = notes.get("lifecycle_phase") or LIFECYCLE_ENTRY_NOT_REACHED
+        if phase_now == LIFECYCLE_ENTRY_NOT_REACHED:
+            notes["lifecycle_phase"] = LIFECYCLE_UNKNOWN_MISSING_DATA
         _save_notes(setup, notes)
-        if bundle.gaps_remaining and scoped:
-            first_gap = min(bundle.gaps_remaining)
-            safe = [c for c in scoped if c.time_ms < first_gap]
-            if safe:
-                setup.last_tracked_candle_ms = max(c.time_ms for c in safe)
-        return
-    if scoped:
-        setup.last_tracked_candle_ms = max(c.time_ms for c in scoped)
+    if verified:
+        setup.last_tracked_candle_ms = max(c.time_ms for c in verified)
 
 
 async def _fetch_setup_tracking_candles(
@@ -349,7 +484,6 @@ async def _fetch_setup_tracking_candles(
     else:
         from_ms = start_ms
 
-    now = _utc()
     end_ms: int | None = None
     if setup.expires_at:
         end_ms = int(_ensure_utc(setup.expires_at).timestamp() * 1000)
@@ -361,16 +495,15 @@ async def _fetch_setup_tracking_candles(
         notes["fetch_error"] = str(exc)[:300]
         notes["lifecycle_phase"] = LIFECYCLE_UNKNOWN_MISSING_DATA
         notes["pending_tracking_from_ms"] = from_ms
+        notes["outcome_tracking_status"] = TRACKING_INCOMPLETE
         _save_notes(setup, notes)
         return [], None, from_ms
 
     scoped = [
         c
         for c in bundle.closed
-        if c.time_ms >= from_ms and c.time_ms >= start_ms and (end_ms is None or c.time_ms <= end_ms)
+        if c.time_ms >= from_ms and c.time_ms >= start_ms and (end_ms is None or c.time_ms < end_ms)
     ]
-    if end_ms and _ensure_utc(setup.expires_at) <= now and not scoped and from_ms > end_ms:
-        return [], bundle, from_ms
     return scoped, bundle, from_ms
 
 
@@ -381,26 +514,19 @@ async def refresh_setup_objective_state(
     candles_by_interval: dict[str, list[Candle]],
     market: MarketDataService | None = None,
 ) -> list[AiProposedSetup]:
+    del candles_by_interval  # setup tracking uses historical fetch only (no incomplete fallback)
     market = market or MarketDataService()
     now = _utc()
-    setups = await load_open_setups(session, symbol)
+    setups = await load_trackable_setups(session, symbol)
     for setup in setups:
         watermark = setup.last_tracked_candle_ms or 0
         scoped, bundle, from_ms = await _fetch_setup_tracking_candles(market, symbol, setup)
-        if not scoped and candles_by_interval:
-            track = candles_by_interval.get("5m") or candles_by_interval.get("1m") or []
-            start_ms = _tracking_start_ms(setup)
-            scoped = [
-                c
-                for c in track
-                if c.time_ms > watermark and c.time_ms >= start_ms
-            ]
-            bundle = None
-        apply_objective_price_tracking(setup, scoped, bundle=bundle, watermark_ms=watermark)
-        _advance_tracking_watermark(setup, scoped, bundle, from_ms)
-        _mark_expired_if_due(setup, now)
+        verified = _verified_contiguous_prefix(scoped, bundle)
+        apply_objective_price_tracking(setup, verified, bundle=bundle, watermark_ms=watermark)
+        _advance_tracking_watermark(setup, verified, bundle, from_ms)
+        _finalize_validity_and_tracking(setup, now)
     await session.flush()
-    return [s for s in setups if s.status == "open"]
+    return await load_open_setups(session, symbol)
 
 
 def _parse_float(val: Any) -> float | None:
@@ -511,7 +637,7 @@ async def create_setup_from_structured(
         existing = (
             await session.execute(select(AiProposedSetup).where(AiProposedSetup.setup_id == str(continue_id)))
         ).scalar_one_or_none()
-        if not existing or existing.status != "open":
+        if not existing or existing.status not in ("open", "expired"):
             meta["skipped"] = True
             meta["reason"] = "continue_setup_not_found"
             return None, meta
@@ -519,22 +645,21 @@ async def create_setup_from_structured(
             meta["skipped"] = True
             meta["reason"] = "continue_setup_mismatch"
             return None, meta
-        existing.run_id = run_id
-        existing.thesis_fa = proposed.get("thesis_fa") or structured.get("thesis_fa") or existing.thesis_fa
-        existing.structured_snapshot = structured
+        _store_original_forecast(existing)
+        _append_revision(existing, source_run_id=run_id, structured=structured, proposed=proposed, kind="continue")
         meta["updated"] = True
         meta["setup_id"] = existing.setup_id
+        meta["reason"] = "revision_appended"
         await session.flush()
         return existing, meta
 
     dup = await _find_duplicate_open(session, symbol=symbol, direction=decision, entry=entry)
     if dup and not _levels_materially_different(dup, entry, sl, tp):
-        dup.run_id = run_id
-        dup.thesis_fa = proposed.get("thesis_fa") or structured.get("thesis_fa") or dup.thesis_fa
-        dup.structured_snapshot = structured
+        _store_original_forecast(dup)
+        _append_revision(dup, source_run_id=run_id, structured=structured, proposed=proposed, kind="dedupe")
         meta["updated"] = True
         meta["setup_id"] = dup.setup_id
-        meta["reason"] = "deduped_open_setup"
+        meta["reason"] = "deduped_revision_appended"
         await session.flush()
         return dup, meta
 
@@ -567,11 +692,14 @@ async def create_setup_from_structured(
         objective_notes={
             "disclaimer": "Touches are objective price observations, not paper fills.",
             "lifecycle_phase": LIFECYCLE_ENTRY_NOT_REACHED,
+            "validity_status": VALIDITY_ACTIVE,
+            "outcome_tracking_status": TRACKING_INCOMPLETE,
         },
         last_tracked_candle_ms=0,
     )
     session.add(row)
     await session.flush()
+    _store_original_forecast(row)
     meta["created"] = True
     meta["setup_id"] = row.setup_id
     return row, meta
@@ -587,11 +715,14 @@ async def build_ai_memory_context(
     setups = await refresh_setup_objective_state(
         session, symbol=symbol, candles_by_interval=candles_by_interval, market=market
     )
+    trackable = await load_trackable_setups(session, symbol)
+    reconciling = [s for s in trackable if (s.objective_notes or {}).get("validity_status") == VALIDITY_EXPIRED]
     closed = await load_recent_closed_setups(session, symbol)
     recent = await load_recent_analysis_summaries(session)
     return {
         "symbol": symbol,
         "open_setups": [serialize_setup_row(s) for s in setups],
+        "reconciling_expired_setups": [serialize_setup_row(s) for s in reconciling if s not in setups],
         "recent_closed_setups": [serialize_setup_row(s) for s in closed],
         "recent_completed_analyses": recent,
         "memory_rules": [
@@ -599,6 +730,6 @@ async def build_ai_memory_context(
             "In report_fa, start with follow-up on prior setups (objective lifecycle_phase and first_touch_ms).",
             "Never claim a trade was executed unless paper_fill_recorded is true.",
             "SL/TP before entry are not post-entry outcomes.",
-            "To revise an open scenario use proposed_setup.continue_setup_id; only set new_setup true for a genuinely new setup.",
+            "original_forecast is immutable; revision_history holds later AI assessments.",
         ],
     }

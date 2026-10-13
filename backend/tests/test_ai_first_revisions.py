@@ -264,7 +264,7 @@ async def test_duplicate_setup_suppressed(session):
         "proposed_setup": {"new_setup": False, "thesis_fa": "تکرار"},
     }
     row2, meta2 = await create_setup_from_structured(session, run_id=2, symbol="BTCUSDT", structured=structured2)
-    assert meta2.get("reason") == "deduped_open_setup"
+    assert meta2.get("reason") == "deduped_revision_appended"
     assert row2.setup_id == row1.setup_id
 
 
@@ -348,10 +348,11 @@ async def test_siwc_live_max_reasoning_smoke():
         )
     except OpenAIResponsesError as exc:
         if exc.code in ("reasoning_max_unavailable", "model_downgraded", "reasoning_downgraded"):
-            return
+            pytest.fail(f"Max explicitly rejected or downgraded: {exc.code}: {exc}")
         pytest.fail(f"Unexpected OpenAI error for Max compatibility check: {exc.code}: {exc}")
     assert result.requested_reasoning_effort == "max"
-    if result.confirmed_reasoning_effort is not None:
-        assert result.confirmed_reasoning_effort == "max", (
-            f"Max requested but response confirmed effort={result.confirmed_reasoning_effort}"
-        )
+    if result.confirmed_reasoning_effort == "max":
+        return
+    if result.confirmed_reasoning_effort is None:
+        pytest.xfail("Max requested successfully; response omitted reasoning effort metadata (unconfirmed)")
+    pytest.fail(f"Max requested but response confirmed effort={result.confirmed_reasoning_effort}")

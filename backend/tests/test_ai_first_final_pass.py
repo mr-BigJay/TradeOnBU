@@ -152,7 +152,7 @@ async def test_gap_does_not_advance_watermark_past_unresolved(session):
     await refresh_setup_objective_state(session, symbol="BTCUSDT", candles_by_interval={}, market=market)
     await session.refresh(setup)
     assert setup.last_tracked_candle_ms == c1.time_ms
-    assert setup.objective_notes.get("lifecycle_phase") == LIFECYCLE_UNKNOWN_MISSING_DATA
+    assert setup.objective_notes.get("outcome_tracking_status") == "incomplete"
     assert setup.objective_notes.get("pending_tracking_from_ms") is not None
 
 
@@ -227,7 +227,7 @@ async def test_new_setup_true_still_dedupes_same_levels(session):
     base2 = dict(base)
     base2["proposed_setup"] = {"new_setup": True, "thesis_fa": "b"}
     r2, m2 = await create_setup_from_structured(session, run_id=2, symbol="BTCUSDT", structured=base2)
-    assert m2["reason"] == "deduped_open_setup"
+    assert m2["reason"] == "deduped_revision_appended"
     assert r2.setup_id == r1.setup_id
 
 
