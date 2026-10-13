@@ -10,12 +10,12 @@ from app.services.ai_trader_report import build_trader_report_fa, sanitize_trade
 def test_instructions_discretionary_trader_not_validator():
     assert AI_TRADER_MODE is True
     assert INSTRUCTIONS is ICT_TRADER_INSTRUCTIONS
-    assert "NOT a data validator" in INSTRUCTIONS
-    assert "ICT discretionary trader" in INSTRUCTIONS
-    assert "lifecycle_phase" in INSTRUCTIONS
-    assert "below 1:2" in INSTRUCTIONS or "1:2" in INSTRUCTIONS
+    assert "NOT a scalper" in INSTRUCTIONS or "NOT a data auditor" in INSTRUCTIONS
+    assert "INTRADAY" in INSTRUCTIONS
+    assert "0.30%" in INSTRUCTIONS
+    assert "1:2" in INSTRUCTIONS
     assert "ict_liquidity" in INSTRUCTIONS
-    assert "server-side" in INSTRUCTIONS or "server-formatted" in INSTRUCTIONS
+    assert "TradeOnBU builds report" in INSTRUCTIONS
 
 
 def test_build_report_decision_and_setup_first():
