@@ -167,6 +167,7 @@ class AiAnalysisSettings(Base):
     last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    interval_migrated_from_60: Mapped[bool] = mapped_column(default=False)
 
 
 class AiProposedSetup(Base):
@@ -199,6 +200,7 @@ class AiProposedSetup(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_tracked_candle_ms: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class AiAnalysisRun(Base):

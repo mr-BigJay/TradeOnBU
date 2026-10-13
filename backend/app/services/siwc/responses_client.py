@@ -21,6 +21,7 @@ class AnalysisResponse:
     requested_model: str
     requested_reasoning_effort: str
     response_model: str | None = None
+    confirmed_reasoning_effort: str | None = None
     response_id: str | None = None
     response_metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -131,6 +132,10 @@ async def stream_analysis_response(
                     response_obj = event.get("response") or {}
                     _ensure_no_reasoning_downgrade("max", response_obj)
                     resp_model, resp_id, meta = _extract_response_meta(response_obj)
+                    confirmed_effort: str | None = None
+                    reasoning = response_obj.get("reasoning") if response_obj else None
+                    if isinstance(reasoning, dict):
+                        confirmed_effort = str(reasoning.get("effort") or "") or None
                     if resp_model and resp_model != model:
                         raise OpenAIResponsesError(
                             "model_downgraded",
@@ -141,6 +146,7 @@ async def stream_analysis_response(
                         requested_model=model,
                         requested_reasoning_effort="max",
                         response_model=resp_model,
+                        confirmed_reasoning_effort=confirmed_effort,
                         response_id=resp_id,
                         response_metadata=meta,
                     )

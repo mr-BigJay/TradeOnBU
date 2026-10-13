@@ -99,17 +99,20 @@ async def test_stream_analysis_rejects_reasoning_downgrade():
 
 
 def test_migrate_schedule_60_to_120_preserves_consent():
+    nr = datetime.now(timezone.utc) + timedelta(minutes=20)
     cfg = AiAnalysisSettings(
         enabled=True,
         unattended_consent=True,
         interval_minutes=60,
         last_run_at=datetime.now(timezone.utc) - timedelta(minutes=30),
-        next_run_at=datetime.now(timezone.utc) + timedelta(minutes=20),
+        next_run_at=nr,
+        interval_migrated_from_60=False,
     )
-    migrate_ai_schedule_settings(cfg)
+    assert migrate_ai_schedule_settings(cfg) is True
     assert cfg.interval_minutes == DEFAULT_AI_INTERVAL_MINUTES
     assert cfg.unattended_consent is True
-    assert cfg.next_run_at > datetime.now(timezone.utc) + timedelta(minutes=60)
+    assert cfg.next_run_at == nr
+    assert cfg.interval_migrated_from_60 is True
 
 
 @pytest.mark.asyncio
@@ -146,13 +149,13 @@ async def test_setup_memory_persist_and_objective_touch(session):
         "entry_zone_high": 100.5,
         "stop_loss": 98.0,
         "take_profit": 105.0,
-        "thesis_fa": "تست",
+        "proposed_setup": {"new_setup": True, "thesis_fa": "تست"},
     }
-    row = await create_setup_from_structured(session, run_id=1, symbol="BTCUSDT", structured=structured)
+    row, meta = await create_setup_from_structured(session, run_id=1, symbol="BTCUSDT", structured=structured)
     await session.commit()
-    assert row is not None
+    assert row is not None and meta["created"]
     candles = [
-        Candle(open=100, high=101, low=99.8, close=100.2, time_ms=1),
+        Candle(open=100, high=100.4, low=99.8, close=100.2, time_ms=1),
         Candle(open=100, high=100.4, low=97.5, close=98.5, time_ms=2),
     ]
     apply_objective_price_tracking(row, candles)

@@ -23,22 +23,15 @@ def _ensure_utc(dt: datetime) -> datetime:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
-def migrate_ai_schedule_settings(cfg: AiAnalysisSettings) -> None:
-    """Move legacy 60-minute schedules to 120 minutes without disabling consent."""
-    if cfg.interval_minutes == 60:
-        cfg.interval_minutes = DEFAULT_AI_INTERVAL_MINUTES
-    now = _utc_now()
-    if cfg.next_run_at is not None:
-        nr = _ensure_utc(cfg.next_run_at)
-        if nr <= now:
-            return
-        if cfg.last_run_at:
-            lr = _ensure_utc(cfg.last_run_at)
-            expected = lr + timedelta(minutes=cfg.interval_minutes)
-            if nr < expected - timedelta(minutes=5):
-                cfg.next_run_at = expected
-        elif nr <= now + timedelta(minutes=5) and cfg.enabled:
-            cfg.next_run_at = now + timedelta(minutes=cfg.interval_minutes)
+def migrate_ai_schedule_settings(cfg: AiAnalysisSettings) -> bool:
+    """One-time 60→120 minute interval migration; does not rewrite next_run_at."""
+    if cfg.interval_migrated_from_60:
+        return False
+    if cfg.interval_minutes != 60:
+        return False
+    cfg.interval_minutes = DEFAULT_AI_INTERVAL_MINUTES
+    cfg.interval_migrated_from_60 = True
+    return True
 
 
 async def get_or_create_settings(session: AsyncSession) -> AiAnalysisSettings:
@@ -52,8 +45,8 @@ async def get_or_create_settings(session: AsyncSession) -> AiAnalysisSettings:
         )
         session.add(row)
         await session.flush()
-    migrate_ai_schedule_settings(row)
-    await session.flush()
+    if migrate_ai_schedule_settings(row):
+        await session.flush()
     return row
 
 

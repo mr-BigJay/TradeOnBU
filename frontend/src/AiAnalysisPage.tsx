@@ -150,6 +150,9 @@ export function AiAnalysisPage() {
                 <p className="hint meta-line">
                   {detail.inference.requested_model || "gpt-6.1-sol"} · reasoning{" "}
                   {(detail.inference.requested_reasoning_effort || "max").toUpperCase()}
+                  {detail.inference.confirmed_reasoning_effort
+                    ? ` (confirmed: ${detail.inference.confirmed_reasoning_effort.toUpperCase()})`
+                    : ""}
                 </p>
               )}
               {detail.has_chart && detail.chart_url ? (

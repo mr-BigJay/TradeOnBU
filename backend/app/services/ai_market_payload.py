@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from typing import Any
 
@@ -9,6 +10,8 @@ from app.services.market_data import MarketDataService
 
 AI_TIMEFRAMES = ("4h", "1h", "15m", "5m", "1m")
 MIN_CANDLES = 20
+# Trim order when over budget: drop oldest bars from finest TF first.
+TRIM_ORDER = ("1m", "5m", "15m", "1h", "4h")
 
 
 class MarketContextError(Exception):
@@ -42,9 +45,52 @@ def serialize_candle(c: Candle) -> dict[str, Any]:
     return row
 
 
-async def build_raw_market_payload(symbol: str, settings: Settings | None = None) -> tuple[dict[str, Any], float, dict[str, list[Candle]]]:
+def _estimate_json_chars(payload: dict[str, Any]) -> int:
+    return len(json.dumps(payload, ensure_ascii=False))
+
+
+def _apply_token_budget(payload: dict[str, Any], max_chars: int) -> dict[str, Any]:
+    """Reduce oldest candles (finest TF first) until payload fits max_chars."""
+    budget_meta: dict[str, Any] = {
+        "max_json_chars": max_chars,
+        "estimated_chars_before": _estimate_json_chars(payload),
+        "trimmed": [],
+    }
+    if budget_meta["estimated_chars_before"] <= max_chars:
+        budget_meta["estimated_chars_after"] = budget_meta["estimated_chars_before"]
+        payload["token_budget"] = budget_meta
+        return payload
+
+    timeframes = payload.get("timeframes") or {}
+    for interval in TRIM_ORDER:
+        tf = timeframes.get(interval)
+        if not tf or not tf.get("candles"):
+            continue
+        while tf["candles"] and _estimate_json_chars(payload) > max_chars:
+            tf["candles"].pop(0)
+            tf["closed_count"] = len(tf["candles"])
+            budget_meta["trimmed"].append(interval)
+        if _estimate_json_chars(payload) <= max_chars:
+            break
+
+    budget_meta["estimated_chars_after"] = _estimate_json_chars(payload)
+    budget_meta["approx_tokens"] = budget_meta["estimated_chars_after"] // 4
+    budget_meta["note"] = (
+        "Delivered history may be trimmed from configured limits to respect ai_prompt_max_json_chars. "
+        "Check per-interval closed_count vs requested_limit."
+    )
+    payload["token_budget"] = budget_meta
+    return payload
+
+
+async def build_raw_market_payload(
+    symbol: str,
+    settings: Settings | None = None,
+    *,
+    market: MarketDataService | None = None,
+) -> tuple[dict[str, Any], float, dict[str, list[Candle]]]:
     settings = settings or get_effective_settings()
-    market = MarketDataService(settings)
+    market = market or MarketDataService(settings)
     limits = _limits(settings)
     payload: dict[str, Any] = {
         "symbol": symbol,
@@ -52,6 +98,7 @@ async def build_raw_market_payload(symbol: str, settings: Settings | None = None
         "data_policy": "raw_ohlcv_only_no_rule_engine_conclusions",
         "timeframes": {},
         "incomplete_intervals": [],
+        "delivery_limits": limits,
     }
     candles_by_interval: dict[str, list[Candle]] = {}
 
@@ -87,4 +134,5 @@ async def build_raw_market_payload(symbol: str, settings: Settings | None = None
     if stale:
         raise MarketContextError("stale_live_price", "Live Bitunix quote is stale or unavailable")
 
+    payload = _apply_token_budget(payload, settings.ai_prompt_max_json_chars)
     return payload, quote.price, candles_by_interval

@@ -31,11 +31,16 @@ You MUST independently interpret ONLY the raw OHLCV and memory payload provided.
 TradeOnBU does NOT provide authoritative ICT conclusions — you decide trend, structure, BOS, MSS,
 liquidity, FVG, sweeps, scenarios, Entry, Stop Loss, Take Profit, invalidation, and LONG/SHORT/NO_TRADE.
 
-Before any new analysis, review `memory.open_setups` and `memory.recent_completed_analyses`.
-Your Persian report (`report_fa`) MUST begin with follow-up on prior setups (objective touches, accuracy,
+Before any new analysis, review `memory.open_setups`, `memory.recent_closed_setups`, and `memory.recent_completed_analyses`.
+Your Persian report (`report_fa`) MUST begin with follow-up on prior setups (lifecycle_phase, first_touch_ms, accuracy,
 what changed, what remains valid). Then provide the current independent ICT analysis.
 
 Never recommend live orders. NO_TRADE is valid — do not force a direction.
+
+Setup persistence rules:
+- To open a genuinely NEW setup: proposed_setup.new_setup=true plus valid numeric levels.
+- To revise an existing open setup: proposed_setup.continue_setup_id=<setup_id> (do not duplicate).
+- Repeating the same LONG/SHORT without new_setup or continue_setup_id will NOT create another row.
 
 Respond with a single ```json code block containing at least:
 decision (LONG|SHORT|NO_TRADE),
@@ -43,7 +48,7 @@ previous_setups_review_fa,
 report_fa (full Persian narrative per rules above),
 bias, structure_summary, liquidity, sweep, mss_bos, displacement, fvg,
 entry_price, entry_zone_low, entry_zone_high, stop_loss, take_profit, invalidation, invalidation_level,
-proposed_setup { thesis_fa, expires_hours },
+proposed_setup { new_setup, continue_setup_id, thesis_fa, expires_hours },
 chart_overlays { optional visual hints: liquidity_levels[], fvg_zones[], bos, mss },
 uncertainty_notes.
 """
@@ -308,7 +313,11 @@ async def _persist_run_draft(run_id: int, draft: _RunDraft, *, symbol: str) -> A
         run.error_detail = draft.error_detail
         run.completed_at = completed
         if draft.status.startswith("completed") and draft.structured:
-            await create_setup_from_structured(session, run_id=run_id, symbol=symbol, structured=draft.structured)
+            _setup_row, setup_meta = await create_setup_from_structured(
+                session, run_id=run_id, symbol=symbol, structured=draft.structured
+            )
+            draft.structured = _merge_artifacts(draft.structured, {"setup_persistence": setup_meta})
+            run.structured = draft.structured
         cfg = await get_or_create_settings(session)
         record_run_outcome(cfg, run.status, draft.error_detail)
         await session.commit()
@@ -339,9 +348,19 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
 
     draft.model_slug = model
     try:
-        market_payload, live, candles_by_interval = await build_raw_market_payload(symbol, settings)
+        from app.services.market_data import MarketDataService
+
+        market_svc = MarketDataService(settings)
+        market_payload, live, candles_by_interval = await build_raw_market_payload(
+            symbol, settings, market=market_svc
+        )
         async with SessionLocal() as session:
-            memory = await build_ai_memory_context(session, symbol=symbol, candles_by_interval=candles_by_interval)
+            memory = await build_ai_memory_context(
+                session,
+                symbol=symbol,
+                candles_by_interval=candles_by_interval,
+                market=market_svc,
+            )
             await session.commit()
 
         user_payload = json.dumps(
@@ -379,6 +398,7 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
         inference_meta = {
             "requested_model": analysis.requested_model,
             "requested_reasoning_effort": analysis.requested_reasoning_effort,
+            "confirmed_reasoning_effort": analysis.confirmed_reasoning_effort,
             "response_model": analysis.response_model,
             "response_id": analysis.response_id,
             "response_metadata": analysis.response_metadata,

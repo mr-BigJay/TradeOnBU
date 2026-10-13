@@ -49,6 +49,8 @@ class Settings(BaseSettings):
     ai_candle_limit_15m: int = 120
     ai_candle_limit_5m: int = 120
     ai_candle_limit_1m: int = 180
+    ai_first_analyst_mode: bool = True
+    ai_prompt_max_json_chars: int = 280_000
 
     dashboard_api_key: str = ""
     admin_api_key: str = ""
