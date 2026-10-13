@@ -91,7 +91,7 @@ export function AiAnalysisPage() {
       <header className="page-header">
         <h1>تحلیل ICT</h1>
         <p className="hint">
-          BTCUSDT · AI-first ICT · gpt-6.1-sol · MAX reasoning · Paper
+          BTCUSDT · ICT Trader · gpt-6.1-sol · MAX reasoning · Paper
         </p>
       </header>
 
