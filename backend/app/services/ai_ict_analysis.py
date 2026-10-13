@@ -23,35 +23,10 @@ from app.services.chart_renderer import ChartRenderError, render_ict_chart_png
 from app.services.execution_model import ExecutionModel
 from app.services.siwc.credentials import get_access_token
 from app.services.siwc.responses_client import AnalysisResponse, OpenAIResponsesError, stream_analysis_response
+from app.services.ai_trader_instructions import ICT_TRADER_INSTRUCTIONS
 from app.services.telegram_notifier import TelegramNotifier
 
-INSTRUCTIONS = """You are the sole ICT analyst for TradeOnBU (BTCUSDT paper trading only).
-
-You MUST independently interpret ONLY the raw OHLCV and memory payload provided.
-TradeOnBU does NOT provide authoritative ICT conclusions — you decide trend, structure, BOS, MSS,
-liquidity, FVG, sweeps, scenarios, Entry, Stop Loss, Take Profit, invalidation, and LONG/SHORT/NO_TRADE.
-
-Before any new analysis, review `memory.open_setups`, `memory.recent_closed_setups`, and `memory.recent_completed_analyses`.
-Your Persian report (`report_fa`) MUST begin with follow-up on prior setups (lifecycle_phase, first_touch_ms, accuracy,
-what changed, what remains valid). Then provide the current independent ICT analysis.
-
-Never recommend live orders. NO_TRADE is valid — do not force a direction.
-
-Setup persistence rules:
-- To open a genuinely NEW setup: proposed_setup.new_setup=true plus valid numeric levels.
-- To revise an existing open setup: proposed_setup.continue_setup_id=<setup_id> (do not duplicate).
-- Repeating the same LONG/SHORT without new_setup or continue_setup_id will NOT create another row.
-
-Respond with a single ```json code block containing at least:
-decision (LONG|SHORT|NO_TRADE),
-previous_setups_review_fa,
-report_fa (full Persian narrative per rules above),
-bias, structure_summary, liquidity, sweep, mss_bos, displacement, fvg,
-entry_price, entry_zone_low, entry_zone_high, stop_loss, take_profit, invalidation, invalidation_level,
-proposed_setup { new_setup, continue_setup_id, thesis_fa, expires_hours },
-chart_overlays { optional visual hints: liquidity_levels[], fvg_zones[], bos, mss },
-uncertainty_notes.
-"""
+INSTRUCTIONS = ICT_TRADER_INSTRUCTIONS
 
 
 @dataclass

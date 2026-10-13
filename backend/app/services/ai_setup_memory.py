@@ -862,10 +862,13 @@ async def build_ai_memory_context(
         "recent_closed_setups": [serialize_setup_row(s) for s in closed],
         "recent_completed_analyses": recent,
         "memory_rules": [
-            "Review open and recently closed setups BEFORE forming a new view.",
-            "In report_fa, start with follow-up on prior setups (objective lifecycle_phase and first_touch_ms).",
+            "AI Trader Mode: review every open and recently closed setup BEFORE a new trade decision.",
+            "For each prior setup report direction, entry zone, SL, TP, lifecycle_phase, entry_touched, sl/tp post-entry flags, and first_touch_ms.",
+            "The report_fa Previous Setup Review section must reference these fields explicitly.",
             "Never claim a trade was executed unless paper_fill_recorded is true.",
             "SL/TP before entry are not post-entry outcomes.",
+            "When a valid ICT setup exists, decision must be LONG or SHORT with levels — not default NO_TRADE.",
             "original_forecast is immutable; revision_history holds later AI assessments.",
         ],
+        "ai_trader_mode": True,
     }
