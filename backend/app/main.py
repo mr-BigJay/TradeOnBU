@@ -57,6 +57,14 @@ async def lifespan(app: FastAPI):
     validate_settings(settings)
     Path("data").mkdir(exist_ok=True)
     await init_db()
+    try:
+        from app.services.ai_analysis_scheduler import reconcile_stale_running_runs
+
+        n = await reconcile_stale_running_runs()
+        if n:
+            logger.warning("Reconciled %s stale AI analysis run(s) stuck in running", n)
+    except Exception:
+        logger.exception("Stale AI run reconciliation skipped")
     async with SessionLocal() as session:
         try:
             await refresh_settings_cache(session)
