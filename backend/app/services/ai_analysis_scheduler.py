@@ -6,13 +6,63 @@ from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import SessionLocal
-from app.models import AiAnalysisSettings, SystemState
+from app.models import AiAnalysisRun, AiAnalysisSettings, SystemState
 from app.services.siwc.credentials import get_credential_row
 from app.services.siwc.oauth import has_plan_scope
 from app.services.system_state import get_system_state
 
 FAILURE_BACKOFF_MINUTES = 15
 DEFAULT_AI_INTERVAL_MINUTES = 120
+MEMORY_CHART_TIMEOUT_BUFFER_SECONDS = 600
+
+
+def ai_run_stale_after_seconds() -> int:
+    from app.config import get_effective_settings
+
+    settings = get_effective_settings()
+    inference_budget = int(settings.ai_response_timeout_seconds + MEMORY_CHART_TIMEOUT_BUFFER_SECONDS)
+    return max(int(settings.ai_analysis_lock_ttl_seconds), inference_budget)
+
+
+def ai_run_total_timeout_seconds() -> float:
+    from app.config import get_effective_settings
+
+    settings = get_effective_settings()
+    return float(settings.ai_response_timeout_seconds + MEMORY_CHART_TIMEOUT_BUFFER_SECONDS)
+
+
+async def reconcile_stale_running_runs() -> int:
+    """Mark orphaned in-flight runs failed so UI/scheduling can recover after crashes or hangs."""
+    stale_after = ai_run_stale_after_seconds()
+    cutoff = _utc_now() - timedelta(seconds=stale_after)
+    reconciled = 0
+    async with SessionLocal() as session:
+        rows = (
+            await session.execute(
+                select(AiAnalysisRun)
+                .where(AiAnalysisRun.status == "running")
+                .where(AiAnalysisRun.is_ai.is_(True))
+            )
+        ).scalars().all()
+        cfg = await get_or_create_settings(session)
+        now = _utc_now()
+        for run in rows:
+            started = run.started_at or run.created_at
+            if started is None:
+                continue
+            if _ensure_utc(started) > cutoff:
+                continue
+            run.status = "failed"
+            run.error_code = "stale_running_reconciled"
+            run.error_detail = (
+                f"Run stayed running more than {stale_after}s without completion; reconciled automatically"
+            )
+            run.completed_at = now
+            record_run_outcome(cfg, run.status, run.error_detail, trigger=run.trigger or "scheduled")
+            reconciled += 1
+        if reconciled:
+            await session.commit()
+    return reconciled
 
 
 def _utc_now() -> datetime:

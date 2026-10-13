@@ -13,7 +13,12 @@ from sqlalchemy import select
 from app.config import get_effective_settings
 from app.db import SessionLocal
 from app.models import AiAnalysisRun
-from app.services.ai_analysis_scheduler import get_or_create_settings, record_run_outcome
+from app.services.ai_analysis_scheduler import (
+    ai_run_total_timeout_seconds,
+    get_or_create_settings,
+    reconcile_stale_running_runs,
+    record_run_outcome,
+)
 from app.domain.candles import Candle
 from app.services.ai_market_payload import MarketContextError, build_raw_market_payload
 from app.services.ai_setup_memory import build_ai_memory_context, create_setup_from_structured
@@ -455,10 +460,47 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
 
 
 async def run_ai_analysis(*, trigger: str = "scheduled", model_override: str | None = None) -> AiAnalysisRun:
+    await reconcile_stale_running_runs()
     settings = get_effective_settings()
     run_id = await _create_run_record(trigger=trigger)
-    draft = await _execute_inference(run_id=run_id, trigger=trigger, model_override=model_override)
-    return await _persist_run_draft(run_id, draft, symbol=settings.default_symbol)
+    budget = ai_run_total_timeout_seconds()
+    try:
+        draft = await asyncio.wait_for(
+            _execute_inference(run_id=run_id, trigger=trigger, model_override=model_override),
+            timeout=budget,
+        )
+    except asyncio.TimeoutError:
+        draft = _RunDraft(
+            status="failed",
+            error_code="run_timeout",
+            error_detail=f"Analysis exceeded {budget:.0f}s end-to-end budget (memory refresh + OpenAI MAX reasoning)",
+            completed_at=datetime.now(timezone.utc),
+        )
+    except Exception as exc:
+        draft = _RunDraft(
+            status="failed",
+            error_code="analysis_error",
+            error_detail=str(exc)[:500],
+            completed_at=datetime.now(timezone.utc),
+        )
+    try:
+        return await _persist_run_draft(run_id, draft, symbol=settings.default_symbol)
+    except Exception as exc:
+        async with SessionLocal() as session:
+            run = (
+                await session.execute(select(AiAnalysisRun).where(AiAnalysisRun.id == run_id))
+            ).scalar_one_or_none()
+            if run and run.status == "running":
+                run.status = "failed"
+                run.error_code = "persist_failed"
+                run.error_detail = str(exc)[:500]
+                run.completed_at = datetime.now(timezone.utc)
+                cfg = await get_or_create_settings(session)
+                record_run_outcome(cfg, run.status, run.error_detail, trigger=run.trigger or trigger)
+                await session.commit()
+                await session.refresh(run)
+                return run
+        raise
 
 
 # Backward-compatible alias for tests/imports

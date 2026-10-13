@@ -64,6 +64,15 @@ export function AiAnalysisPage() {
     refresh().catch((e) => setMsg(String(e)));
   }, [refresh]);
 
+  useEffect(() => {
+    const hasRunning = history.some((r) => r.status === "running");
+    if (!hasRunning) return;
+    const timer = window.setInterval(() => {
+      refresh().catch(() => {});
+    }, 20_000);
+    return () => window.clearInterval(timer);
+  }, [history, refresh]);
+
   async function openDetail(id: number) {
     const d = await apiFetch(`/api/gui/chatgpt/history/${id}`);
     setDetail(d);
@@ -125,7 +134,11 @@ export function AiAnalysisPage() {
                     {r.telegram_sent && <span className="tg-dot" title="ارسال به تلگرام">✓</span>}
                   </span>
                 </div>
-                <p className="history-preview">{r.report_preview || r.status}</p>
+                <p className="history-preview">
+                  {r.status === "running"
+                    ? "در حال تحلیل (MAX reasoning ممکن است چند دقیقه طول بکشد)…"
+                    : r.report_preview || r.status}
+                </p>
                 <p className="history-time">
                   {new Date(r.created_at).toLocaleString("fa-IR", { dateStyle: "medium", timeStyle: "short" })}
                 </p>
