@@ -27,6 +27,7 @@ from app.services.siwc.oauth import (
 )
 from app.services.chart_media import chart_path_for_run, resolve_chart_path
 from app.services.siwc.responses_client import list_models
+from app.services.ai_trader_report import structured_for_user_display
 
 router = APIRouter(prefix="/api/gui/chatgpt", tags=["chatgpt-ai"])
 
@@ -256,7 +257,7 @@ async def history_detail(run_id: int, session: AsyncSession = Depends(get_db), _
         "status": run.status,
         "decision": run.decision,
         "report_fa": run.report_fa,
-        "structured": run.structured,
+        "structured": structured_for_user_display(run.structured),
         "validation": run.validation,
         "model_slug": run.model_slug,
         "telegram_sent": run.telegram_sent,

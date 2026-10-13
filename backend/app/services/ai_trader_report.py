@@ -274,6 +274,19 @@ def build_trader_report_fa(data: dict[str, Any], *, symbol: str = "BTCUSDT") -> 
     return report
 
 
+def structured_for_user_display(structured: dict[str, Any] | None) -> dict[str, Any]:
+    """Dashboard/API copy: same trading JSON as persisted, without internal-only artifacts."""
+    if not structured:
+        return {}
+    out = deepcopy(structured)
+    artifacts = out.get("_artifacts")
+    if isinstance(artifacts, dict):
+        artifacts = dict(artifacts)
+        artifacts.pop("internal", None)
+        out["_artifacts"] = artifacts
+    return out
+
+
 def finalize_user_report(
     structured: dict[str, Any],
     *,
