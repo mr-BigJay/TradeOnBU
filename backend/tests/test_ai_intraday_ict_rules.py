@@ -4,6 +4,37 @@ from unittest.mock import patch
 
 from app.services.ai_ict_analysis import INSTRUCTIONS, _paper_safety_notes
 from app.services.ai_trader_instructions import ICT_TRADER_INSTRUCTIONS
+from app.services.ai_trader_report import build_trader_report_fa
+
+
+def test_conditional_setup_rendered_when_immediate_entry_not_valid():
+    data = {
+        "decision": "NO_TRADE",
+        "final_ai_decision": "WAIT",
+        "setup_mode": "conditional",
+        "potential_direction": "LONG",
+        "conditional_entry_zone_low": 83100,
+        "conditional_entry_zone_high": 83200,
+        "confirmation_required": "5m bullish MSS + FVG retest after SSL sweep",
+        "conditional_invalidation": "Below 82900",
+        "current_price": 83500,
+        "market_bias": "Bullish pullback",
+        "ict_liquidity": "SSL at 82400",
+    }
+    report = build_trader_report_fa(data)
+    assert "Conditional Setup:" in report
+    assert "Potential Direction:" in report
+    assert "LONG" in report
+    assert "83100 - 83200" in report
+    assert "Confirmation required:" in report
+    assert "MSS" in report
+    assert "Invalidation:" in report
+
+
+def test_instructions_require_conditional_plan_not_only_no_trade():
+    assert "conditional setup" in INSTRUCTIONS.lower()
+    assert "potential_direction" in INSTRUCTIONS
+    assert "confirmation_required" in INSTRUCTIONS
 
 
 def test_instructions_require_intraday_not_scalp():

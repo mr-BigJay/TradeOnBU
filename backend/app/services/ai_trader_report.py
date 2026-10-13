@@ -70,6 +70,10 @@ TRADER_STRING_KEYS = (
     "previous_setups_review_fa",
     "previous_setup_line",
     "previous_result_line",
+    "potential_direction",
+    "confirmation_required",
+    "conditional_invalidation",
+    "tp_liquidity_target",
 )
 
 
@@ -154,15 +158,35 @@ def prepare_structured_for_user_report(structured: dict[str, Any]) -> dict[str, 
     return data
 
 
-def _entry_zone(data: dict[str, Any]) -> str:
-    lo = data.get("entry_zone_low")
-    hi = data.get("entry_zone_high")
+def _entry_zone(data: dict[str, Any], *, conditional: bool = False) -> str:
+    if conditional:
+        lo = data.get("conditional_entry_zone_low")
+        hi = data.get("conditional_entry_zone_high")
+    else:
+        lo = data.get("entry_zone_low")
+        hi = data.get("entry_zone_high")
     ep = data.get("entry_price")
     if lo is not None and hi is not None:
         return f"{_s(lo)} - {_s(hi)}"
+    if not conditional:
+        lo = data.get("conditional_entry_zone_low")
+        hi = data.get("conditional_entry_zone_high")
+        if lo is not None and hi is not None:
+            return f"{_s(lo)} - {_s(hi)}"
     if ep is not None:
         return _s(ep)
     return ""
+
+
+def _has_conditional_plan(data: dict[str, Any]) -> bool:
+    mode = _s(data.get("setup_mode")).lower()
+    if mode == "conditional":
+        return True
+    pot = _s(data.get("potential_direction")).upper()
+    if pot in ("LONG", "SHORT"):
+        return True
+    final = _s(data.get("final_ai_decision") or "").upper().replace("_", " ")
+    return final == "WAIT"
 
 
 def _truncate_words(text: str, max_words: int = MAX_REPORT_WORDS) -> str:
@@ -246,6 +270,53 @@ def build_trader_report_fa(data: dict[str, Any], *, symbol: str = "BTCUSDT") -> 
         inv = sanitize_trader_text(_s(data.get("invalidation_condition") or data.get("invalidation")))
         if inv and not _contains_forbidden(inv):
             lines.extend(["Invalidation:", inv, ""])
+
+    elif _has_conditional_plan(data):
+        pot = _s(data.get("potential_direction")).upper()
+        if pot not in ("LONG", "SHORT"):
+            pot = "—"
+        lines.extend(
+            [
+                "Conditional Setup:",
+                "",
+                "Potential Direction:",
+                pot,
+                "",
+                "Entry Zone:",
+                _entry_zone(data, conditional=True) or "—",
+                "",
+            ]
+        )
+        confirm = sanitize_trader_text(
+            _s(data.get("confirmation_required") or data.get("entry_confirmation"))
+        )
+        if confirm and not _contains_forbidden(confirm):
+            lines.extend(["Confirmation required:", confirm, ""])
+        inv = sanitize_trader_text(
+            _s(data.get("conditional_invalidation") or data.get("invalidation_condition") or data.get("invalidation"))
+        )
+        if inv and not _contains_forbidden(inv):
+            lines.extend(["Invalidation:", inv, ""])
+        if data.get("stop_loss") is not None:
+            lines.extend(["Planned SL:", _s(data.get("stop_loss")), ""])
+        if data.get("take_profit") is not None:
+            lines.extend(["Planned TP1:", _s(data.get("take_profit")), ""])
+        if data.get("risk_reward"):
+            lines.extend(["Planned RR:", _s(data.get("risk_reward")), ""])
+
+        bullets = [
+            data.get("ict_liquidity") or data.get("liquidity"),
+            data.get("ict_structure") or data.get("mss_bos"),
+            data.get("ict_displacement") or data.get("displacement"),
+            data.get("ict_fvg") or data.get("fvg"),
+            data.get("ict_order_block") or data.get("order_blocks"),
+        ]
+        lines.extend(["ICT Reason:", ""])
+        for val in bullets:
+            text = sanitize_trader_text(_s(val))
+            if text and not _contains_forbidden(text):
+                lines.append(f"- {text}")
+        lines.append("")
 
     elif "NO" in trade_decision:
         reasons = data.get("no_trade_reasons") or []
