@@ -20,6 +20,7 @@ from app.services.notification_outbox import NotificationOutboxService
 from app.services.telegram_notifier import TelegramNotifier
 from app.services.ai_first_mode import legacy_rule_scan_enabled
 from app.services.trend_engine import TrendEngine
+from app.services.position.position_monitor import SimPositionMonitorService
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,7 @@ class BotWorker:
         self.entry = EntryDetectionService(self.market, self.trend_engine, self.paper)
         self.lifecycle = SignalLifecycleService(self.paper)
         self.monitor = SignalMonitorService(self.market, self.lifecycle, self.paper)
+        self.sim_monitor = SimPositionMonitorService(self.market)
         self.outbox = NotificationOutboxService()
         self.telegram = TelegramNotifier(self.settings)
         self._last_bias: str | None = None
@@ -59,8 +61,11 @@ class BotWorker:
                 self.entry = EntryDetectionService(self.market, self.trend_engine, self.paper)
                 self.lifecycle = SignalLifecycleService(self.paper)
                 self.monitor = SignalMonitorService(self.market, self.lifecycle, self.paper)
+                self.sim_monitor = SimPositionMonitorService(self.market)
                 self.outbox = NotificationOutboxService(TelegramNotifier())
                 self.telegram = self.outbox.notifier
+
+                await self.sim_monitor.monitor_session(session)
 
                 monitor_events = await self.monitor.monitor_open_signals(session, runtime)
                 for public_id, evs in monitor_events.items():
