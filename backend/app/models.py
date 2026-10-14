@@ -385,6 +385,7 @@ class SimPosition(Base):
     entry_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     limit_entry_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     fill_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    quantity_btc: Mapped[float | None] = mapped_column(Float, nullable=True)
     stop_loss: Mapped[float] = mapped_column(Float)
     take_profit: Mapped[float] = mapped_column(Float)
     exit_price: Mapped[float | None] = mapped_column(Float, nullable=True)

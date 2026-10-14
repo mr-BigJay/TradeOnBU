@@ -14,7 +14,11 @@ from app.routes.auth import require_dashboard_access
 from app.services.position.execution_adapters import ExecutionBackend, OrderRequest
 from app.services.position.position_service import PositionServiceError, SimPositionService
 from app.services.position.report_service import build_report, history_to_csv
-from app.services.position.settings_service import get_or_create_settings
+from app.services.position.settings_service import (
+    SettingsValidationError,
+    get_or_create_settings,
+    validate_settings_patch,
+)
 from app.services.position import wallet_service as wallet
 
 router = APIRouter(prefix="/api/gui/position", tags=["position"])
@@ -195,7 +199,12 @@ async def put_settings(
     _=Depends(require_dashboard_access),
 ):
     row = await get_or_create_settings(session)
-    for field, val in body.model_dump(exclude_unset=True).items():
+    patch = body.model_dump(exclude_unset=True)
+    try:
+        patch = validate_settings_patch(patch)
+    except SettingsValidationError as e:
+        raise HTTPException(400, str(e)) from e
+    for field, val in patch.items():
         setattr(row, field, val)
     await session.commit()
     return _settings_out(row)
@@ -270,12 +279,21 @@ async def reports(
     period: str = Query("all"),
     start: datetime | None = None,
     end: datetime | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
     session: AsyncSession = Depends(get_db),
     _=Depends(require_dashboard_access),
 ):
     svc = SimPositionService()
     unrealized = await _unrealized_total(session, svc)
-    data = await build_report(session, period=period, start=start, end=end)
+    data = await build_report(
+        session,
+        period=period,
+        start=start,
+        end=end,
+        start_date=start_date,
+        end_date=end_date,
+    )
     data["unrealized_pnl"] = round(unrealized, 4)
     summary = await wallet.wallet_summary(session, unrealized_pnl=unrealized)
     data["account_equity"] = summary["account_equity"]
@@ -285,8 +303,19 @@ async def reports(
 @router.get("/reports/export.csv")
 async def export_csv(
     period: str = Query("all"),
+    start: datetime | None = None,
+    end: datetime | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
     session: AsyncSession = Depends(get_db),
     _=Depends(require_dashboard_access),
 ):
-    data = await build_report(session, period=period)
+    data = await build_report(
+        session,
+        period=period,
+        start=start,
+        end=end,
+        start_date=start_date,
+        end_date=end_date,
+    )
     return PlainTextResponse(history_to_csv(data["history"]), media_type="text/csv; charset=utf-8")

@@ -8,8 +8,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.domain.candles import Candle
 from app.models import SimPosition
 from app.services.market_data import MarketDataService
+from app.services.position.equity_service import record_equity_snapshot
 from app.services.position.position_service import SimPositionService
 from app.services.position.settings_service import get_or_create_settings
+
+MAX_RECOVERY_MINUTES = 24 * 60
 
 
 def _bar_hits_long_limit(bar: Candle, limit: float) -> bool:
@@ -62,6 +65,15 @@ class SimPositionMonitorService:
         bars = [b for b in closed if b.time_ms > cursor and b.time_ms >= monitor_from]
         return sorted(bars, key=lambda b: b.time_ms)
 
+    def _kline_limit_for_positions(self, positions: list[SimPosition]) -> int:
+        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        worst_gap_min = 120
+        for pos in positions:
+            cursor = pos.last_processed_candle_ms or pos.monitor_from_ms or now_ms
+            gap_min = max(0, (now_ms - cursor) // 60000)
+            worst_gap_min = max(worst_gap_min, int(gap_min) + 2)
+        return min(worst_gap_min + 5, MAX_RECOVERY_MINUTES)
+
     async def monitor_session(self, session: AsyncSession) -> int:
         settings = await get_or_create_settings(session)
         result = await session.execute(
@@ -71,8 +83,24 @@ class SimPositionMonitorService:
         if not positions:
             return 0
         symbol = positions[0].symbol
-        bundle = await self.market.fetch_kline_bundle(symbol, "1m", 120)
+        limit = self._kline_limit_for_positions(positions)
+        bundle = await self.market.fetch_kline_bundle(symbol, "1m", limit)
         closed = bundle.closed
+        if closed:
+            oldest_ms = closed[0].time_ms
+            for pos in positions:
+                need_from = pos.last_processed_candle_ms or pos.monitor_from_ms or 0
+                if need_from and need_from < oldest_ms:
+                    gaps = list(pos.extra.get("monitor_gaps") or [])
+                    gaps.append(
+                        {
+                            "from_ms": need_from,
+                            "oldest_available_ms": oldest_ms,
+                            "noted_at": datetime.now(timezone.utc).isoformat(),
+                        }
+                    )
+                    pos.extra = {**pos.extra, "monitor_gaps": gaps[-20:]}
+
         processed = 0
 
         from app.services.position.calculations import estimate_isolated_liquidation
@@ -81,11 +109,15 @@ class SimPositionMonitorService:
             bars = self._eligible_bars(pos, closed)
             for bar in bars:
                 if pos.status == "pending_entry" and pos.order_type == "limit" and pos.limit_entry_price:
-                    limit = pos.limit_entry_price
-                    filled = _bar_hits_long_limit(bar, limit) if pos.direction == "LONG" else _bar_hits_short_limit(bar, limit)
+                    limit_px = pos.limit_entry_price
+                    filled = (
+                        _bar_hits_long_limit(bar, limit_px)
+                        if pos.direction == "LONG"
+                        else _bar_hits_short_limit(bar, limit_px)
+                    )
                     if filled:
                         await self.positions._fill_entry(
-                            session, pos, settings, limit, transition_suffix=f"limit:{bar.time_ms}"
+                            session, pos, settings, limit_px, transition_suffix=f"limit:{bar.time_ms}"
                         )
                         pos.last_processed_candle_ms = bar.time_ms
                         processed += 1
@@ -115,7 +147,7 @@ class SimPositionMonitorService:
                             pos,
                             settings,
                             raw_exit=bar.close,
-                            reason="sl_hit",
+                            reason="ambiguous_intrabar",
                             exit_adverse=True,
                             bar_ms=bar.time_ms,
                             ambiguous=True,
@@ -139,6 +171,14 @@ class SimPositionMonitorService:
 
                 pos.last_processed_candle_ms = bar.time_ms
 
-        if processed:
+        unrealized = 0.0
+        for pos in positions:
+            if pos.status != "open":
+                continue
+            data = await self.positions.enrich_open(session, pos)
+            metrics = data.get("metrics") or {}
+            unrealized += float(metrics.get("net_unrealized_pnl") or 0)
+        await record_equity_snapshot(session, unrealized_pnl=unrealized)
+        if processed or positions:
             await session.commit()
         return processed

@@ -88,8 +88,8 @@ export function PositionPage({ prefill, onConsumePrefill, initialTab }: Props) {
   const loadReport = useCallback(async () => {
     const qs = new URLSearchParams({ period });
     if (period === "custom") {
-      if (customStart) qs.set("start", new Date(customStart).toISOString());
-      if (customEnd) qs.set("end", new Date(customEnd).toISOString());
+      if (customStart) qs.set("start_date", customStart);
+      if (customEnd) qs.set("end_date", customEnd);
     }
     setReport(await apiFetch(`/api/gui/position/reports?${qs}`));
   }, [period, customStart, customEnd]);
@@ -462,8 +462,8 @@ export function PositionPage({ prefill, onConsumePrefill, initialTab }: Props) {
               onClick={async () => {
                 const qs = new URLSearchParams({ period });
                 if (period === "custom") {
-                  if (customStart) qs.set("start", new Date(customStart).toISOString());
-                  if (customEnd) qs.set("end", new Date(customEnd).toISOString());
+                  if (customStart) qs.set("start_date", customStart);
+                  if (customEnd) qs.set("end_date", customEnd);
                 }
                 const resp = await fetch(`/api/gui/position/reports/export.csv?${qs}`, { credentials: "include" });
                 const blob = await resp.blob();

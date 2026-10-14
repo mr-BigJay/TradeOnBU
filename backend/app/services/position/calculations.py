@@ -33,9 +33,33 @@ def quantity_from_notional(notional: float, price: float) -> float:
 
 
 def fee_on_notional(notional: float, price: float, fee_rate: float) -> float:
-    """Fee from executed notional at given price (qty * price * rate)."""
+    """Fee from executed notional at entry price (qty * price * rate)."""
     qty = quantity_from_notional(notional, price)
-    return qty * price * fee_rate
+    return fee_on_quantity(qty, price, fee_rate)
+
+
+def fee_on_quantity(quantity_btc: float, price: float, fee_rate: float) -> float:
+    """Fee from fixed contract size: quantity_btc × fill price × rate."""
+    return quantity_btc * price * fee_rate
+
+
+def apply_slippage(
+    price: float,
+    direction: str,
+    *,
+    side: str,
+    adverse: bool,
+    bps: float,
+) -> float:
+    """side is 'entry' or 'exit'. LONG exit is a sell; SHORT exit is a buy."""
+    factor = bps / 10000.0
+    if not adverse:
+        factor = -factor
+    if direction == "LONG":
+        # Buy entry: worse = higher; sell exit: worse = lower
+        return price * (1 + factor) if side == "entry" else price * (1 - factor)
+    # SHORT sell entry: worse = lower; buy exit: worse = higher
+    return price * (1 - factor) if side == "entry" else price * (1 + factor)
 
 
 def gross_pnl(direction: str, entry: float, mark: float, qty: float) -> float:
@@ -96,8 +120,8 @@ def compute_metrics(
     qty = quantity_from_notional(notional, entry_price)
     entry_rate = fees.maker_rate if entry_is_maker else fees.taker_rate
     exit_rate = fees.maker_rate if exit_is_maker else fees.taker_rate
-    entry_fee = fee_on_notional(notional, entry_price, entry_rate)
-    exit_fee_est = fee_on_notional(notional, mark_price, exit_rate)
+    entry_fee = fee_on_quantity(qty, entry_price, entry_rate)
+    exit_fee_est = fee_on_quantity(qty, mark_price, exit_rate)
     gross_u = gross_pnl(direction, entry_price, mark_price, qty)
     net_u = gross_u - entry_fee - exit_fee_est
     pnl_pct = (net_u / margin_usdt * 100.0) if margin_usdt > 0 else 0.0

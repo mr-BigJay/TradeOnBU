@@ -7,15 +7,22 @@ import pytest
 from sqlalchemy import select
 
 from app.db import SessionLocal, init_db
-from app.domain.tehran_time import format_tehran
-from app.models import SimPosition, SimWalletLedger
+from app.domain.tehran_time import format_tehran, report_period_bounds_utc, tehran_midnight_to_utc, tehran_now
+from app.services.position.position_service import PositionServiceError
+from app.models import SimEquitySnapshot, SimPosition, SimPositionSettings, SimWalletLedger
 from app.services.position.calculations import (
+    apply_slippage,
     compute_metrics,
     fee_on_notional,
+    fee_on_quantity,
     gross_pnl,
     position_notional,
     quantity_from_notional,
 )
+from app.services.position.position_monitor import SimPositionMonitorService
+from app.services.position.report_service import build_report
+from app.services.position.settings_service import SettingsValidationError, validate_settings_patch
+from app.services.market_data import KlineBundle
 from app.services.position.execution_adapters import BitunixLiveExecutionAdapter, ExecutionBackend
 from app.services.position.fee_config import BITUNIX_VIP1_MAKER_RATE, BITUNIX_VIP1_TAKER_RATE, default_vip1_profile
 from app.services.position.position_monitor import _tp_sl_on_bar
@@ -23,6 +30,18 @@ from app.services.position.position_service import SimPositionService
 from app.services.position import wallet_service as wallet
 from app.services.position.execution_adapters import OrderRequest
 from app.domain.candles import Candle
+
+
+async def _ensure_paper_settings(db_session, **kwargs) -> SimPositionSettings:
+    row = (await db_session.execute(select(SimPositionSettings))).scalar_one_or_none()
+    if not row:
+        row = SimPositionSettings(id=1, **kwargs)
+        db_session.add(row)
+    else:
+        for k, v in kwargs.items():
+            setattr(row, k, v)
+    await db_session.commit()
+    return row
 
 
 @pytest.mark.asyncio
@@ -104,6 +123,7 @@ async def test_manual_close_and_fees():
     await init_db()
     async with SessionLocal() as db_session:
         await wallet.append_ledger(db_session, entry_type=wallet.LEDGER_INITIAL, amount_usdt=1000.0)
+        await _ensure_paper_settings(db_session, max_risk_pct_per_position=100.0)
         svc = SimPositionService()
         req = OrderRequest(
             symbol="BTCUSDT",
@@ -112,8 +132,8 @@ async def test_manual_close_and_fees():
             leverage=10,
             order_type="market",
             entry_price=None,
-            stop_loss=1.0,
-            take_profit=1_000_000.0,
+            stop_loss=99.0,
+            take_profit=110.0,
         )
         with patch.object(svc.market, "fetch_ticker", AsyncMock(return_value=(100.0, None))):
             await svc.create_order(db_session, req)
@@ -134,6 +154,7 @@ async def test_restart_idempotent_close():
     await init_db()
     async with SessionLocal() as db_session:
         await wallet.append_ledger(db_session, entry_type=wallet.LEDGER_INITIAL, amount_usdt=1000.0)
+        await _ensure_paper_settings(db_session, max_risk_pct_per_position=100.0)
         svc = SimPositionService()
         req = OrderRequest(
             symbol="BTCUSDT",
@@ -142,8 +163,8 @@ async def test_restart_idempotent_close():
             leverage=10,
             order_type="market",
             entry_price=None,
-            stop_loss=1.0,
-            take_profit=1_000_000.0,
+            stop_loss=99.0,
+            take_profit=110.0,
         )
         with patch.object(svc.market, "fetch_ticker", AsyncMock(return_value=(100.0, None))):
             await svc.create_order(db_session, req)
@@ -184,3 +205,269 @@ def test_leverage_metrics():
     )
     assert m.notional_usdt == 500
     assert m.quantity_btc == pytest.approx(5.0)
+
+
+def test_exit_slippage_direction():
+    raw = 100.0
+    long_exit = apply_slippage(raw, "LONG", side="exit", adverse=True, bps=10)
+    short_exit = apply_slippage(raw, "SHORT", side="exit", adverse=True, bps=10)
+    assert long_exit < raw
+    assert short_exit > raw
+
+
+def test_fee_on_quantity_uses_fixed_btc():
+    qty = 5.0
+    assert fee_on_quantity(qty, 100.0, 0.001) == pytest.approx(0.5)
+    assert fee_on_quantity(qty, 110.0, 0.001) == pytest.approx(0.55)
+
+
+@pytest.mark.asyncio
+async def test_no_double_fee_deduction_zero_gross_trade():
+    """Initial 1000, gross 0, open/close fee 0.50 each → wallet 999, net -1."""
+    await init_db()
+    async with SessionLocal() as db_session:
+        await wallet.append_ledger(db_session, entry_type=wallet.LEDGER_INITIAL, amount_usdt=1000.0)
+        await _ensure_paper_settings(
+            db_session,
+            taker_fee_rate=0.001,
+            maker_fee_rate=0.001,
+            slippage_bps=0.0,
+            max_margin_per_position=500.0,
+            max_risk_pct_per_position=100.0,
+        )
+
+        svc = SimPositionService()
+        req = OrderRequest(
+            symbol="BTCUSDT",
+            direction="LONG",
+            margin_usdt=50.0,
+            leverage=10,
+            order_type="market",
+            entry_price=None,
+            stop_loss=99.0,
+            take_profit=110.0,
+        )
+        with patch.object(svc.market, "fetch_ticker", AsyncMock(return_value=(100.0, None))):
+            await svc.create_order(db_session, req)
+        pos = (await db_session.execute(select(SimPosition))).scalar_one()
+        assert pos.entry_fee_usdt == pytest.approx(0.5, abs=1e-6)
+        with patch.object(svc.market, "fetch_ticker", AsyncMock(return_value=(100.0, None))):
+            await svc.manual_close(db_session, pos.public_id)
+        await db_session.refresh(pos)
+        assert pos.gross_pnl_usdt == pytest.approx(0.0, abs=1e-6)
+        assert pos.net_pnl_usdt == pytest.approx(-1.0, abs=1e-6)
+        summary = await wallet.wallet_summary(db_session)
+        assert summary["wallet_balance"] == pytest.approx(999.0, abs=1e-4)
+        assert summary["realized_pnl"] == pytest.approx(-1.0, abs=1e-4)
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_intrabar_not_recorded_as_sl():
+    await init_db()
+    async with SessionLocal() as db_session:
+        await wallet.append_ledger(db_session, entry_type=wallet.LEDGER_INITIAL, amount_usdt=1000.0)
+        svc = SimPositionService()
+        pos = SimPosition(
+            public_id="amb1",
+            direction="LONG",
+            status="open",
+            order_type="market",
+            margin_usdt=50.0,
+            leverage=10,
+            fill_price=100.0,
+            entry_price=100.0,
+            quantity_btc=5.0,
+            entry_fee_usdt=0.1,
+            stop_loss=95.0,
+            take_profit=105.0,
+            opened_at=datetime.now(timezone.utc),
+        )
+        db_session.add(pos)
+        await db_session.commit()
+        settings = (await db_session.execute(select(SimPositionSettings))).scalar_one_or_none()
+        if not settings:
+            db_session.add(SimPositionSettings(id=1, slippage_bps=0))
+            await db_session.commit()
+            settings = (await db_session.execute(select(SimPositionSettings))).scalar_one()
+        await svc._close_position(
+            db_session,
+            pos,
+            settings,
+            raw_exit=100.0,
+            reason="ambiguous_intrabar",
+            exit_adverse=True,
+            bar_ms=123,
+            ambiguous=True,
+        )
+        await db_session.commit()
+        await db_session.refresh(pos)
+        assert pos.close_reason == "ambiguous_intrabar"
+        assert pos.status == "closed"
+        assert pos.extra.get("settlement_policy") == "bar_close"
+
+
+@pytest.mark.asyncio
+async def test_max_risk_pct_enforced():
+    await init_db()
+    async with SessionLocal() as db_session:
+        await wallet.append_ledger(db_session, entry_type=wallet.LEDGER_INITIAL, amount_usdt=100.0)
+        db_session.add(
+            SimPositionSettings(
+                id=1,
+                max_risk_pct_per_position=1.0,
+                max_margin_per_position=500.0,
+                slippage_bps=0,
+            )
+        )
+        await db_session.commit()
+        svc = SimPositionService()
+        req = OrderRequest(
+            symbol="BTCUSDT",
+            direction="LONG",
+            margin_usdt=50.0,
+            leverage=10,
+            order_type="limit",
+            entry_price=100.0,
+            stop_loss=50.0,
+            take_profit=200.0,
+        )
+        with pytest.raises(PositionServiceError):
+            await svc.create_order(db_session, req)
+
+
+def test_settings_validation_rejects_bad_values():
+    with pytest.raises(SettingsValidationError):
+        validate_settings_patch({"maker_fee_rate": -0.001})
+    with pytest.raises(SettingsValidationError):
+        validate_settings_patch({"default_leverage": 200})
+    with pytest.raises(SettingsValidationError):
+        validate_settings_patch({"default_order_type": "stop"})
+
+
+def test_tehran_today_filter_uses_tehran_midnight():
+    start, _end = report_period_bounds_utc("today")
+    assert start == tehran_midnight_to_utc(tehran_now().date())
+
+
+@pytest.mark.asyncio
+async def test_report_gross_profit_factor_independent_of_net_wins():
+    await init_db()
+    async with SessionLocal() as db_session:
+        db_session.add(
+            SimPosition(
+                public_id="r1",
+                direction="LONG",
+                status="closed",
+                margin_usdt=10,
+                leverage=5,
+                fill_price=100,
+                stop_loss=90,
+                take_profit=120,
+                gross_pnl_usdt=20.0,
+                net_pnl_usdt=-1.0,
+                closed_at=datetime.now(timezone.utc),
+            )
+        )
+        await db_session.commit()
+        report = await build_report(db_session, period="all")
+        assert report["gross_profits"] == pytest.approx(20.0)
+        assert report["winning_trades"] == 0
+
+
+@pytest.mark.asyncio
+async def test_equity_snapshot_on_close():
+    await init_db()
+    async with SessionLocal() as db_session:
+        await wallet.append_ledger(db_session, entry_type=wallet.LEDGER_INITIAL, amount_usdt=1000.0)
+        db_session.add(SimPositionSettings(id=1, slippage_bps=0, max_risk_pct_per_position=100))
+        await db_session.commit()
+        svc = SimPositionService()
+        req = OrderRequest(
+            symbol="BTCUSDT",
+            direction="SHORT",
+            margin_usdt=50.0,
+            leverage=10,
+            order_type="market",
+            entry_price=None,
+            stop_loss=200.0,
+            take_profit=1.0,
+        )
+        with patch.object(svc.market, "fetch_ticker", AsyncMock(return_value=(100.0, None))):
+            await svc.create_order(db_session, req)
+        pos = (await db_session.execute(select(SimPosition))).scalar_one()
+        with patch.object(svc.market, "fetch_ticker", AsyncMock(return_value=(100.0, None))):
+            await svc.manual_close(db_session, pos.public_id)
+        snaps = (await db_session.execute(select(SimEquitySnapshot))).scalars().all()
+        assert len(snaps) >= 1
+
+
+@pytest.mark.asyncio
+async def test_monitor_tp_hit_long():
+    await init_db()
+    async with SessionLocal() as db_session:
+        await wallet.append_ledger(db_session, entry_type=wallet.LEDGER_INITIAL, amount_usdt=1000.0)
+        db_session.add(SimPositionSettings(id=1, slippage_bps=0, max_risk_pct_per_position=100))
+        pos = SimPosition(
+            public_id="tp1",
+            symbol="BTCUSDT",
+            direction="LONG",
+            status="open",
+            order_type="market",
+            margin_usdt=50.0,
+            leverage=10,
+            fill_price=100.0,
+            entry_price=100.0,
+            quantity_btc=5.0,
+            entry_fee_usdt=0.25,
+            stop_loss=90.0,
+            take_profit=105.0,
+            monitor_from_ms=0,
+            last_processed_candle_ms=0,
+            opened_at=datetime.now(timezone.utc),
+        )
+        db_session.add(pos)
+        await db_session.commit()
+
+        bar = Candle(time_ms=60_000, open=100, high=106, low=99, close=104, volume=1.0)
+        bundle = KlineBundle(
+            closed=[bar], forming=None, gaps_detected=[], gaps_remaining=[], data_complete=True, interval="1m"
+        )
+
+        mon = SimPositionMonitorService()
+        with patch.object(mon.market, "fetch_kline_bundle", AsyncMock(return_value=bundle)):
+            n = await mon.monitor_session(db_session)
+        assert n >= 1
+        await db_session.refresh(pos)
+        assert pos.status == "tp_hit"
+
+
+@pytest.mark.asyncio
+async def test_monitor_recovery_records_gap_when_history_missing():
+    await init_db()
+    async with SessionLocal() as db_session:
+        db_session.add(
+            SimPosition(
+                public_id="gap1",
+                symbol="BTCUSDT",
+                direction="LONG",
+                status="open",
+                order_type="market",
+                margin_usdt=10,
+                leverage=2,
+                fill_price=100,
+                stop_loss=90,
+                take_profit=110,
+                monitor_from_ms=0,
+                last_processed_candle_ms=1_000_000_000_000,
+            )
+        )
+        await db_session.commit()
+        recent = Candle(time_ms=1_700_000_000_000, open=100, high=101, low=99, close=100, volume=1)
+        mon = SimPositionMonitorService()
+        gap_bundle = KlineBundle(
+            closed=[recent], forming=None, gaps_detected=[], gaps_remaining=[], data_complete=False, interval="1m"
+        )
+        with patch.object(mon.market, "fetch_kline_bundle", AsyncMock(return_value=gap_bundle)):
+            await mon.monitor_session(db_session)
+        pos = (await db_session.execute(select(SimPosition))).scalar_one()
+        assert pos.extra.get("monitor_gaps")

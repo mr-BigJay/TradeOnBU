@@ -1,38 +1,16 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 
-from sqlalchemy import and_, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.tehran_time import format_tehran
+from app.domain.tehran_time import format_tehran, parse_tehran_date, report_period_bounds_utc
 from app.models import SimEquitySnapshot, SimPosition
 from app.services.position import wallet_service as wallet
 
 
-CLOSED_STATUSES = ("closed", "tp_hit", "sl_hit", "liquidated", "cancelled")
-
-
-def _parse_range(
-    period: str,
-    start: datetime | None,
-    end: datetime | None,
-) -> tuple[datetime | None, datetime | None]:
-    now = datetime.now(timezone.utc)
-    if period == "today":
-        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        return start, now
-    if period == "7d":
-        from datetime import timedelta
-
-        return now - timedelta(days=7), now
-    if period == "30d":
-        from datetime import timedelta
-
-        return now - timedelta(days=30), now
-    if period == "custom":
-        return start, end
-    return None, None
+CLOSED_STATUSES = ("closed", "tp_hit", "sl_hit", "liquidated")
 
 
 async def build_report(
@@ -41,9 +19,24 @@ async def build_report(
     period: str = "all",
     start: datetime | None = None,
     end: datetime | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
 ) -> dict:
-    range_start, range_end = _parse_range(period, start, end)
-    q = select(SimPosition).where(SimPosition.status.in_(("closed", "tp_hit", "sl_hit", "liquidated")))
+    if period == "custom":
+        if start_date and end_date:
+            range_start, range_end = report_period_bounds_utc(
+                period,
+                custom_start=parse_tehran_date(start_date),
+                custom_end=parse_tehran_date(end_date),
+            )
+        elif start and end:
+            range_start, range_end = start, end
+        else:
+            range_start, range_end = None, None
+    else:
+        range_start, range_end = report_period_bounds_utc(period)
+
+    q = select(SimPosition).where(SimPosition.status.in_(CLOSED_STATUSES))
     if range_start:
         q = q.where(SimPosition.closed_at >= range_start)
     if range_end:
@@ -53,8 +46,9 @@ async def build_report(
 
     wins = [t for t in trades if (t.net_pnl_usdt or 0) > 0]
     losses = [t for t in trades if (t.net_pnl_usdt or 0) < 0]
-    gross_profit = sum(t.gross_pnl_usdt or 0 for t in wins)
-    gross_loss = sum(abs(t.gross_pnl_usdt or 0) for t in losses)
+
+    gross_profit = sum(t.gross_pnl_usdt or 0 for t in trades if (t.gross_pnl_usdt or 0) > 0)
+    gross_loss = sum(abs(t.gross_pnl_usdt or 0) for t in trades if (t.gross_pnl_usdt or 0) < 0)
     net = sum(t.net_pnl_usdt or 0 for t in trades)
     fees = await wallet.sum_fees(session)
 
@@ -69,7 +63,12 @@ async def build_report(
     avg_rr = sum(rr_vals) / len(rr_vals) if rr_vals else 0.0
     profit_factor = gross_profit / gross_loss if gross_loss > 0 else (gross_profit if gross_profit > 0 else 0.0)
 
-    equity_rows = await session.execute(select(SimEquitySnapshot).order_by(SimEquitySnapshot.recorded_at.asc()))
+    equity_q = select(SimEquitySnapshot).order_by(SimEquitySnapshot.recorded_at.asc())
+    if range_start:
+        equity_q = equity_q.where(SimEquitySnapshot.recorded_at >= range_start)
+    if range_end:
+        equity_q = equity_q.where(SimEquitySnapshot.recorded_at <= range_end)
+    equity_rows = await session.execute(equity_q)
     equity_history = [
         {
             "equity_usdt": r.equity_usdt,

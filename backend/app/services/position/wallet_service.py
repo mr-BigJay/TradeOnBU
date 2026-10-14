@@ -1,5 +1,17 @@
 from __future__ import annotations
 
+"""
+Wallet accounting contract (paper simulator)
+
+- ``wallet_balance`` = cash ledger total (deposits/withdrawals + trading cash flows).
+- Trading ledger lines (each affects balance once):
+  - ``open_fee`` / ``close_fee`` / ``funding_fee``: negative USDT amounts.
+  - ``realized_pnl``: **gross** price PnL only (never includes fees again).
+- Position ``net_pnl_usdt`` = gross_pnl − entry_fee − exit_fee (reporting).
+- ``account_equity`` = wallet_balance + unrealized gross PnL − open fees already paid
+  (unrealized metrics on open positions use net-of-fee estimates in UI).
+"""
+
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -93,10 +105,21 @@ async def sum_fees(session: AsyncSession) -> dict[str, float]:
     }
 
 
-async def sum_realized_pnl(session: AsyncSession) -> float:
+async def sum_realized_gross_pnl(session: AsyncSession) -> float:
     result = await session.execute(
         select(func.coalesce(func.sum(SimWalletLedger.amount_usdt), 0.0)).where(
             SimWalletLedger.entry_type == LEDGER_REALIZED_PNL
+        )
+    )
+    return float(result.scalar() or 0.0)
+
+
+async def sum_trading_net_pnl(session: AsyncSession) -> float:
+    """Net realized trading result already reflected in wallet balance."""
+    types = (LEDGER_REALIZED_PNL, LEDGER_OPEN_FEE, LEDGER_CLOSE_FEE, LEDGER_FUNDING)
+    result = await session.execute(
+        select(func.coalesce(func.sum(SimWalletLedger.amount_usdt), 0.0)).where(
+            SimWalletLedger.entry_type.in_(types)
         )
     )
     return float(result.scalar() or 0.0)
@@ -107,14 +130,16 @@ async def wallet_summary(session: AsyncSession, unrealized_pnl: float = 0.0) -> 
     margin_used = await margin_in_use(session)
     available = balance - margin_used
     fees = await sum_fees(session)
-    realized = await sum_realized_pnl(session)
+    realized_gross = await sum_realized_gross_pnl(session)
+    realized_net = await sum_trading_net_pnl(session)
     equity = balance + unrealized_pnl
     return {
         "wallet_balance": round(balance, 4),
         "available_balance": round(available, 4),
         "margin_in_use": round(margin_used, 4),
         "unrealized_pnl": round(unrealized_pnl, 4),
-        "realized_pnl": round(realized, 4),
+        "realized_pnl": round(realized_net, 4),
+        "realized_pnl_gross": round(realized_gross, 4),
         "total_fees": round(fees["opening_fees"] + fees["closing_fees"] + fees["funding_fees"], 4),
         "fees_breakdown": fees,
         "account_equity": round(equity, 4),
