@@ -16,6 +16,13 @@ from app.services.runtime_settings import get_runtime_settings
 
 logger = logging.getLogger(__name__)
 
+_ICT_AUTO_ENTRY_FLAGS: tuple[str, ...] = (
+    "liquidity_event_clear",
+    "poi_reaction_clear",
+    "structural_confirmation_clear",
+    "logical_invalidation_clear",
+)
+
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
@@ -37,6 +44,34 @@ def setup_eligible_for_auto_entry(setup: AiProposedSetup, *, now: datetime | Non
         return False, err
     if setup.paper_fill_recorded:
         return False, "paper_fill_already_recorded"
+    ok_flags, flag_reason = ict_auto_entry_confirmations_clear(setup.structured_snapshot or {})
+    if not ok_flags:
+        return False, flag_reason
+    return True, None
+
+
+def ict_auto_entry_confirmations_clear(structured: dict[str, Any]) -> tuple[bool, str | None]:
+    """All four ICT readiness booleans must be explicitly true for auto paper entry."""
+    if not structured:
+        return False, "missing_structured_snapshot"
+    for key in _ICT_AUTO_ENTRY_FLAGS:
+        if structured.get(key) is not True:
+            return False, f"{key}_not_clear"
+    return True, None
+
+
+def trade_decision_allows_auto_paper(
+    structured: dict[str, Any],
+    validation: dict[str, Any],
+) -> tuple[bool, str | None]:
+    decision = str(structured.get("decision") or validation.get("ai_decision") or "").upper()
+    if decision not in ("LONG", "SHORT"):
+        return False, "not_trade_decision"
+    if validation.get("acceptable_rr") is not True:
+        return False, "net_rr_not_acceptable"
+    ok_flags, flag_reason = ict_auto_entry_confirmations_clear(structured)
+    if not ok_flags:
+        return False, flag_reason
     return True, None
 
 
@@ -59,21 +94,13 @@ async def _has_position_for_setup(session: AsyncSession, setup_id: str) -> bool:
     return result.scalar_one_or_none() is not None
 
 
-def _validation_allows_auto_paper(validation: dict[str, Any]) -> tuple[bool, str | None]:
-    decision = str(validation.get("ai_decision") or "").upper()
-    if decision not in ("LONG", "SHORT"):
-        return False, "not_trade_decision"
-    if validation.get("acceptable_rr") is not True:
-        return False, "net_rr_not_acceptable"
-    return True, None
-
-
 async def maybe_auto_open_paper_position(
     session: AsyncSession,
     *,
     run_id: int,
     setup: AiProposedSetup,
     validation: dict[str, Any],
+    structured: dict[str, Any],
     symbol: str,
     commit: bool = True,
 ) -> dict[str, Any]:
@@ -100,7 +127,7 @@ async def maybe_auto_open_paper_position(
         meta["reason"] = "wallet_not_initialized"
         return meta
 
-    ok_val, val_reason = _validation_allows_auto_paper(validation)
+    ok_val, val_reason = trade_decision_allows_auto_paper(structured, validation)
     if not ok_val:
         meta["skipped"] = True
         meta["reason"] = val_reason

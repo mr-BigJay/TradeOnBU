@@ -8,7 +8,12 @@ from sqlalchemy import select
 
 from app.db import SessionLocal, init_db
 from app.models import AiProposedSetup, SimPosition, SimPositionSettings
-from app.services.paper_auto_trading import maybe_auto_open_paper_position, setup_eligible_for_auto_entry
+from app.services.paper_auto_trading import (
+    ict_auto_entry_confirmations_clear,
+    maybe_auto_open_paper_position,
+    setup_eligible_for_auto_entry,
+    trade_decision_allows_auto_paper,
+)
 from app.services.position import wallet_service as wallet
 from app.services.position.position_monitor import SimPositionMonitorService
 
@@ -28,6 +33,18 @@ async def _wallet_and_settings(db_session, *, auto: bool = True) -> SimPositionS
     return row
 
 
+def _ict_clear_structured(**extra) -> dict:
+    base = {
+        "decision": "LONG",
+        "liquidity_event_clear": True,
+        "poi_reaction_clear": True,
+        "structural_confirmation_clear": True,
+        "logical_invalidation_clear": True,
+    }
+    base.update(extra)
+    return base
+
+
 def _sample_setup(**kwargs) -> AiProposedSetup:
     now = datetime.now(timezone.utc)
     defaults = dict(
@@ -41,6 +58,7 @@ def _sample_setup(**kwargs) -> AiProposedSetup:
         take_profit=110.0,
         expires_at=now + timedelta(hours=24),
         paper_fill_recorded=False,
+        structured_snapshot=_ict_clear_structured(),
     )
     defaults.update(kwargs)
     return AiProposedSetup(**defaults)
@@ -56,11 +74,13 @@ async def test_auto_open_creates_pending_limit_order():
         await session.flush()
 
         validation = {"ai_decision": "LONG", "acceptable_rr": True}
+        structured = _ict_clear_structured()
         meta = await maybe_auto_open_paper_position(
             session,
             run_id=99,
             setup=setup,
             validation=validation,
+            structured=structured,
             symbol="BTCUSDT",
             commit=True,
         )
@@ -89,6 +109,7 @@ async def test_auto_open_skipped_when_disabled():
             run_id=1,
             setup=setup,
             validation={"ai_decision": "LONG", "acceptable_rr": True},
+            structured=_ict_clear_structured(),
             symbol="BTCUSDT",
         )
         assert meta["skipped"] is True
@@ -108,9 +129,45 @@ async def test_auto_open_skipped_when_rr_not_acceptable():
             run_id=1,
             setup=setup,
             validation={"ai_decision": "LONG", "acceptable_rr": False},
+            structured=_ict_clear_structured(),
             symbol="BTCUSDT",
         )
         assert meta["reason"] == "net_rr_not_acceptable"
+
+
+def test_ict_flags_must_all_be_true():
+    ok, reason = ict_auto_entry_confirmations_clear(
+        _ict_clear_structured(structural_confirmation_clear=False)
+    )
+    assert ok is False
+    assert reason == "structural_confirmation_clear_not_clear"
+
+
+def test_auto_paper_blocked_when_poi_reaction_not_clear():
+    structured = _ict_clear_structured(poi_reaction_clear=False)
+    ok, reason = trade_decision_allows_auto_paper(structured, {"ai_decision": "LONG", "acceptable_rr": True})
+    assert ok is False
+    assert reason == "poi_reaction_clear_not_clear"
+
+
+@pytest.mark.asyncio
+async def test_auto_open_skipped_when_ict_flags_missing():
+    await init_db()
+    async with SessionLocal() as session:
+        await _wallet_and_settings(session, auto=True)
+        setup = _sample_setup(structured_snapshot=_ict_clear_structured(liquidity_event_clear=False))
+        session.add(setup)
+        await session.flush()
+        meta = await maybe_auto_open_paper_position(
+            session,
+            run_id=1,
+            setup=setup,
+            validation={"ai_decision": "LONG", "acceptable_rr": True},
+            structured=_ict_clear_structured(liquidity_event_clear=False),
+            symbol="BTCUSDT",
+        )
+        assert meta["skipped"] is True
+        assert meta["reason"] == "liquidity_event_clear_not_clear"
 
 
 def test_setup_expired_not_eligible():

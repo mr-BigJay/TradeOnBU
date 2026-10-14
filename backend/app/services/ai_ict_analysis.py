@@ -320,6 +320,7 @@ async def _persist_run_draft(run_id: int, draft: _RunDraft, *, symbol: str) -> A
                 run_id=run_id,
                 setup=setup_row,
                 validation=draft.validation or {},
+                structured=draft.structured or {},
                 symbol=symbol,
                 commit=False,
             )
