@@ -12,7 +12,7 @@ from sqlalchemy import select
 
 from app.config import get_effective_settings
 from app.db import SessionLocal
-from app.models import AiAnalysisRun
+from app.models import AiAnalysisRun, AiProposedSetup
 from app.services.ai_analysis_scheduler import get_or_create_settings, record_run_outcome
 from app.domain.candles import Candle
 from app.services.ai_market_payload import MarketContextError, build_raw_market_payload
@@ -303,14 +303,30 @@ async def _persist_run_draft(run_id: int, draft: _RunDraft, *, symbol: str) -> A
         run.error_code = draft.error_code
         run.error_detail = draft.error_detail
         run.completed_at = completed
+        setup_row: AiProposedSetup | None = None
         if draft.status.startswith("completed") and draft.structured:
-            _setup_row, setup_meta = await create_setup_from_structured(
+            setup_row, setup_meta = await create_setup_from_structured(
                 session, run_id=run_id, symbol=symbol, structured=draft.structured
             )
             draft.structured = _merge_artifacts(draft.structured, {"setup_persistence": setup_meta})
             run.structured = draft.structured
         cfg = await get_or_create_settings(session)
         record_run_outcome(cfg, run.status, draft.error_detail, trigger=run.trigger or "scheduled")
+        if setup_row is not None and draft.status.startswith("completed"):
+            from app.services.paper_auto_trading import maybe_auto_open_paper_position
+
+            auto_meta = await maybe_auto_open_paper_position(
+                session,
+                run_id=run_id,
+                setup=setup_row,
+                validation=draft.validation or {},
+                structured=draft.structured or {},
+                symbol=symbol,
+                commit=False,
+            )
+            if auto_meta.get("attempted"):
+                draft.structured = _merge_artifacts(draft.structured, {"auto_paper": auto_meta})
+                run.structured = draft.structured
         await session.commit()
         await session.refresh(run)
         return run

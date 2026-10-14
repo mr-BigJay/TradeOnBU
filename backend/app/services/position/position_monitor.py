@@ -265,8 +265,25 @@ class SimPositionMonitorService:
                 entry_filled_this_bar = False
 
                 if pos.status == "pending_entry" and pos.order_type == "limit" and pos.limit_entry_price:
+                    from app.services.paper_auto_trading import auto_paper_entry_still_valid
+
+                    still_ok, block_reason = await auto_paper_entry_still_valid(session, pos)
+                    if not still_ok:
+                        await self.positions.cancel_pending(session, pos.public_id, commit=False)
+                        pos.extra = {**pos.extra, "auto_paper_cancel_reason": block_reason}
+                        prev_ms = bar.time_ms
+                        pos.last_processed_candle_ms = bar.time_ms
+                        processed += 1
+                        continue
                     limit_px = pos.limit_entry_price
                     if _bar_hits_limit(bar, limit_px):
+                        ok_fill, _ = await auto_paper_entry_still_valid(session, pos)
+                        if not ok_fill:
+                            await self.positions.cancel_pending(session, pos.public_id, commit=False)
+                            prev_ms = bar.time_ms
+                            pos.last_processed_candle_ms = bar.time_ms
+                            processed += 1
+                            continue
                         await self.positions._fill_entry(
                             session, pos, settings, limit_px, transition_suffix=f"limit:{bar.time_ms}"
                         )

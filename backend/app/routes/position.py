@@ -52,6 +52,7 @@ class SettingsBody(BaseModel):
     slippage_bps: float | None = None
     max_margin_per_position: float | None = None
     max_risk_pct_per_position: float | None = None
+    auto_open_paper_positions: bool | None = None
 
 
 class OpenPositionBody(BaseModel):
@@ -191,6 +192,7 @@ def _settings_out(row: SimPositionSettings) -> dict:
         "slippage_bps": row.slippage_bps,
         "max_margin_per_position": row.max_margin_per_position,
         "max_risk_pct_per_position": row.max_risk_pct_per_position,
+        "auto_open_paper_positions": row.auto_open_paper_positions,
     }
 
 

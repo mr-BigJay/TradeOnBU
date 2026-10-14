@@ -353,6 +353,7 @@ class SimPositionSettings(Base):
     max_margin_per_position: Mapped[float] = mapped_column(Float, default=500.0)
     max_risk_pct_per_position: Mapped[float] = mapped_column(Float, default=5.0)
     initial_balance_set: Mapped[bool] = mapped_column(default=False)
+    auto_open_paper_positions: Mapped[bool] = mapped_column(default=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import datetime, timezone
 
@@ -24,6 +25,8 @@ from app.services.position.settings_service import (
     validate_order_request_fields,
 )
 from app.services.position import wallet_service as wallet
+
+logger = logging.getLogger(__name__)
 
 
 class PositionServiceError(Exception):
@@ -119,7 +122,9 @@ class SimPositionService:
                 f"ریسک تا SL ({risk_pct:.2f}%) از سقف {settings.max_risk_pct_per_position}% بیشتر است"
             )
 
-    async def create_order(self, session: AsyncSession, req: OrderRequest) -> ExecutionResult:
+    async def create_order(
+        self, session: AsyncSession, req: OrderRequest, *, commit: bool = True
+    ) -> ExecutionResult:
         settings = await get_or_create_settings(session)
         await self._validate_order(settings, req)
         summary = await wallet.wallet_summary(session)
@@ -178,7 +183,8 @@ class SimPositionService:
             price, _ = await self.market.fetch_ticker(pos.symbol)
             await self._fill_entry(session, pos, settings, price, transition_suffix="market_open")
 
-        await session.commit()
+        if commit:
+            await session.commit()
         return ExecutionResult(True, public_id, "سفارش ثبت شد", {"status": pos.status})
 
     async def _fill_entry(
@@ -227,8 +233,22 @@ class SimPositionService:
             "open",
             {"fill_price": fill, "open_fee": open_fee},
         )
+        if (pos.extra or {}).get("auto_paper"):
+            from app.services.paper_auto_trading import mark_setup_paper_fill
 
-    async def cancel_pending(self, session: AsyncSession, public_id: str) -> ExecutionResult:
+            await mark_setup_paper_fill(session, pos)
+            logger.info(
+                "PAPER POSITION OPENED",
+                extra={
+                    "position_id": pos.public_id,
+                    "setup_id": pos.ai_setup_id,
+                    "fill_price": fill,
+                },
+            )
+
+    async def cancel_pending(
+        self, session: AsyncSession, public_id: str, *, commit: bool = True
+    ) -> ExecutionResult:
         pos = await self.get_position_by_public_id(session, public_id)
         if not pos or pos.status != "pending_entry":
             return ExecutionResult(False, public_id, "سفارش در انتظار یافت نشد", {})
@@ -244,7 +264,8 @@ class SimPositionService:
         await _log_event(session, pos, "ORDER_CANCELLED", pos.status, "cancelled")
         pos.status = "cancelled"
         pos.closed_at = datetime.now(timezone.utc)
-        await session.commit()
+        if commit:
+            await session.commit()
         return ExecutionResult(True, public_id, "لغو شد", {})
 
     async def manual_close(self, session: AsyncSession, public_id: str) -> ExecutionResult:
@@ -353,6 +374,34 @@ class SimPositionService:
             pos.status,
             {"reason": pos.close_reason, "gross_pnl": gross, "net_pnl": net, "bar_ms": bar_ms},
         )
+        if (pos.extra or {}).get("auto_paper"):
+            if pos.close_reason == "tp_hit":
+                logger.info(
+                    "PAPER TP HIT",
+                    extra={
+                        "position_id": pos.public_id,
+                        "setup_id": pos.ai_setup_id,
+                        "net_pnl_usdt": net,
+                    },
+                )
+            elif pos.close_reason == "sl_hit":
+                logger.info(
+                    "PAPER SL HIT",
+                    extra={
+                        "position_id": pos.public_id,
+                        "setup_id": pos.ai_setup_id,
+                        "net_pnl_usdt": net,
+                    },
+                )
+            logger.info(
+                "PAPER AUTO RESULT",
+                extra={
+                    "position_id": pos.public_id,
+                    "setup_id": pos.ai_setup_id,
+                    "close_reason": pos.close_reason,
+                    "net_pnl_usdt": net,
+                },
+            )
         from app.services.position.equity_service import record_equity_snapshot
 
         await record_equity_snapshot(session, self)
