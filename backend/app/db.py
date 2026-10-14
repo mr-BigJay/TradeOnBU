@@ -51,6 +51,7 @@ SIGNAL_MIGRATIONS = [
     "ALTER TABLE ai_analysis_settings ADD COLUMN auto_retry_pending BOOLEAN DEFAULT 0",
     "ALTER TABLE sim_positions ADD COLUMN quantity_btc FLOAT",
     "ALTER TABLE sim_positions ADD COLUMN execution_state VARCHAR(32) DEFAULT 'normal'",
+    "ALTER TABLE sim_position_settings ADD COLUMN auto_open_paper_positions BOOLEAN DEFAULT 0",
 ]
 
 

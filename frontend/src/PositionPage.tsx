@@ -124,6 +124,7 @@ export function PositionPage({ prefill, onConsumePrefill, initialTab }: Props) {
         taker_fee_rate: Number(settingsForm.taker_fee_rate),
         max_margin_per_position: Number(settingsForm.max_margin_per_position),
         max_risk_pct_per_position: Number(settingsForm.max_risk_pct_per_position),
+        auto_open_paper_positions: Boolean(settingsForm.auto_open_paper_positions),
       }),
     });
     setMsg("تنظیمات ذخیره شد.");
@@ -323,6 +324,16 @@ export function PositionPage({ prefill, onConsumePrefill, initialTab }: Props) {
             value={String(settingsForm.max_risk_pct_per_position ?? "")}
             onChange={(e) => setSettings({ ...settingsForm, max_risk_pct_per_position: e.target.value })}
           />
+          <label className="checkbox-row">
+            <input
+              type="checkbox"
+              checked={Boolean(settingsForm.auto_open_paper_positions)}
+              onChange={(e) =>
+                setSettings({ ...settingsForm, auto_open_paper_positions: e.target.checked })
+              }
+            />
+            Auto-open paper positions after valid GPT ICT setup (paper only)
+          </label>
           <p className="hint">حالت مارجین: {String(settingsForm.position_mode ?? "isolated")} (فعلاً Isolated)</p>
           <p className="hint">
             منبع کارمزد: {(settingsForm.fee_source_url as string) || "—"} · آخرین بررسی:{" "}
