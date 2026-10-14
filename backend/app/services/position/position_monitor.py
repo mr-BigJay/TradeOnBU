@@ -9,6 +9,13 @@ from app.domain.candles import Candle
 from app.models import SimPosition
 from app.services.market_data import KlineBundle, MarketDataService
 from app.services.position.equity_service import record_equity_snapshot
+from app.services.position.monitor_gap_utils import (
+    INTERVAL_1M_MS,
+    can_resume_from_suspension,
+    eligible_bars_after_cursor,
+    leading_history_gap,
+    missing_interval_before_bar,
+)
 from app.services.position.monitor_policies import (
     EXECUTION_NORMAL,
     EXECUTION_SUSPENDED,
@@ -20,7 +27,6 @@ from app.services.position.position_service import SimPositionService
 from app.services.position.settings_service import get_or_create_settings
 
 MAX_RECOVERY_MINUTES = 24 * 60
-INTERVAL_MS = 60_000
 
 
 def _bar_hits_limit(bar: Candle, limit: float) -> bool:
@@ -58,20 +64,10 @@ def _liquidation_on_bar(direction: str, bar: Candle, liq: float | None) -> bool:
     return bar.high >= liq
 
 
-def _gap_covers_cursor(need_from_ms: int, oldest_available_ms: int) -> bool:
-    return need_from_ms > 0 and need_from_ms < oldest_available_ms
-
-
 class SimPositionMonitorService:
     def __init__(self, market: MarketDataService | None = None) -> None:
         self.market = market or MarketDataService()
         self.positions = SimPositionService(self.market)
-
-    def _eligible_bars(self, pos: SimPosition, closed: list[Candle]) -> list[Candle]:
-        cursor = pos.last_processed_candle_ms or 0
-        monitor_from = pos.monitor_from_ms or 0
-        bars = [b for b in closed if b.time_ms > cursor and b.time_ms >= monitor_from]
-        return sorted(bars, key=lambda b: b.time_ms)
 
     def _kline_limit_for_positions(self, positions: list[SimPosition]) -> int:
         now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
@@ -82,40 +78,73 @@ class SimPositionMonitorService:
             worst_gap_min = max(worst_gap_min, int(gap_min) + 2)
         return min(worst_gap_min + 5, MAX_RECOVERY_MINUTES)
 
-    def _suspend_for_gap(self, pos: SimPosition, need_from: int, oldest_ms: int, bundle: KlineBundle) -> None:
+    def _record_gap_event(
+        self,
+        pos: SimPosition,
+        *,
+        kind: str,
+        cursor_ms: int,
+        missing_from_ms: int | None,
+        detail: dict,
+    ) -> None:
         gaps = list(pos.extra.get("monitor_gaps") or [])
         gaps.append(
             {
-                "from_ms": need_from,
-                "oldest_available_ms": oldest_ms,
-                "gaps_remaining": len(bundle.gaps_remaining),
+                "kind": kind,
+                "cursor_ms": cursor_ms,
+                "missing_from_ms": missing_from_ms,
+                **detail,
                 "noted_at": datetime.now(timezone.utc).isoformat(),
             }
         )
         pos.execution_state = EXECUTION_SUSPENDED
         pos.extra = {
             **pos.extra,
-            "monitor_gaps": gaps[-20:],
-            "execution_suspended_reason": "missing_candle_history",
+            "monitor_gaps": gaps[-30:],
+            "execution_suspended_reason": kind,
             "settlement_policy": POLICY_GAP_UNRESOLVED,
-            "outcome_valid": False,
         }
-        pos.last_processed_candle_ms = max(pos.last_processed_candle_ms or 0, oldest_ms - INTERVAL_MS)
+
+    def _suspend_leading_gap(
+        self, pos: SimPosition, cursor_ms: int, first_eligible_ms: int, bundle: KlineBundle
+    ) -> None:
+        self._record_gap_event(
+            pos,
+            kind="leading_history_gap",
+            cursor_ms=cursor_ms,
+            missing_from_ms=cursor_ms + INTERVAL_1M_MS,
+            detail={
+                "first_eligible_ms": first_eligible_ms,
+                "gaps_remaining": list(bundle.gaps_remaining),
+            },
+        )
+
+    def _suspend_internal_gap(
+        self,
+        pos: SimPosition,
+        cursor_ms: int,
+        missing_from_ms: int,
+        next_bar_ms: int,
+        bundle: KlineBundle,
+    ) -> None:
+        self._record_gap_event(
+            pos,
+            kind="internal_candle_gap",
+            cursor_ms=cursor_ms,
+            missing_from_ms=missing_from_ms,
+            detail={
+                "blocked_bar_ms": next_bar_ms,
+                "gaps_remaining": list(bundle.gaps_remaining),
+            },
+        )
 
     def _try_clear_suspension(self, pos: SimPosition, bundle: KlineBundle, closed: list[Candle]) -> bool:
         if pos.execution_state != EXECUTION_SUSPENDED:
             return True
-        if not closed:
+        cursor = pos.last_processed_candle_ms or 0
+        monitor_from = pos.monitor_from_ms or 0
+        if not can_resume_from_suspension(cursor, closed, monitor_from, bundle.gaps_remaining, INTERVAL_1M_MS):
             return False
-        need_from = pos.last_processed_candle_ms or pos.monitor_from_ms or 0
-        oldest_ms = closed[0].time_ms
-        if _gap_covers_cursor(need_from, oldest_ms):
-            return False
-        if bundle.gaps_remaining:
-            cursor = need_from
-            for gap_start in bundle.gaps_remaining:
-                if cursor <= gap_start <= int(datetime.now(timezone.utc).timestamp() * 1000):
-                    return False
         pos.execution_state = EXECUTION_NORMAL
         pos.extra = {
             **pos.extra,
@@ -123,6 +152,17 @@ class SimPositionMonitorService:
             "history_recovered_at": datetime.now(timezone.utc).isoformat(),
         }
         return True
+
+    def _should_block_bar_for_gaps(
+        self, pos: SimPosition, bar: Candle, bundle: KlineBundle
+    ) -> bool:
+        """Block definitive processing when bundle still reports a gap in the window ending at this bar."""
+        cursor = pos.last_processed_candle_ms or 0
+        from app.services.position.monitor_gap_utils import gaps_remaining_block_processing
+
+        return gaps_remaining_block_processing(
+            bundle.gaps_remaining, cursor, bar.time_ms, INTERVAL_1M_MS
+        )
 
     async def _handle_open_bar(
         self,
@@ -186,25 +226,43 @@ class SimPositionMonitorService:
         limit = self._kline_limit_for_positions(positions)
         bundle = await self.market.fetch_kline_bundle(symbol, "1m", limit)
         closed = bundle.closed
-        if closed:
-            oldest_ms = closed[0].time_ms
-            for pos in positions:
-                need_from = pos.last_processed_candle_ms or pos.monitor_from_ms or 0
-                if _gap_covers_cursor(need_from, oldest_ms):
-                    self._suspend_for_gap(pos, need_from, oldest_ms, bundle)
 
         processed = 0
 
         for pos in positions:
+            cursor = pos.last_processed_candle_ms or 0
+            monitor_from = pos.monitor_from_ms or 0
+            eligible = eligible_bars_after_cursor(closed, cursor, monitor_from)
+
+            if pos.execution_state != EXECUTION_SUSPENDED and cursor > 0 and eligible:
+                if leading_history_gap(cursor, eligible[0].time_ms, INTERVAL_1M_MS):
+                    self._suspend_leading_gap(pos, cursor, eligible[0].time_ms, bundle)
+                    continue
+
             if not self._try_clear_suspension(pos, bundle, closed):
                 continue
 
-            bars = self._eligible_bars(pos, closed)
-            for bar in bars:
-                entry_filled_this_bar = False
-
+            prev_ms = cursor
+            for bar in eligible:
                 if pos.execution_state == EXECUTION_SUSPENDED:
                     break
+
+                missing = missing_interval_before_bar(prev_ms, bar.time_ms, INTERVAL_1M_MS)
+                if missing is not None:
+                    self._suspend_internal_gap(pos, prev_ms, missing, bar.time_ms, bundle)
+                    break
+
+                if self._should_block_bar_for_gaps(pos, bar, bundle):
+                    self._suspend_internal_gap(
+                        pos,
+                        prev_ms,
+                        missing or prev_ms + INTERVAL_1M_MS,
+                        bar.time_ms,
+                        bundle,
+                    )
+                    break
+
+                entry_filled_this_bar = False
 
                 if pos.status == "pending_entry" and pos.order_type == "limit" and pos.limit_entry_price:
                     limit_px = pos.limit_entry_price
@@ -233,16 +291,19 @@ class SimPositionMonitorService:
                                 ambiguous=True,
                                 ambiguous_policy=POLICY_SAME_BAR_ENTRY,
                             )
+                            prev_ms = bar.time_ms
                             pos.last_processed_candle_ms = bar.time_ms
                             processed += 1
                             break
                     else:
                         closed_on_bar = await self._handle_open_bar(session, pos, settings, bar)
                         if closed_on_bar:
+                            prev_ms = bar.time_ms
                             pos.last_processed_candle_ms = bar.time_ms
                             processed += 1
                             break
 
+                prev_ms = bar.time_ms
                 pos.last_processed_candle_ms = bar.time_ms
 
         await record_equity_snapshot(session, self.positions)
