@@ -784,3 +784,26 @@ label {
 .position-card {
   margin-bottom: 0.75rem;
 }
+
+.print-only {
+  display: none;
+}
+
+@media print {
+  .no-print,
+  .app-nav,
+  .sub-tabs,
+  .page-header .hint {
+    display: none !important;
+  }
+  .print-only {
+    display: block;
+    margin-bottom: 1rem;
+  }
+  .position-report-print {
+    color: #000;
+  }
+  .stat-card {
+    break-inside: avoid;
+  }
+}

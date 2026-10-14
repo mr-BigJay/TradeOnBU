@@ -38,6 +38,8 @@ export function PositionPage({ prefill, onConsumePrefill, initialTab }: Props) {
   const [positions, setPositions] = useState<unknown[]>([]);
   const [report, setReport] = useState<Record<string, unknown> | null>(null);
   const [period, setPeriod] = useState("all");
+  const [customStart, setCustomStart] = useState("");
+  const [customEnd, setCustomEnd] = useState("");
 
   const [deposit, setDeposit] = useState("");
   const [withdraw, setWithdraw] = useState("");
@@ -84,8 +86,13 @@ export function PositionPage({ prefill, onConsumePrefill, initialTab }: Props) {
   }, []);
 
   const loadReport = useCallback(async () => {
-    setReport(await apiFetch(`/api/gui/position/reports?period=${period}`));
-  }, [period]);
+    const qs = new URLSearchParams({ period });
+    if (period === "custom") {
+      if (customStart) qs.set("start", new Date(customStart).toISOString());
+      if (customEnd) qs.set("end", new Date(customEnd).toISOString());
+    }
+    setReport(await apiFetch(`/api/gui/position/reports?${qs}`));
+  }, [period, customStart, customEnd]);
 
   useEffect(() => {
     if (tab === "wallet") loadWallet().catch((e) => setMsg(String(e)));
@@ -122,6 +129,7 @@ export function PositionPage({ prefill, onConsumePrefill, initialTab }: Props) {
         maker_fee_rate: Number(settingsForm.maker_fee_rate),
         taker_fee_rate: Number(settingsForm.taker_fee_rate),
         max_margin_per_position: Number(settingsForm.max_margin_per_position),
+        max_risk_pct_per_position: Number(settingsForm.max_risk_pct_per_position),
       }),
     });
     setMsg("تنظیمات ذخیره شد.");
@@ -311,6 +319,17 @@ export function PositionPage({ prefill, onConsumePrefill, initialTab }: Props) {
             value={String(settingsForm.slippage_bps ?? "")}
             onChange={(e) => setSettings({ ...settingsForm, slippage_bps: e.target.value })}
           />
+          <label>حداکثر مارجین هر پوزیشن (USDT)</label>
+          <input
+            value={String(settingsForm.max_margin_per_position ?? "")}
+            onChange={(e) => setSettings({ ...settingsForm, max_margin_per_position: e.target.value })}
+          />
+          <label>حداکثر ریسک حساب هر پوزیشن (%)</label>
+          <input
+            value={String(settingsForm.max_risk_pct_per_position ?? "")}
+            onChange={(e) => setSettings({ ...settingsForm, max_risk_pct_per_position: e.target.value })}
+          />
+          <p className="hint">حالت مارجین: {String(settingsForm.position_mode ?? "isolated")} (فعلاً Isolated)</p>
           <p className="hint">
             منبع کارمزد: {(settingsForm.fee_source_url as string) || "—"} · آخرین بررسی:{" "}
             {settingsForm.fee_verified_on as string}
@@ -413,29 +432,98 @@ export function PositionPage({ prefill, onConsumePrefill, initialTab }: Props) {
       )}
 
       {tab === "report" && report && (
-        <section className="section">
-          <div className="filter-row">
-            {["today", "7d", "30d", "all"].map((p) => (
+        <section className="section position-report-print">
+          <div className="filter-row no-print">
+            {(["today", "7d", "30d", "all", "custom"] as const).map((p) => (
               <button key={p} type="button" className={period === p ? "active" : "secondary"} onClick={() => setPeriod(p)}>
-                {p === "today" ? "امروز" : p === "7d" ? "۷ روز" : p === "30d" ? "۳۰ روز" : "همه"}
+                {p === "today"
+                  ? "امروز"
+                  : p === "7d"
+                    ? "۷ روز"
+                    : p === "30d"
+                      ? "۳۰ روز"
+                      : p === "custom"
+                        ? "بازه دلخواه"
+                        : "همه"}
               </button>
             ))}
-            <a className="secondary" href={`/api/gui/position/reports/export.csv?period=${period}`}>
+            {period === "custom" && (
+              <>
+                <input type="date" value={customStart} onChange={(e) => setCustomStart(e.target.value)} />
+                <input type="date" value={customEnd} onChange={(e) => setCustomEnd(e.target.value)} />
+                <button type="button" className="secondary" onClick={() => loadReport().catch((e) => setMsg(String(e)))}>
+                  اعمال
+                </button>
+              </>
+            )}
+            <button
+              type="button"
+              className="secondary"
+              onClick={async () => {
+                const qs = new URLSearchParams({ period });
+                if (period === "custom") {
+                  if (customStart) qs.set("start", new Date(customStart).toISOString());
+                  if (customEnd) qs.set("end", new Date(customEnd).toISOString());
+                }
+                const resp = await fetch(`/api/gui/position/reports/export.csv?${qs}`, { credentials: "include" });
+                const blob = await resp.blob();
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = `position-report-${period}.csv`;
+                a.click();
+                URL.revokeObjectURL(url);
+              }}
+            >
               CSV
-            </a>
+            </button>
+            <button type="button" className="secondary" onClick={() => window.print()}>
+              چاپ
+            </button>
           </div>
+          <h2 className="print-only">گزارش عملکرد پوزیشن (Paper)</h2>
           <div className="stat-grid">
             <div className="stat-card">
               <span className="stat-label">معاملات</span>
               <strong>{report.total_trades as number}</strong>
             </div>
             <div className="stat-card">
+              <span className="stat-label">برد / باخت</span>
+              <strong>
+                {report.winning_trades as number} / {report.losing_trades as number}
+              </strong>
+            </div>
+            <div className="stat-card">
               <span className="stat-label">Win rate</span>
               <strong>{report.win_rate as number}%</strong>
             </div>
             <div className="stat-card">
-              <span className="stat-label">سود خالص</span>
+              <span className="stat-label">سود ناخالص</span>
+              <strong>{report.gross_profits as number}</strong>
+            </div>
+            <div className="stat-card">
+              <span className="stat-label">ضرر ناخالص</span>
+              <strong>{report.gross_losses as number}</strong>
+            </div>
+            <div className="stat-card">
+              <span className="stat-label">سود خالص (تحقق‌یافته)</span>
               <strong>{report.net_profit_loss as number}</strong>
+            </div>
+            <div className="stat-card">
+              <span className="stat-label">PnL تحقق‌نیافته</span>
+              <strong>{report.unrealized_pnl as number}</strong>
+            </div>
+            <div className="stat-card">
+              <span className="stat-label">اکوییتی</span>
+              <strong>{report.account_equity as number}</strong>
+            </div>
+            <div className="stat-card">
+              <span className="stat-label">Profit factor</span>
+              <strong>{report.profit_factor as number}</strong>
+            </div>
+            <div className="stat-card">
+              <span className="stat-label">میانگین R:R</span>
+              <strong>{report.average_rr as number}</strong>
             </div>
             <div className="stat-card">
               <span className="stat-label">Max DD</span>
