@@ -106,7 +106,6 @@ export function PositionPage({ prefill, onConsumePrefill, initialTab }: Props) {
   useEffect(() => {
     if (settings && tab === "open") {
       setForm((f) => mergeOpenFormDefaults(f, settings, preserveExecutionRef.current));
-      preserveExecutionRef.current = false;
     }
   }, [settings, tab]);
 

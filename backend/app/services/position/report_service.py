@@ -13,6 +13,19 @@ from app.services.position import wallet_service as wallet
 CLOSED_STATUSES = ("closed", "tp_hit", "sl_hit", "liquidated")
 
 
+def _reportable_trades(trades: list[SimPosition]) -> list[SimPosition]:
+    """Exclude ambiguous / invalid outcomes from performance statistics."""
+    out = []
+    for t in trades:
+        if (t.close_reason or "") == "ambiguous_intrabar":
+            continue
+        extra = t.extra or {}
+        if extra.get("outcome_valid") is False:
+            continue
+        out.append(t)
+    return out
+
+
 async def build_report(
     session: AsyncSession,
     *,
@@ -43,17 +56,18 @@ async def build_report(
         q = q.where(SimPosition.closed_at <= range_end)
     result = await session.execute(q.order_by(SimPosition.closed_at.desc()))
     trades = list(result.scalars().all())
+    stats_trades = _reportable_trades(trades)
 
-    wins = [t for t in trades if (t.net_pnl_usdt or 0) > 0]
-    losses = [t for t in trades if (t.net_pnl_usdt or 0) < 0]
+    wins = [t for t in stats_trades if (t.net_pnl_usdt or 0) > 0]
+    losses = [t for t in stats_trades if (t.net_pnl_usdt or 0) < 0]
 
-    gross_profit = sum(t.gross_pnl_usdt or 0 for t in trades if (t.gross_pnl_usdt or 0) > 0)
-    gross_loss = sum(abs(t.gross_pnl_usdt or 0) for t in trades if (t.gross_pnl_usdt or 0) < 0)
-    net = sum(t.net_pnl_usdt or 0 for t in trades)
+    gross_profit = sum(t.gross_pnl_usdt or 0 for t in stats_trades if (t.gross_pnl_usdt or 0) > 0)
+    gross_loss = sum(abs(t.gross_pnl_usdt or 0) for t in stats_trades if (t.gross_pnl_usdt or 0) < 0)
+    net = sum(t.net_pnl_usdt or 0 for t in stats_trades)
     fees = await wallet.sum_fees(session)
 
     rr_vals = []
-    for t in trades:
+    for t in stats_trades:
         entry = t.fill_price or t.entry_price
         if entry and t.stop_loss and t.take_profit:
             risk = abs(entry - t.stop_loss)
@@ -111,10 +125,11 @@ async def build_report(
     summary = await wallet.wallet_summary(session)
     return {
         "period": period,
-        "total_trades": len(trades),
+        "total_trades": len(stats_trades),
+        "total_closes_including_invalid": len(trades),
         "winning_trades": len(wins),
         "losing_trades": len(losses),
-        "win_rate": round(len(wins) / len(trades) * 100, 2) if trades else 0.0,
+        "win_rate": round(len(wins) / len(stats_trades) * 100, 2) if stats_trades else 0.0,
         "gross_profits": round(gross_profit, 4),
         "gross_losses": round(gross_loss, 4),
         "fees": fees,

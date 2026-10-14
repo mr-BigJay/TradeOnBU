@@ -379,6 +379,7 @@ class SimPosition(Base):
     symbol: Mapped[str] = mapped_column(String(32), index=True, default="BTCUSDT")
     direction: Mapped[str] = mapped_column(String(8))
     status: Mapped[str] = mapped_column(String(32), index=True, default="pending_entry")
+    execution_state: Mapped[str] = mapped_column(String(32), default="normal", index=True)
     order_type: Mapped[str] = mapped_column(String(16), default="market")
     margin_usdt: Mapped[float] = mapped_column(Float)
     leverage: Mapped[int] = mapped_column(Integer)

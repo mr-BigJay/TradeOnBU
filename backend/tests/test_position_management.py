@@ -474,6 +474,7 @@ async def test_monitor_recovery_records_gap_when_history_missing():
             await mon.monitor_session(db_session)
         pos = (await db_session.execute(select(SimPosition))).scalar_one()
         assert pos.extra.get("monitor_gaps")
+        assert pos.execution_state == "suspended"
 
 
 def test_merge_open_form_preserves_ai_limit_prefill():
@@ -534,7 +535,8 @@ async def test_equity_unrealized_excludes_entry_fee():
 
 
 @pytest.mark.asyncio
-async def test_monitor_limit_fill_and_tp_same_bar():
+async def test_monitor_limit_fill_same_bar_tp_is_ambiguous_not_tp_hit():
+    """LONG limit entry=100, TP=105, bar O=103,H=106,L=99,C=104 — no definitive TP on entry bar."""
     await init_db()
     async with SessionLocal() as db_session:
         await wallet.append_ledger(db_session, entry_type=wallet.LEDGER_INITIAL, amount_usdt=1000.0)
@@ -556,7 +558,7 @@ async def test_monitor_limit_fill_and_tp_same_bar():
         )
         db_session.add(pos)
         await db_session.commit()
-        bar = Candle(time_ms=60_000, open=100, high=106, low=99, close=104, volume=1.0)
+        bar = Candle(time_ms=60_000, open=103, high=106, low=99, close=104, volume=1.0)
         bundle = KlineBundle(
             closed=[bar], forming=None, gaps_detected=[], gaps_remaining=[], data_complete=True, interval="1m"
         )
@@ -564,7 +566,53 @@ async def test_monitor_limit_fill_and_tp_same_bar():
         with patch.object(mon.market, "fetch_kline_bundle", AsyncMock(return_value=bundle)):
             await mon.monitor_session(db_session)
         await db_session.refresh(pos)
-        assert pos.status == "tp_hit"
+        assert pos.status == "closed"
+        assert pos.close_reason == "ambiguous_intrabar"
+        assert pos.extra.get("settlement_policy") == "same_bar_entry_no_intrabar_sequence"
+        assert pos.extra.get("outcome_valid") is False
+
+
+@pytest.mark.asyncio
+async def test_suspended_execution_skips_definitive_tp_until_history_recovered():
+    await init_db()
+    async with SessionLocal() as db_session:
+        await wallet.append_ledger(db_session, entry_type=wallet.LEDGER_INITIAL, amount_usdt=1000.0)
+        await _ensure_paper_settings(db_session, slippage_bps=0, max_risk_pct_per_position=100)
+        pos = SimPosition(
+            public_id="susp1",
+            symbol="BTCUSDT",
+            direction="LONG",
+            status="open",
+            order_type="market",
+            margin_usdt=50.0,
+            leverage=10,
+            fill_price=100.0,
+            entry_price=100.0,
+            quantity_btc=5.0,
+            entry_fee_usdt=0.1,
+            stop_loss=90.0,
+            take_profit=105.0,
+            execution_state="suspended",
+            monitor_from_ms=0,
+            last_processed_candle_ms=1_000_000_000_000,
+        )
+        db_session.add(pos)
+        await db_session.commit()
+        tp_bar = Candle(time_ms=1_700_000_000_100, open=100, high=106, low=99, close=104, volume=1.0)
+        gap_bundle = KlineBundle(
+            closed=[tp_bar],
+            forming=None,
+            gaps_detected=[],
+            gaps_remaining=[1_700_000_000_050],
+            data_complete=False,
+            interval="1m",
+        )
+        mon = SimPositionMonitorService()
+        with patch.object(mon.market, "fetch_kline_bundle", AsyncMock(return_value=gap_bundle)):
+            await mon.monitor_session(db_session)
+        await db_session.refresh(pos)
+        assert pos.status == "open"
+        assert pos.execution_state == "suspended"
 
 
 def test_telegram_analysis_time_tehran():

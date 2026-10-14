@@ -50,6 +50,7 @@ SIGNAL_MIGRATIONS = [
     "ALTER TABLE ai_proposed_setups ADD COLUMN last_tracked_candle_ms INTEGER DEFAULT 0",
     "ALTER TABLE ai_analysis_settings ADD COLUMN auto_retry_pending BOOLEAN DEFAULT 0",
     "ALTER TABLE sim_positions ADD COLUMN quantity_btc FLOAT",
+    "ALTER TABLE sim_positions ADD COLUMN execution_state VARCHAR(32) DEFAULT 'normal'",
 ]
 
 

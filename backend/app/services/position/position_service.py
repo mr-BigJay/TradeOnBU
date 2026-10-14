@@ -276,6 +276,7 @@ class SimPositionService:
         exit_adverse: bool,
         bar_ms: int,
         ambiguous: bool = False,
+        ambiguous_policy: str = "bar_close",
     ) -> None:
         if pos.status != "open":
             return
@@ -308,10 +309,12 @@ class SimPositionService:
         if ambiguous:
             pos.close_reason = "ambiguous_intrabar"
             pos.status = "closed"
+            pos.execution_state = "normal"
             pos.extra = {
                 **pos.extra,
                 "ambiguous_intrabar": True,
-                "settlement_policy": "bar_close",
+                "outcome_valid": False,
+                "settlement_policy": ambiguous_policy,
                 "settlement_price_raw": raw_exit,
             }
         else:
@@ -395,6 +398,7 @@ class SimPositionService:
             "mark_price": mark_price,
             "ai_setup_id": pos.ai_setup_id,
             "quantity_btc": pos.quantity_btc,
+            "execution_state": pos.execution_state,
             "metrics": metrics.__dict__,
             "opened_at_tehran": None,
         }
