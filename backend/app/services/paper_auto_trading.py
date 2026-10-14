@@ -60,6 +60,26 @@ def ict_auto_entry_confirmations_clear(structured: dict[str, Any]) -> tuple[bool
     return True, None
 
 
+def build_ict_entry_audit_snapshot(
+    *,
+    structured: dict[str, Any],
+    setup: AiProposedSetup,
+    validation: dict[str, Any],
+) -> dict[str, Any]:
+    """Persisted on auto paper positions for post-hoc ICT condition review."""
+    decision = str(structured.get("decision") or validation.get("ai_decision") or setup.direction or "").upper()
+    return {
+        "decision": decision,
+        "entry": float(setup.entry_price),  # type: ignore[arg-type]
+        "stop_loss": float(setup.stop_loss),  # type: ignore[arg-type]
+        "take_profit": float(setup.take_profit),  # type: ignore[arg-type]
+        "liquidity_event_clear": structured.get("liquidity_event_clear"),
+        "poi_reaction_clear": structured.get("poi_reaction_clear"),
+        "structural_confirmation_clear": structured.get("structural_confirmation_clear"),
+        "logical_invalidation_clear": structured.get("logical_invalidation_clear"),
+    }
+
+
 def trade_decision_allows_auto_paper(
     structured: dict[str, Any],
     validation: dict[str, Any],
@@ -180,6 +200,7 @@ async def maybe_auto_open_paper_position(
         meta["detail"] = result.message
         return meta
 
+    ict_snapshot = build_ict_entry_audit_snapshot(structured=structured, setup=setup, validation=validation)
     pos = await svc.get_position_by_public_id(session, result.position_id)
     if pos:
         pos.extra = {
@@ -187,12 +208,14 @@ async def maybe_auto_open_paper_position(
             "auto_paper": True,
             "ai_run_id": run_id,
             "source": "gpt_auto_paper",
+            "ict_entry_snapshot": ict_snapshot,
         }
         await session.flush()
 
     meta["created"] = True
     meta["position_id"] = result.position_id
     meta["setup_id"] = setup.setup_id
+    meta["ict_entry_snapshot"] = ict_snapshot
     logger.info(
         "PAPER AUTO ENTRY CREATED",
         extra={

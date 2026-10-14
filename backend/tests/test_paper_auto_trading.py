@@ -97,6 +97,48 @@ async def test_auto_open_creates_pending_limit_order():
 
 
 @pytest.mark.asyncio
+async def test_auto_open_stores_ict_entry_audit_snapshot():
+    await init_db()
+    async with SessionLocal() as session:
+        await _wallet_and_settings(session, auto=True)
+        setup = _sample_setup()
+        session.add(setup)
+        await session.flush()
+
+        structured = _ict_clear_structured(
+            entry_price=100.0,
+            stop_loss=95.0,
+            take_profit=110.0,
+        )
+        validation = {"ai_decision": "LONG", "acceptable_rr": True}
+        meta = await maybe_auto_open_paper_position(
+            session,
+            run_id=42,
+            setup=setup,
+            validation=validation,
+            structured=structured,
+            symbol="BTCUSDT",
+            commit=True,
+        )
+        assert meta["created"] is True
+        snap = meta["ict_entry_snapshot"]
+        assert snap["decision"] == "LONG"
+        assert snap["entry"] == 100.0
+        assert snap["stop_loss"] == 95.0
+        assert snap["take_profit"] == 110.0
+        assert snap["liquidity_event_clear"] is True
+        assert snap["poi_reaction_clear"] is True
+        assert snap["structural_confirmation_clear"] is True
+        assert snap["logical_invalidation_clear"] is True
+
+        pos = (
+            await session.execute(select(SimPosition).where(SimPosition.ai_setup_id == setup.setup_id))
+        ).scalar_one()
+        stored = pos.extra["ict_entry_snapshot"]
+        assert stored == snap
+
+
+@pytest.mark.asyncio
 async def test_auto_open_skipped_when_disabled():
     await init_db()
     async with SessionLocal() as session:
