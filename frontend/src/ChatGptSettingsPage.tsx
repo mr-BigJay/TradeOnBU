@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { displayTehranTime } from "./displayTime";
 import { ApiError, apiFetch } from "./api";
 import { ConnectParamField } from "./ConnectParamField";
 
@@ -10,6 +11,7 @@ type Status = {
   email?: string;
   scheduling_active: boolean;
   next_run_at?: string;
+  next_run_at_tehran?: string;
   interval_minutes: number;
   ai_analysis_model?: string;
   ai_reasoning_effort?: string;
@@ -354,7 +356,7 @@ export function ChatGptSettingsPage() {
           <p className="hint">
             {status.scheduling_active ? "زمان‌بندی فعال" : "زمان‌بندی غیرفعال"}
             {status.next_run_at &&
-              ` · بعدی: ${new Date(status.next_run_at).toLocaleString("fa-IR", { dateStyle: "short", timeStyle: "short" })}`}
+              ` · بعدی: ${displayTehranTime(status.next_run_at_tehran, status.next_run_at)}`}
           </p>
         )}
         <button type="submit" className="btn-primary btn-block" disabled={!connected}>

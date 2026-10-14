@@ -20,6 +20,7 @@ from app.services.position.settings_service import (
     validate_settings_patch,
 )
 from app.services.position import wallet_service as wallet
+from app.services.position.mark_to_market import aggregate_open_mark_to_market
 
 router = APIRouter(prefix="/api/gui/position", tags=["position"])
 
@@ -77,15 +78,8 @@ def _ledger_out(row: SimWalletLedger) -> dict:
     }
 
 
-async def _unrealized_total(session: AsyncSession, svc: SimPositionService) -> float:
-    total = 0.0
-    for pos in await svc.list_active(session):
-        if pos.status != "open":
-            continue
-        data = await svc.enrich_open(session, pos)
-        metrics = data.get("metrics") or {}
-        total += float(metrics.get("net_unrealized_pnl") or 0)
-    return total
+async def _mark_to_market(session: AsyncSession, svc: SimPositionService) -> dict[str, float]:
+    return await aggregate_open_mark_to_market(session, svc)
 
 
 @router.get("/meta")
@@ -100,8 +94,12 @@ async def meta(_=Depends(require_dashboard_access)):
 @router.get("/wallet")
 async def wallet_view(session: AsyncSession = Depends(get_db), _=Depends(require_dashboard_access)):
     svc = SimPositionService()
-    unrealized = await _unrealized_total(session, svc)
-    summary = await wallet.wallet_summary(session, unrealized_pnl=unrealized)
+    mtm = await _mark_to_market(session, svc)
+    summary = await wallet.wallet_summary(
+        session,
+        unrealized_gross=mtm["unrealized_gross"],
+        estimated_exit_fees=mtm["estimated_exit_fees"],
+    )
     ledger = await wallet.list_ledger(session)
     settings = await get_or_create_settings(session)
     return {
@@ -150,8 +148,12 @@ async def wallet_withdraw(
     _=Depends(require_dashboard_access),
 ):
     svc = SimPositionService()
-    unrealized = await _unrealized_total(session, svc)
-    summary = await wallet.wallet_summary(session, unrealized_pnl=unrealized)
+    mtm = await _mark_to_market(session, svc)
+    summary = await wallet.wallet_summary(
+        session,
+        unrealized_gross=mtm["unrealized_gross"],
+        estimated_exit_fees=mtm["estimated_exit_fees"],
+    )
     if body.amount_usdt > summary["available_balance"]:
         raise HTTPException(400, "موجودی آزاد کافی نیست")
     try:
@@ -285,7 +287,7 @@ async def reports(
     _=Depends(require_dashboard_access),
 ):
     svc = SimPositionService()
-    unrealized = await _unrealized_total(session, svc)
+    mtm = await _mark_to_market(session, svc)
     data = await build_report(
         session,
         period=period,
@@ -294,8 +296,13 @@ async def reports(
         start_date=start_date,
         end_date=end_date,
     )
-    data["unrealized_pnl"] = round(unrealized, 4)
-    summary = await wallet.wallet_summary(session, unrealized_pnl=unrealized)
+    data["unrealized_pnl"] = mtm["unrealized_net"]
+    data["unrealized_pnl_gross"] = mtm["unrealized_gross"]
+    summary = await wallet.wallet_summary(
+        session,
+        unrealized_gross=mtm["unrealized_gross"],
+        estimated_exit_fees=mtm["estimated_exit_fees"],
+    )
     data["account_equity"] = summary["account_equity"]
     return data
 

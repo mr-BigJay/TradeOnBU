@@ -8,8 +8,8 @@ Wallet accounting contract (paper simulator)
   - ``open_fee`` / ``close_fee`` / ``funding_fee``: negative USDT amounts.
   - ``realized_pnl``: **gross** price PnL only (never includes fees again).
 - Position ``net_pnl_usdt`` = gross_pnl − entry_fee − exit_fee (reporting).
-- ``account_equity`` = wallet_balance + unrealized gross PnL − open fees already paid
-  (unrealized metrics on open positions use net-of-fee estimates in UI).
+- ``account_equity`` = wallet_balance + unrealized gross PnL − estimated exit fees
+  (entry fees are already in wallet_balance; never subtract entry fee again).
 """
 
 from sqlalchemy import func, select
@@ -125,24 +125,35 @@ async def sum_trading_net_pnl(session: AsyncSession) -> float:
     return float(result.scalar() or 0.0)
 
 
-async def wallet_summary(session: AsyncSession, unrealized_pnl: float = 0.0) -> dict:
+async def wallet_summary(
+    session: AsyncSession,
+    *,
+    unrealized_gross: float = 0.0,
+    estimated_exit_fees: float = 0.0,
+    unrealized_pnl: float | None = None,
+) -> dict:
     balance = await _latest_balance(session)
     margin_used = await margin_in_use(session)
     available = balance - margin_used
     fees = await sum_fees(session)
     realized_gross = await sum_realized_gross_pnl(session)
     realized_net = await sum_trading_net_pnl(session)
-    equity = balance + unrealized_pnl
+    if unrealized_pnl is None:
+        unrealized_pnl = unrealized_gross - estimated_exit_fees
+    equity = balance + unrealized_gross - estimated_exit_fees
     return {
         "wallet_balance": round(balance, 4),
         "available_balance": round(available, 4),
         "margin_in_use": round(margin_used, 4),
         "unrealized_pnl": round(unrealized_pnl, 4),
+        "unrealized_pnl_gross": round(unrealized_gross, 4),
+        "estimated_exit_fees": round(estimated_exit_fees, 4),
         "realized_pnl": round(realized_net, 4),
         "realized_pnl_gross": round(realized_gross, 4),
         "total_fees": round(fees["opening_fees"] + fees["closing_fees"] + fees["funding_fees"], 4),
         "fees_breakdown": fees,
         "account_equity": round(equity, 4),
+        "mark_to_market_equity": round(equity, 4),
     }
 
 

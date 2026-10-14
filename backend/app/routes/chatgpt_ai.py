@@ -27,6 +27,7 @@ from app.services.siwc.oauth import (
 )
 from app.services.chart_media import chart_path_for_run, resolve_chart_path
 from app.services.siwc.responses_client import list_models
+from app.domain.tehran_time import format_tehran
 from app.services.ai_trader_report import structured_for_user_display
 
 router = APIRouter(prefix="/api/gui/chatgpt", tags=["chatgpt-ai"])
@@ -83,8 +84,12 @@ async def status(session: AsyncSession = Depends(get_db), _=Depends(require_dash
         "scheduling_block_reason": sched_reason,
         "interval_minutes": cfg.interval_minutes,
         "last_run_at": cfg.last_run_at.isoformat() if cfg.last_run_at else None,
+        "last_run_at_tehran": format_tehran(cfg.last_run_at),
         "last_success_at": cfg.last_success_at.isoformat() if cfg.last_success_at else None,
+        "last_success_at_tehran": format_tehran(cfg.last_success_at),
         "next_run_at": cfg.next_run_at.isoformat() if cfg.next_run_at else None,
+        "next_run_at_tehran": format_tehran(cfg.next_run_at),
+        "timezone_display": "Asia/Tehran",
         "last_error": cfg.last_error,
         "oauth_flow": "siwc_open_source",
         "connect_complete_url": "/api/gui/chatgpt/connect/complete",
@@ -241,6 +246,7 @@ async def history(limit: int = 50, session: AsyncSession = Depends(get_db), _=De
             "is_ai": r.is_ai,
             "error_code": r.error_code,
             "created_at": r.created_at.isoformat(),
+            "created_at_tehran": format_tehran(r.created_at),
             "report_preview": (r.report_fa or "")[:280],
         }
         for r in rows
@@ -268,6 +274,7 @@ async def history_detail(run_id: int, session: AsyncSession = Depends(get_db), _
         "error_code": run.error_code,
         "error_detail": run.error_detail,
         "created_at": run.created_at.isoformat(),
+        "created_at_tehran": format_tehran(run.created_at),
         "inference": ((run.structured or {}).get("_artifacts") or {}).get("inference"),
     }
 

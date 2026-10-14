@@ -123,7 +123,8 @@ def compute_metrics(
     entry_fee = fee_on_quantity(qty, entry_price, entry_rate)
     exit_fee_est = fee_on_quantity(qty, mark_price, exit_rate)
     gross_u = gross_pnl(direction, entry_price, mark_price, qty)
-    net_u = gross_u - entry_fee - exit_fee_est
+    # Entry fee already paid in wallet ledger when position opened.
+    net_u = gross_u - exit_fee_est
     pnl_pct = (net_u / margin_usdt * 100.0) if margin_usdt > 0 else 0.0
     gross = rr_ratio(entry_price, stop_loss, take_profit, direction)
     risk_usdt = abs(gross_pnl(direction, entry_price, stop_loss, qty)) - entry_fee

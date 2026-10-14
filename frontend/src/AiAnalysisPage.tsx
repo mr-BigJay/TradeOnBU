@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { apiFetch } from "./api";
+import { displayTehranTime } from "./displayTime";
 import type { PositionPrefill } from "./PositionPage";
 
 type Status = {
@@ -8,6 +9,8 @@ type Status = {
   last_run_at?: string;
   last_error?: string;
   next_run_at?: string;
+  last_run_at_tehran?: string;
+  next_run_at_tehran?: string;
   interval_minutes?: number;
   ai_analysis_model?: string;
   ai_reasoning_effort?: string;
@@ -19,6 +22,7 @@ type HistoryRow = {
   decision?: string;
   report_preview?: string;
   created_at: string;
+  created_at_tehran?: string;
   telegram_sent: boolean;
   has_chart?: boolean;
 };
@@ -130,18 +134,12 @@ export function AiAnalysisPage({ onOpenPaperPosition }: Props) {
 
       {status?.last_run_at && (
         <p className="meta-line">
-          آخرین اجرا:{" "}
-          {new Date(status.last_run_at).toLocaleString("fa-IR", {
-            dateStyle: "short",
-            timeStyle: "short",
-            timeZone: "Asia/Tehran",
-          })}
+          آخرین اجرا: {displayTehranTime(status.last_run_at_tehran, status.last_run_at)}
           {status.next_run_at &&
-            ` · بعدی (هر ${status.interval_minutes || 120} دقیقه): ${new Date(status.next_run_at).toLocaleString("fa-IR", {
-              dateStyle: "short",
-              timeStyle: "short",
-              timeZone: "Asia/Tehran",
-            })}`}
+            ` · بعدی (هر ${status.interval_minutes || 120} دقیقه): ${displayTehranTime(
+              status.next_run_at_tehran,
+              status.next_run_at,
+            )}`}
         </p>
       )}
       {status?.last_error && <p className="toast toast-error">{status.last_error}</p>}
@@ -161,13 +159,7 @@ export function AiAnalysisPage({ onOpenPaperPosition }: Props) {
                   </span>
                 </div>
                 <p className="history-preview">{r.report_preview || r.status}</p>
-                <p className="history-time">
-                  {new Date(r.created_at).toLocaleString("fa-IR", {
-                    dateStyle: "medium",
-                    timeStyle: "short",
-                    timeZone: "Asia/Tehran",
-                  })}
-                </p>
+                <p className="history-time">{displayTehranTime(r.created_at_tehran, r.created_at)}</p>
               </button>
             </li>
           ))}

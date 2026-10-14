@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
+from app.domain.tehran_time import format_tehran
+
 TELEGRAM_PLAIN_TEXT_LIMIT = 4096
 
 
@@ -29,7 +31,7 @@ def format_ai_chart_caption(
             if val is not None and val > 0:
                 lines.append(f"{label}: {val:,.2f}")
     if analyzed_at:
-        lines.append(analyzed_at.astimezone().strftime("Analysis: %Y-%m-%d %H:%M %Z"))
+        lines.append(f"Analysis (Tehran): {format_tehran(analyzed_at)}")
     lines.append("Paper only — no live orders.")
     text = "\n".join(lines)
     return text[:max_len]

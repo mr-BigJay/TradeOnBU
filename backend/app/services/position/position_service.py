@@ -16,7 +16,6 @@ from app.services.position.calculations import (
     position_notional,
     quantity_from_notional,
 )
-from app.services.position.equity_service import record_equity_snapshot
 from app.services.position.execution_adapters import ExecutionResult, OrderRequest
 from app.services.position.settings_service import (
     SettingsValidationError,
@@ -351,7 +350,9 @@ class SimPositionService:
             pos.status,
             {"reason": pos.close_reason, "gross_pnl": gross, "net_pnl": net, "bar_ms": bar_ms},
         )
-        await record_equity_snapshot(session, unrealized_pnl=0.0)
+        from app.services.position.equity_service import record_equity_snapshot
+
+        await record_equity_snapshot(session, self)
 
     async def enrich_open(
         self,

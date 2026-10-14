@@ -1,5 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { apiFetch } from "./api";
+import { displayTehranTime } from "./displayTime";
+import { mergeOpenFormDefaults, type OpenFormState } from "./positionFormMerge";
 
 export type PositionPrefill = {
   direction: string;
@@ -18,11 +20,6 @@ const TABS: { id: Tab; label: string }[] = [
   { id: "open", label: "پوزیشن باز" },
   { id: "report", label: "گزارش" },
 ];
-
-function tehranFmt(iso?: string | null) {
-  if (!iso) return "—";
-  return new Date(iso).toLocaleString("fa-IR", { timeZone: "Asia/Tehran", dateStyle: "medium", timeStyle: "short" });
-}
 
 type Props = {
   prefill: PositionPrefill | null;
@@ -45,7 +42,7 @@ export function PositionPage({ prefill, onConsumePrefill, initialTab }: Props) {
   const [withdraw, setWithdraw] = useState("");
   const [initialBal, setInitialBal] = useState("1000");
 
-  const [form, setForm] = useState({
+  const [form, setForm] = useState<OpenFormState>({
     direction: "LONG",
     margin_usdt: "50",
     leverage: "10",
@@ -55,10 +52,12 @@ export function PositionPage({ prefill, onConsumePrefill, initialTab }: Props) {
     take_profit: "",
     ai_setup_id: "",
   });
+  const preserveExecutionRef = useRef(false);
 
   useEffect(() => {
     if (prefill) {
       setTab("open");
+      preserveExecutionRef.current = prefill.entry_price != null;
       setForm((f) => ({
         ...f,
         direction: prefill.direction,
@@ -106,12 +105,8 @@ export function PositionPage({ prefill, onConsumePrefill, initialTab }: Props) {
 
   useEffect(() => {
     if (settings && tab === "open") {
-      setForm((f) => ({
-        ...f,
-        margin_usdt: String(settings.default_margin_usdt ?? f.margin_usdt),
-        leverage: String(settings.default_leverage ?? f.leverage),
-        order_type: String(settings.default_order_type ?? f.order_type),
-      }));
+      setForm((f) => mergeOpenFormDefaults(f, settings, preserveExecutionRef.current));
+      preserveExecutionRef.current = false;
     }
   }, [settings, tab]);
 
@@ -548,7 +543,7 @@ export function PositionPage({ prefill, onConsumePrefill, initialTab }: Props) {
                   <td>{String(row.direction)}</td>
                   <td>{String(row.entry_price)}</td>
                   <td>{String(row.exit_price)}</td>
-                  <td>{tehranFmt(row.closed_at_tehran as string)}</td>
+                  <td>{displayTehranTime(row.closed_at_tehran as string)}</td>
                   <td>{String(row.net_pnl_usdt)}</td>
                 </tr>
               ))}

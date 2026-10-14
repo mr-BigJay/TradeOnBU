@@ -7,7 +7,10 @@ import pytest
 from sqlalchemy import select
 
 from app.db import SessionLocal, init_db
+from app.domain.position_form_merge import merge_open_form_defaults
 from app.domain.tehran_time import format_tehran, report_period_bounds_utc, tehran_midnight_to_utc, tehran_now
+from app.services.ai_telegram_format import format_ai_chart_caption
+from app.services.position.mark_to_market import aggregate_open_mark_to_market
 from app.services.position.position_service import PositionServiceError
 from app.models import SimEquitySnapshot, SimPosition, SimPositionSettings, SimWalletLedger
 from app.services.position.calculations import (
@@ -471,3 +474,108 @@ async def test_monitor_recovery_records_gap_when_history_missing():
             await mon.monitor_session(db_session)
         pos = (await db_session.execute(select(SimPosition))).scalar_one()
         assert pos.extra.get("monitor_gaps")
+
+
+def test_merge_open_form_preserves_ai_limit_prefill():
+    form = {
+        "direction": "LONG",
+        "margin_usdt": "50",
+        "leverage": "10",
+        "order_type": "limit",
+        "entry_price": "99000",
+        "stop_loss": "98000",
+        "take_profit": "101000",
+        "ai_setup_id": "abc",
+    }
+    merged = merge_open_form_defaults(
+        form,
+        {"default_margin_usdt": 25, "default_leverage": 5, "default_order_type": "market"},
+        preserve_execution=True,
+    )
+    assert merged["order_type"] == "limit"
+    assert merged["entry_price"] == "99000"
+    assert merged["stop_loss"] == "98000"
+    assert merged["take_profit"] == "101000"
+    assert merged["margin_usdt"] == "25"
+
+
+@pytest.mark.asyncio
+async def test_equity_unrealized_excludes_entry_fee():
+    await init_db()
+    async with SessionLocal() as db_session:
+        await wallet.append_ledger(db_session, entry_type=wallet.LEDGER_INITIAL, amount_usdt=1000.0)
+        await _ensure_paper_settings(db_session, max_risk_pct_per_position=100.0, slippage_bps=0)
+        svc = SimPositionService()
+        req = OrderRequest(
+            symbol="BTCUSDT",
+            direction="LONG",
+            margin_usdt=50.0,
+            leverage=10,
+            order_type="market",
+            entry_price=None,
+            stop_loss=99.0,
+            take_profit=110.0,
+        )
+        with patch.object(svc.market, "fetch_ticker", AsyncMock(return_value=(100.0, None))):
+            await svc.create_order(db_session, req)
+        mtm = await aggregate_open_mark_to_market(db_session, svc)
+        summary = await wallet.wallet_summary(
+            db_session,
+            unrealized_gross=mtm["unrealized_gross"],
+            estimated_exit_fees=mtm["estimated_exit_fees"],
+        )
+        pos = (await db_session.execute(select(SimPosition))).scalar_one()
+        assert summary["wallet_balance"] == pytest.approx(1000.0 - pos.entry_fee_usdt, abs=1e-4)
+        assert summary["account_equity"] == pytest.approx(
+            summary["wallet_balance"] + mtm["unrealized_gross"] - mtm["estimated_exit_fees"],
+            abs=1e-4,
+        )
+        assert mtm["unrealized_net"] == pytest.approx(mtm["unrealized_gross"] - mtm["estimated_exit_fees"], abs=1e-6)
+
+
+@pytest.mark.asyncio
+async def test_monitor_limit_fill_and_tp_same_bar():
+    await init_db()
+    async with SessionLocal() as db_session:
+        await wallet.append_ledger(db_session, entry_type=wallet.LEDGER_INITIAL, amount_usdt=1000.0)
+        await _ensure_paper_settings(db_session, slippage_bps=0, max_risk_pct_per_position=100)
+        pos = SimPosition(
+            public_id="ltp1",
+            symbol="BTCUSDT",
+            direction="LONG",
+            status="pending_entry",
+            order_type="limit",
+            limit_entry_price=100.0,
+            entry_price=100.0,
+            margin_usdt=50.0,
+            leverage=10,
+            stop_loss=95.0,
+            take_profit=105.0,
+            monitor_from_ms=0,
+            last_processed_candle_ms=0,
+        )
+        db_session.add(pos)
+        await db_session.commit()
+        bar = Candle(time_ms=60_000, open=100, high=106, low=99, close=104, volume=1.0)
+        bundle = KlineBundle(
+            closed=[bar], forming=None, gaps_detected=[], gaps_remaining=[], data_complete=True, interval="1m"
+        )
+        mon = SimPositionMonitorService()
+        with patch.object(mon.market, "fetch_kline_bundle", AsyncMock(return_value=bundle)):
+            await mon.monitor_session(db_session)
+        await db_session.refresh(pos)
+        assert pos.status == "tp_hit"
+
+
+def test_telegram_analysis_time_tehran():
+    dt = datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc)
+    cap = format_ai_chart_caption(
+        symbol="BTCUSDT",
+        interval="1h",
+        decision="LONG",
+        live_price=100.0,
+        trade_levels={"entry": 100, "stop_loss": 90, "take_profit": 110},
+        analyzed_at=dt,
+    )
+    assert "Tehran" in cap
+    assert format_tehran(dt) in cap

@@ -13,13 +13,10 @@ from app.services.position.position_service import SimPositionService
 from app.services.position.settings_service import get_or_create_settings
 
 MAX_RECOVERY_MINUTES = 24 * 60
+INTERVAL_MS = 60_000
 
 
-def _bar_hits_long_limit(bar: Candle, limit: float) -> bool:
-    return bar.low <= limit <= bar.high
-
-
-def _bar_hits_short_limit(bar: Candle, limit: float) -> bool:
+def _bar_hits_limit(bar: Candle, limit: float) -> bool:
     return bar.low <= limit <= bar.high
 
 
@@ -74,6 +71,69 @@ class SimPositionMonitorService:
             worst_gap_min = max(worst_gap_min, int(gap_min) + 2)
         return min(worst_gap_min + 5, MAX_RECOVERY_MINUTES)
 
+    def _note_data_gap(self, pos: SimPosition, need_from: int, oldest_ms: int) -> None:
+        gaps = list(pos.extra.get("monitor_gaps") or [])
+        gaps.append(
+            {
+                "from_ms": need_from,
+                "oldest_available_ms": oldest_ms,
+                "noted_at": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+        pos.extra = {**pos.extra, "monitor_gaps": gaps[-20:]}
+        # Skip unknowable candles — resume from oldest available bar without inventing fills.
+        pos.last_processed_candle_ms = max(pos.last_processed_candle_ms or 0, oldest_ms - INTERVAL_MS)
+
+    async def _handle_open_bar(
+        self,
+        session: AsyncSession,
+        pos: SimPosition,
+        settings,
+        bar: Candle,
+    ) -> bool:
+        """Returns True if position closed on this bar."""
+        from app.services.position.calculations import estimate_isolated_liquidation
+
+        entry = pos.fill_price or pos.entry_price or 0.0
+        liq, _ = estimate_isolated_liquidation(pos.direction, entry, pos.leverage)
+        if _liquidation_on_bar(pos.direction, bar, liq):
+            await self.positions._close_position(
+                session,
+                pos,
+                settings,
+                raw_exit=liq or bar.close,
+                reason="liquidated",
+                exit_adverse=True,
+                bar_ms=bar.time_ms,
+            )
+            return True
+
+        reason, raw_exit, ambiguous = _tp_sl_on_bar(pos.direction, bar, pos.stop_loss, pos.take_profit)
+        if ambiguous:
+            await self.positions._close_position(
+                session,
+                pos,
+                settings,
+                raw_exit=bar.close,
+                reason="ambiguous_intrabar",
+                exit_adverse=True,
+                bar_ms=bar.time_ms,
+                ambiguous=True,
+            )
+            return True
+        if reason and raw_exit is not None:
+            await self.positions._close_position(
+                session,
+                pos,
+                settings,
+                raw_exit=raw_exit,
+                reason=reason,
+                exit_adverse=reason == "sl_hit",
+                bar_ms=bar.time_ms,
+            )
+            return True
+        return False
+
     async def monitor_session(self, session: AsyncSession) -> int:
         settings = await get_or_create_settings(session)
         result = await session.execute(
@@ -91,94 +151,31 @@ class SimPositionMonitorService:
             for pos in positions:
                 need_from = pos.last_processed_candle_ms or pos.monitor_from_ms or 0
                 if need_from and need_from < oldest_ms:
-                    gaps = list(pos.extra.get("monitor_gaps") or [])
-                    gaps.append(
-                        {
-                            "from_ms": need_from,
-                            "oldest_available_ms": oldest_ms,
-                            "noted_at": datetime.now(timezone.utc).isoformat(),
-                        }
-                    )
-                    pos.extra = {**pos.extra, "monitor_gaps": gaps[-20:]}
+                    self._note_data_gap(pos, need_from, oldest_ms)
 
         processed = 0
-
-        from app.services.position.calculations import estimate_isolated_liquidation
 
         for pos in positions:
             bars = self._eligible_bars(pos, closed)
             for bar in bars:
                 if pos.status == "pending_entry" and pos.order_type == "limit" and pos.limit_entry_price:
                     limit_px = pos.limit_entry_price
-                    filled = (
-                        _bar_hits_long_limit(bar, limit_px)
-                        if pos.direction == "LONG"
-                        else _bar_hits_short_limit(bar, limit_px)
-                    )
-                    if filled:
+                    if _bar_hits_limit(bar, limit_px):
                         await self.positions._fill_entry(
                             session, pos, settings, limit_px, transition_suffix=f"limit:{bar.time_ms}"
                         )
-                        pos.last_processed_candle_ms = bar.time_ms
                         processed += 1
-                        continue
 
                 if pos.status == "open":
-                    entry = pos.fill_price or pos.entry_price or 0.0
-                    liq, _ = estimate_isolated_liquidation(pos.direction, entry, pos.leverage)
-                    if _liquidation_on_bar(pos.direction, bar, liq):
-                        await self.positions._close_position(
-                            session,
-                            pos,
-                            settings,
-                            raw_exit=liq or bar.close,
-                            reason="liquidated",
-                            exit_adverse=True,
-                            bar_ms=bar.time_ms,
-                        )
-                        pos.last_processed_candle_ms = bar.time_ms
-                        processed += 1
-                        break
-
-                    reason, raw_exit, ambiguous = _tp_sl_on_bar(pos.direction, bar, pos.stop_loss, pos.take_profit)
-                    if ambiguous:
-                        await self.positions._close_position(
-                            session,
-                            pos,
-                            settings,
-                            raw_exit=bar.close,
-                            reason="ambiguous_intrabar",
-                            exit_adverse=True,
-                            bar_ms=bar.time_ms,
-                            ambiguous=True,
-                        )
-                        pos.last_processed_candle_ms = bar.time_ms
-                        processed += 1
-                        break
-                    if reason and raw_exit is not None:
-                        await self.positions._close_position(
-                            session,
-                            pos,
-                            settings,
-                            raw_exit=raw_exit,
-                            reason=reason,
-                            exit_adverse=reason == "sl_hit",
-                            bar_ms=bar.time_ms,
-                        )
+                    closed_on_bar = await self._handle_open_bar(session, pos, settings, bar)
+                    if closed_on_bar:
                         pos.last_processed_candle_ms = bar.time_ms
                         processed += 1
                         break
 
                 pos.last_processed_candle_ms = bar.time_ms
 
-        unrealized = 0.0
-        for pos in positions:
-            if pos.status != "open":
-                continue
-            data = await self.positions.enrich_open(session, pos)
-            metrics = data.get("metrics") or {}
-            unrealized += float(metrics.get("net_unrealized_pnl") or 0)
-        await record_equity_snapshot(session, unrealized_pnl=unrealized)
+        await record_equity_snapshot(session, self.positions)
         if processed or positions:
             await session.commit()
         return processed
