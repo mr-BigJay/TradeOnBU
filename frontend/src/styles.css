@@ -691,3 +691,119 @@ label {
     max-width: 640px;
   }
 }
+
+.sub-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 1rem;
+}
+
+.sub-tabs button {
+  flex: 1 1 40%;
+  min-height: 40px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.sub-tabs button.active {
+  border-color: var(--primary);
+  color: #fff;
+  background: rgba(59, 130, 246, 0.18);
+}
+
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+  margin-bottom: 1rem;
+}
+
+.stat-card {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.65rem 0.75rem;
+}
+
+.stat-label {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.form-card label {
+  display: block;
+  margin-top: 0.65rem;
+  font-size: 0.85rem;
+}
+
+.btn-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 0.5rem;
+}
+
+.ledger-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.ledger-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.85rem;
+}
+
+.filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 1rem;
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+}
+
+.data-table th,
+.data-table td {
+  border-bottom: 1px solid var(--border);
+  padding: 0.4rem 0.25rem;
+  text-align: right;
+}
+
+.position-card {
+  margin-bottom: 0.75rem;
+}
+
+.print-only {
+  display: none;
+}
+
+@media print {
+  .no-print,
+  .app-nav,
+  .sub-tabs,
+  .page-header .hint {
+    display: none !important;
+  }
+  .print-only {
+    display: block;
+    margin-bottom: 1rem;
+  }
+  .position-report-print {
+    color: #000;
+  }
+  .stat-card {
+    break-inside: avoid;
+  }
+}

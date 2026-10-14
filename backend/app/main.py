@@ -22,6 +22,7 @@ from app.routes import auth as auth_routes
 from app.routes import settings_gui as settings_gui_routes
 from app.routes import chatgpt_ai as chatgpt_ai_routes
 from app.routes import siwc_public as siwc_public_routes
+from app.routes import position as position_routes
 from app.services.settings_runtime import refresh_settings_cache
 from app.models import MarketTrendSnapshot, Signal, SignalEvent, SignalStatus
 from app.schemas import (
@@ -103,6 +104,7 @@ app.include_router(auth_routes.router)
 app.include_router(settings_gui_routes.router)
 app.include_router(chatgpt_ai_routes.router)
 app.include_router(siwc_public_routes.router)
+app.include_router(position_routes.router)
 app.add_middleware(SessionSecurityMiddleware)
 app.add_middleware(
     CORSMiddleware,

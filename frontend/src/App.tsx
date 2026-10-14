@@ -3,11 +3,13 @@ import { fetchMe, getApiKey, login, logout, setApiKey, setCsrf } from "./api";
 import { AiAnalysisPage } from "./AiAnalysisPage";
 import { ChatGptSettingsPage } from "./ChatGptSettingsPage";
 import { TelegramSettingsPage } from "./TelegramSettingsPage";
+import { PositionPage, type PositionPrefill } from "./PositionPage";
 
-type Page = "analysis" | "chatgpt" | "telegram";
+type Page = "analysis" | "chatgpt" | "telegram" | "position";
 
 const NAV: { id: Page; label: string; short: string }[] = [
   { id: "analysis", label: "تحلیل", short: "📊" },
+  { id: "position", label: "پوزیشن", short: "📈" },
   { id: "chatgpt", label: "ChatGPT", short: "🤖" },
   { id: "telegram", label: "تلگرام", short: "✈️" },
 ];
@@ -20,6 +22,7 @@ export default function App() {
   const [authed, setAuthed] = useState(false);
   const [sessionUser, setSessionUser] = useState<string | null>(null);
   const [page, setPage] = useState<Page>("analysis");
+  const [positionPrefill, setPositionPrefill] = useState<PositionPrefill | null>(null);
   const [apiKeyInput, setApiKeyInput] = useState(getApiKey());
 
   useEffect(() => {
@@ -128,7 +131,21 @@ export default function App() {
       <main className="app-main">
         {page === "chatgpt" && <ChatGptSettingsPage />}
         {page === "telegram" && <TelegramSettingsPage />}
-        {page === "analysis" && <AiAnalysisPage />}
+        {page === "analysis" && (
+          <AiAnalysisPage
+            onOpenPaperPosition={(p) => {
+              setPositionPrefill(p);
+              setPage("position");
+            }}
+          />
+        )}
+        {page === "position" && (
+          <PositionPage
+            prefill={positionPrefill}
+            onConsumePrefill={() => setPositionPrefill(null)}
+            initialTab={positionPrefill ? "open" : undefined}
+          />
+        )}
       </main>
 
       <nav className="bottom-nav" aria-label="منوی پایین">

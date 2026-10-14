@@ -841,6 +841,38 @@ async def create_setup_from_structured(
     return row, meta
 
 
+async def _load_sim_paper_position_summaries(session: AsyncSession, symbol: str) -> list[dict[str, Any]]:
+    from sqlalchemy import select
+
+    from app.models import SimPosition
+
+    result = await session.execute(
+        select(SimPosition)
+        .where(SimPosition.symbol == symbol)
+        .where(SimPosition.ai_setup_id.isnot(None))
+        .order_by(SimPosition.updated_at.desc())
+        .limit(12)
+    )
+    rows = list(result.scalars().all())
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        out.append(
+            {
+                "sim_position_id": row.public_id,
+                "ai_setup_id": row.ai_setup_id,
+                "direction": row.direction,
+                "status": row.status,
+                "margin_usdt": row.margin_usdt,
+                "entry_fill": row.fill_price,
+                "exit_fill": row.exit_price,
+                "net_pnl_usdt": row.net_pnl_usdt,
+                "close_reason": row.close_reason,
+                "disclaimer": "Simulated paper fill — distinct from objective setup price touches.",
+            }
+        )
+    return out
+
+
 async def build_ai_memory_context(
     session: AsyncSession,
     *,
@@ -855,8 +887,10 @@ async def build_ai_memory_context(
     reconciling = [s for s in trackable if (s.objective_notes or {}).get("validity_status") == VALIDITY_EXPIRED]
     closed = await load_recent_closed_setups(session, symbol)
     recent = await load_recent_analysis_summaries(session)
+    sim_paper = await _load_sim_paper_position_summaries(session, symbol)
     return {
         "symbol": symbol,
+        "sim_paper_positions": sim_paper,
         "open_setups": [serialize_setup_row(s) for s in setups],
         "reconciling_expired_setups": [serialize_setup_row(s) for s in reconciling if s not in setups],
         "recent_closed_setups": [serialize_setup_row(s) for s in closed],

@@ -332,3 +332,104 @@ class SignalEvent(Base):
     payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+class SimPositionSettings(Base):
+    __tablename__ = "sim_position_settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    default_margin_usdt: Mapped[float] = mapped_column(Float, default=50.0)
+    default_leverage: Mapped[int] = mapped_column(Integer, default=10)
+    position_mode: Mapped[str] = mapped_column(String(16), default="isolated")
+    default_order_type: Mapped[str] = mapped_column(String(16), default="market")
+    default_sl_behavior: Mapped[str] = mapped_column(String(32), default="market")
+    default_tp_behavior: Mapped[str] = mapped_column(String(32), default="market")
+    fee_mode: Mapped[str] = mapped_column(String(32), default="bitunix_vip1")
+    maker_fee_rate: Mapped[float] = mapped_column(Float, default=0.0002)
+    taker_fee_rate: Mapped[float] = mapped_column(Float, default=0.0005)
+    fee_source_url: Mapped[str] = mapped_column(String(255), default="https://www.bitunix.com/service/handling-fee")
+    fee_verified_on: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    slippage_bps: Mapped[float] = mapped_column(Float, default=5.0)
+    max_margin_per_position: Mapped[float] = mapped_column(Float, default=500.0)
+    max_risk_pct_per_position: Mapped[float] = mapped_column(Float, default=5.0)
+    initial_balance_set: Mapped[bool] = mapped_column(default=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class SimWalletLedger(Base):
+    __tablename__ = "sim_wallet_ledger"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    entry_type: Mapped[str] = mapped_column(String(32), index=True)
+    amount_usdt: Mapped[float] = mapped_column(Float)
+    balance_after: Mapped[float] = mapped_column(Float)
+    reference_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    reference_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+class SimPosition(Base):
+    __tablename__ = "sim_positions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    public_id: Mapped[str] = mapped_column(String(36), unique=True, index=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True, default="BTCUSDT")
+    direction: Mapped[str] = mapped_column(String(8))
+    status: Mapped[str] = mapped_column(String(32), index=True, default="pending_entry")
+    execution_state: Mapped[str] = mapped_column(String(32), default="normal", index=True)
+    order_type: Mapped[str] = mapped_column(String(16), default="market")
+    margin_usdt: Mapped[float] = mapped_column(Float)
+    leverage: Mapped[int] = mapped_column(Integer)
+    entry_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    limit_entry_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    fill_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    quantity_btc: Mapped[float | None] = mapped_column(Float, nullable=True)
+    stop_loss: Mapped[float] = mapped_column(Float)
+    take_profit: Mapped[float] = mapped_column(Float)
+    exit_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    close_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    ai_setup_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    entry_fee_usdt: Mapped[float] = mapped_column(Float, default=0.0)
+    exit_fee_usdt: Mapped[float] = mapped_column(Float, default=0.0)
+    funding_fee_usdt: Mapped[float] = mapped_column(Float, default=0.0)
+    gross_pnl_usdt: Mapped[float | None] = mapped_column(Float, nullable=True)
+    net_pnl_usdt: Mapped[float | None] = mapped_column(Float, nullable=True)
+    entry_is_maker: Mapped[bool] = mapped_column(default=False)
+    exit_is_maker: Mapped[bool] = mapped_column(default=False)
+    last_processed_candle_ms: Mapped[int] = mapped_column(Integer, default=0)
+    monitor_from_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    transition_key: Mapped[str | None] = mapped_column(String(128), nullable=True, unique=True)
+    extra: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class SimPositionEvent(Base):
+    __tablename__ = "sim_position_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    position_id: Mapped[int] = mapped_column(Integer, index=True)
+    event_type: Mapped[str] = mapped_column(String(64), index=True)
+    from_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    to_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+class SimEquitySnapshot(Base):
+    __tablename__ = "sim_equity_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    equity_usdt: Mapped[float] = mapped_column(Float)
+    wallet_balance: Mapped[float] = mapped_column(Float)
+    margin_in_use: Mapped[float] = mapped_column(Float)
+    unrealized_pnl: Mapped[float] = mapped_column(Float)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)

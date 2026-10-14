@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { apiFetch } from "./api";
+import { displayTehranTime } from "./displayTime";
+import type { PositionPrefill } from "./PositionPage";
 
 type Status = {
   connected: boolean;
@@ -7,6 +9,8 @@ type Status = {
   last_run_at?: string;
   last_error?: string;
   next_run_at?: string;
+  last_run_at_tehran?: string;
+  next_run_at_tehran?: string;
   interval_minutes?: number;
   ai_analysis_model?: string;
   ai_reasoning_effort?: string;
@@ -18,6 +22,7 @@ type HistoryRow = {
   decision?: string;
   report_preview?: string;
   created_at: string;
+  created_at_tehran?: string;
   telegram_sent: boolean;
   has_chart?: boolean;
 };
@@ -28,12 +33,33 @@ type HistoryDetail = {
   has_chart?: boolean;
   chart_url?: string | null;
   decision?: string;
+  structured?: Record<string, unknown>;
   inference?: {
     requested_model?: string;
     requested_reasoning_effort?: string;
     response_model?: string;
   };
 };
+
+function paperPrefillFromDetail(detail: HistoryDetail): PositionPrefill | null {
+  const decision = (detail.decision || "").toUpperCase();
+  if (decision !== "LONG" && decision !== "SHORT") return null;
+  const s = detail.structured || {};
+  const sl = Number(s.stop_loss);
+  const tp = Number(s.take_profit);
+  const entry = s.entry_price != null ? Number(s.entry_price) : undefined;
+  if (!Number.isFinite(sl) || !Number.isFinite(tp)) return null;
+  if (decision === "LONG" && entry != null && !(sl < entry && entry < tp)) return null;
+  if (decision === "SHORT" && entry != null && !(tp < entry && entry < sl)) return null;
+  return {
+    direction: decision,
+    entry_price: entry,
+    stop_loss: sl,
+    take_profit: tp,
+    ai_setup_id: typeof s.setup_id === "string" ? s.setup_id : undefined,
+    symbol: typeof s.symbol === "string" ? s.symbol : "BTCUSDT",
+  };
+}
 
 function decisionBadge(d?: string) {
   const u = (d || "—").toUpperCase();
@@ -43,7 +69,11 @@ function decisionBadge(d?: string) {
   return "badge";
 }
 
-export function AiAnalysisPage() {
+type Props = {
+  onOpenPaperPosition?: (prefill: PositionPrefill) => void;
+};
+
+export function AiAnalysisPage({ onOpenPaperPosition }: Props) {
   const [status, setStatus] = useState<Status | null>(null);
   const [history, setHistory] = useState<HistoryRow[]>([]);
   const [msg, setMsg] = useState("");
@@ -104,9 +134,12 @@ export function AiAnalysisPage() {
 
       {status?.last_run_at && (
         <p className="meta-line">
-          آخرین اجرا: {new Date(status.last_run_at).toLocaleString("fa-IR", { dateStyle: "short", timeStyle: "short" })}
+          آخرین اجرا: {displayTehranTime(status.last_run_at_tehran, status.last_run_at)}
           {status.next_run_at &&
-            ` · بعدی (هر ${status.interval_minutes || 120} دقیقه): ${new Date(status.next_run_at).toLocaleString("fa-IR", { dateStyle: "short", timeStyle: "short" })}`}
+            ` · بعدی (هر ${status.interval_minutes || 120} دقیقه): ${displayTehranTime(
+              status.next_run_at_tehran,
+              status.next_run_at,
+            )}`}
         </p>
       )}
       {status?.last_error && <p className="toast toast-error">{status.last_error}</p>}
@@ -126,9 +159,7 @@ export function AiAnalysisPage() {
                   </span>
                 </div>
                 <p className="history-preview">{r.report_preview || r.status}</p>
-                <p className="history-time">
-                  {new Date(r.created_at).toLocaleString("fa-IR", { dateStyle: "medium", timeStyle: "short" })}
-                </p>
+                <p className="history-time">{displayTehranTime(r.created_at_tehran, r.created_at)}</p>
               </button>
             </li>
           ))}
@@ -169,6 +200,18 @@ export function AiAnalysisPage() {
                 </div>
               ) : (
                 <p className="hint">نمودار برای این گزارش موجود نیست.</p>
+              )}
+              {onOpenPaperPosition && paperPrefillFromDetail(detail) && (
+                <button
+                  type="button"
+                  className="btn-primary btn-block"
+                  onClick={() => {
+                    const p = paperPrefillFromDetail(detail);
+                    if (p) onOpenPaperPosition(p);
+                  }}
+                >
+                  ایجاد پوزیشن تمرینی
+                </button>
               )}
               <pre>{detail.report_fa || ""}</pre>
             </div>
