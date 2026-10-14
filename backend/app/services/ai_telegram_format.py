@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import Any
 
 from app.domain.tehran_time import format_tehran
+from app.services.telegram_bidi import apply_telegram_persian_bidi
 
 TELEGRAM_PLAIN_TEXT_LIMIT = 4096
 
@@ -68,7 +69,7 @@ def split_ai_telegram_report_messages(
 ) -> list[str]:
     """Split full Persian report into Telegram-safe plain-text messages (header on first part only)."""
     header = build_ai_telegram_header(decision=decision, validation=validation)
-    body = report_fa or ""
+    body = apply_telegram_persian_bidi(report_fa or "")
     if not body:
         return [header.rstrip()] if header.strip() else []
 
