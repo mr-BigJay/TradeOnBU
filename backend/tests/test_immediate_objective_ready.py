@@ -8,6 +8,7 @@ import pytest
 from app.db import SessionLocal, init_db
 from app.domain.candles import Candle
 from app.domain.setup_lifecycle import READY_LONG, WAIT_LONG
+from app.domain.candle_utils import candle_close_ms
 from app.domain.setup_monitor_boundary import first_eligible_bar_open_ms
 from app.services.market_data import KlineBundle
 from tests.conftest import with_immediate_monitor_fields
@@ -19,9 +20,24 @@ INTERVAL_5M = 300_000
 @pytest.mark.asyncio
 async def test_immediate_long_persists_ready_when_confirmations_already_on_closed_bars():
     await init_db()
-    created = datetime.now(timezone.utc)
-    boundary = first_eligible_bar_open_ms(created, "5m")
-    closed = _sweep_mss_poi_long_bars(boundary)
+    step = INTERVAL_5M
+    last_bar_open = int(datetime.now(timezone.utc).timestamp() * 1000) // step * step - step
+    persist_at = datetime.fromtimestamp((last_bar_open + step + 2_000) / 1000, tz=timezone.utc)
+    closed = _sweep_mss_poi_long_bars(last_bar_open - 14 * step)
+    shifted: list[Candle] = []
+    for i, c in enumerate(closed):
+        shifted.append(
+            Candle(
+                time_ms=last_bar_open - (len(closed) - 1 - i) * step,
+                open=c.open,
+                high=c.high,
+                low=c.low,
+                close=c.close,
+                volume=c.volume,
+            )
+        )
+    closed = shifted
+    assert candle_close_ms(closed[-1], "5m") <= int(persist_at.timestamp() * 1000)
     bundle = KlineBundle(
         closed=closed,
         forming=None,
@@ -49,13 +65,14 @@ async def test_immediate_long_persists_ready_when_confirmations_already_on_close
     )
     from app.services.ai_setup_memory import create_setup_from_structured
 
-    with patch("app.services.immediate_confirmation_verify.MarketDataService") as mcls:
-        mcls.return_value.fetch_kline_bundle = AsyncMock(return_value=bundle)
-        async with SessionLocal() as session:
-            row, meta = await create_setup_from_structured(
-                session, run_id=7, symbol="BTCUSDT", structured=structured
-            )
-            await session.commit()
+    with patch("app.services.ai_setup_memory._utc", return_value=persist_at):
+        with patch("app.services.immediate_confirmation_verify.MarketDataService") as mcls:
+            mcls.return_value.fetch_kline_bundle = AsyncMock(return_value=bundle)
+            async with SessionLocal() as session:
+                row, meta = await create_setup_from_structured(
+                    session, run_id=7, symbol="BTCUSDT", structured=structured
+                )
+                await session.commit()
     assert meta["created"] is True
     assert meta.get("immediate_objective_ready") is True
     assert row.lifecycle_state == READY_LONG

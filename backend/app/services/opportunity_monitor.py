@@ -4,7 +4,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_effective_settings
@@ -32,7 +32,12 @@ from app.domain.setup_lifecycle import (
 from app.domain.setup_monitor_boundary import first_eligible_bar_open_ms
 from app.domain.time_utils import ensure_utc
 from app.models import AiProposedSetup, SimPosition
-from app.services.ict_confirmation_engine import all_required_met, process_bar_sequential
+from app.services.ict_confirmation_engine import (
+    _check_invalidation_on_bar,
+    all_required_met,
+    process_bar_sequential,
+)
+from app.services.position.position_service import SimPositionService
 from app.services.market_data import MarketDataService
 from app.services.opportunity_audit import log_setup_event
 from app.services.opportunity_monitor_lock import (
@@ -118,6 +123,8 @@ def _record_market_data_health(
     notes = dict(setup.objective_notes or {})
     payload = {"ok": ok, "reason": reason, "at": now.isoformat(), **(extra or {})}
     notes["market_data_health"] = payload
+    if setup.lifecycle_state == PENDING_ENTRY:
+        notes["pending_fill_suspended"] = not ok
     setup.objective_notes = notes
     if _lifecycle_preserves_objective_confirmation(setup.lifecycle_state):
         return
@@ -127,6 +134,119 @@ def _record_market_data_health(
         return
     if (setup.last_validation_result or {}).get("ok"):
         setup.last_rejection_reason = None
+
+
+async def _pending_position_for_setup(session: AsyncSession, setup_id: str) -> SimPosition | None:
+    result = await session.execute(
+        select(SimPosition)
+        .where(SimPosition.ai_setup_id == setup_id)
+        .where(SimPosition.status == "pending_entry")
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
+async def _monitor_pending_structural_invalidation(
+    session: AsyncSession,
+    setup: AiProposedSetup,
+    bundle,
+    now_ms: int,
+    now: datetime,
+    summary: dict[str, Any],
+) -> None:
+    if setup.invalidation_level is None:
+        return
+    new_bars = _eligible_closed_bars_since_cursor(setup, bundle.closed, now_ms)
+    if not new_bars:
+        setup.last_monitor_at = now
+        return
+    for bar in new_bars:
+        if _check_invalidation_on_bar(
+            bar, direction=setup.direction, invalidation_level=setup.invalidation_level
+        ):
+            pos = await _pending_position_for_setup(session, setup.setup_id)
+            svc = SimPositionService()
+            if pos:
+                await svc.cancel_pending(session, pos.public_id, commit=False)
+            setup.status = "invalidated"
+            setup.lifecycle_state = INVALIDATED
+            setup.last_rejection_reason = REASON_STRUCTURAL_INVALIDATION
+            setup.last_validation_result = {
+                "ok": False,
+                "reason": REASON_STRUCTURAL_INVALIDATION,
+                "bar_ms": bar.time_ms,
+            }
+            await log_setup_event(
+                session,
+                setup_id=setup.setup_id,
+                event_type="pending_invalidated",
+                reason_code=REASON_STRUCTURAL_INVALIDATION,
+                payload={"bar_ms": bar.time_ms, "position_id": pos.public_id if pos else None},
+            )
+            summary["invalidated"] += 1
+            setup.monitor_cursor_ms = bar.time_ms
+            return
+        setup.monitor_cursor_ms = bar.time_ms
+    setup.last_monitor_at = now
+
+
+async def _attempt_ready_paper_order(
+    session: AsyncSession,
+    setup: AiProposedSetup,
+    *,
+    now: datetime,
+    summary: dict[str, Any],
+) -> bool:
+    """Create paper order while READY; transition to PENDING_ENTRY only on success (atomic savepoint)."""
+    from app.services.paper_auto_trading import _has_position_for_setup
+
+    if await _has_position_for_setup(session, setup.setup_id):
+        setup.lifecycle_state = PENDING_ENTRY
+        return True
+
+    rr_ok, net_rr = await _net_rr_ok(session, setup)
+    if not rr_ok:
+        setup.last_rejection_reason = REASON_NET_RR_BELOW_MIN
+        return False
+
+    validation = {
+        "ai_decision": setup.direction,
+        "acceptable_rr": True,
+        "objective_ready": True,
+        "net_rr": net_rr,
+    }
+    structured = dict(setup.structured_snapshot or {})
+    structured["decision"] = setup.direction
+
+    try:
+        auto = await maybe_auto_open_paper_position(
+            session,
+            run_id=setup.run_id,
+            setup=setup,
+            validation=validation,
+            structured=structured,
+            symbol=setup.symbol,
+            commit=False,
+            require_ai_flags=False,
+        )
+        if not auto.get("created"):
+            setup.lifecycle_state = ready_state_for_direction(setup.direction)
+            return False
+        setup.lifecycle_state = PENDING_ENTRY
+        setup.last_validation_result = {
+            "ok": True,
+            "net_rr": net_rr,
+            "order_created_at": now.isoformat(),
+        }
+        await log_setup_event(
+            session, setup_id=setup.setup_id, event_type="order_created", payload=auto
+        )
+    except Exception:
+        setup.lifecycle_state = ready_state_for_direction(setup.direction)
+        return False
+
+    summary["orders"] += 1
+    return True
 
 
 async def _net_rr_ok(session: AsyncSession, setup: AiProposedSetup) -> tuple[bool, float | None]:
@@ -149,18 +269,48 @@ async def _net_rr_ok(session: AsyncSession, setup: AiProposedSetup) -> tuple[boo
     return ok, net_rr
 
 
+def _monitor_boundary_ms(setup: AiProposedSetup) -> int:
+    if setup.monitor_from_ms is not None and setup.monitor_from_ms > 0:
+        return setup.monitor_from_ms
+    return first_eligible_bar_open_ms(setup.created_at, MONITOR_INTERVAL)
+
+
+def _monitor_cursor_effective(setup: AiProposedSetup, boundary: int) -> int:
+    if setup.monitor_cursor_ms is not None and setup.monitor_cursor_ms >= 0:
+        return setup.monitor_cursor_ms
+    return boundary - 1
+
+
 def _eligible_closed_bars(
     setup: AiProposedSetup,
     closed: list,
     now_ms: int,
 ) -> list:
-    boundary = setup.monitor_from_ms or first_eligible_bar_open_ms(setup.created_at, MONITOR_INTERVAL)
-    cursor = setup.monitor_cursor_ms if setup.monitor_cursor_ms else boundary - 1
-    step = interval_ms(MONITOR_INTERVAL)
+    boundary = _monitor_boundary_ms(setup)
+    cursor = _monitor_cursor_effective(setup, boundary)
     out = []
     for bar in closed:
         if bar.time_ms < boundary:
             continue
+        if bar.time_ms <= cursor:
+            continue
+        if now_ms < candle_close_ms(bar, MONITOR_INTERVAL):
+            continue
+        out.append(bar)
+    return out
+
+
+def _eligible_closed_bars_since_cursor(
+    setup: AiProposedSetup,
+    closed: list,
+    now_ms: int,
+) -> list:
+    """New fully closed 5m bars after monitor cursor (pending invalidation / fill checks)."""
+    cursor = setup.monitor_cursor_ms if setup.monitor_cursor_ms is not None else -1
+    if cursor < 0:
+        cursor = -1
+    out = []
+    for bar in closed:
         if bar.time_ms <= cursor:
             continue
         if now_ms < candle_close_ms(bar, MONITOR_INTERVAL):
@@ -181,7 +331,7 @@ class OpportunityMonitorService:
         now = _utc_now()
         now_ms = int(now.timestamp() * 1000)
         if lock_owner:
-            await refresh_opportunity_monitor_lock(session, lock_owner)
+            await refresh_opportunity_monitor_lock(lock_owner, session)
 
         result = await session.execute(
             select(AiProposedSetup)
@@ -229,11 +379,22 @@ class OpportunityMonitorService:
 
         for setup in setups:
             if lock_owner:
-                await refresh_opportunity_monitor_lock(session, lock_owner)
+                await refresh_opportunity_monitor_lock(lock_owner, session)
             _record_market_data_health(setup, ok=True, reason="market_data_fresh", now=now)
             await _sync_position_lifecycle(session, setup)
-            if setup.lifecycle_state in (PENDING_ENTRY, POSITION_OPEN, POSITION_CLOSED):
+
+            if setup.lifecycle_state == PENDING_ENTRY:
+                await _monitor_pending_structural_invalidation(
+                    session, setup, bundle, now_ms, now, summary
+                )
                 continue
+            if setup.lifecycle_state in (POSITION_OPEN, POSITION_CLOSED):
+                continue
+
+            if setup.lifecycle_state in (READY_LONG, READY_SHORT):
+                await _attempt_ready_paper_order(session, setup, now=now, summary=summary)
+                if setup.lifecycle_state == PENDING_ENTRY:
+                    continue
 
             if _setup_expired(setup, now):
                 setup.status = "expired"
@@ -249,7 +410,7 @@ class OpportunityMonitorService:
                 setup.last_validation_result = {"ok": False, "reason": "missing_structured_monitor_requirements"}
                 continue
 
-            boundary = setup.monitor_from_ms or first_eligible_bar_open_ms(setup.created_at, MONITOR_INTERVAL)
+            boundary = _monitor_boundary_ms(setup)
             new_bars = _eligible_closed_bars(setup, bundle.closed, now_ms)
             if not new_bars:
                 setup.last_monitor_at = now
@@ -340,48 +501,7 @@ class OpportunityMonitorService:
                 summary["promoted"] += 1
 
             if setup.lifecycle_state in (READY_LONG, READY_SHORT):
-                rr_ok, net_rr = await _net_rr_ok(session, setup)
-                if not rr_ok:
-                    setup.last_rejection_reason = REASON_NET_RR_BELOW_MIN
-                    continue
-
-                claim = await session.execute(
-                    update(AiProposedSetup)
-                    .where(AiProposedSetup.id == setup.id)
-                    .where(AiProposedSetup.lifecycle_state.in_((READY_LONG, READY_SHORT)))
-                    .where(AiProposedSetup.setup_id == setup.setup_id)
-                    .values(lifecycle_state=PENDING_ENTRY)
-                )
-                await session.flush()
-                if claim.rowcount != 1:
-                    continue
-
-                validation = {
-                    "ai_decision": setup.direction,
-                    "acceptable_rr": True,
-                    "objective_ready": True,
-                    "net_rr": net_rr,
-                }
-                structured = dict(setup.structured_snapshot or {})
-                structured["decision"] = setup.direction
-                auto = await maybe_auto_open_paper_position(
-                    session,
-                    run_id=setup.run_id,
-                    setup=setup,
-                    validation=validation,
-                    structured=structured,
-                    symbol=setup.symbol,
-                    commit=False,
-                    require_ai_flags=False,
-                )
-                if auto.get("created"):
-                    summary["orders"] += 1
-                    await log_setup_event(session, setup_id=setup.setup_id, event_type="order_created", payload=auto)
-                else:
-                    setup.lifecycle_state = ready_state_for_direction(setup.direction)
-                    setup.last_rejection_reason = auto.get("reason")
-                    if auto.get("reason") == "wallet_not_initialized":
-                        setup.last_validation_result = {"ok": False, "reason": REASON_WALLET_NOT_INITIALIZED}
+                await _attempt_ready_paper_order(session, setup, now=now, summary=summary)
 
         await session.flush()
         return summary
@@ -389,10 +509,16 @@ class OpportunityMonitorService:
 
 async def run_opportunity_monitor_tick(session: AsyncSession) -> dict[str, Any]:
     owner = new_monitor_owner()
-    if not await try_acquire_opportunity_monitor_lock(session, owner):
+    if not await try_acquire_opportunity_monitor_lock(owner):
         return {"skipped": True, "reason": "monitor_lock_held"}
+    summary: dict[str, Any] | None = None
     try:
         svc = OpportunityMonitorService()
-        return await svc.monitor_setups(session, lock_owner=owner)
+        summary = await svc.monitor_setups(session, lock_owner=owner)
+        await session.commit()
+        return summary
+    except Exception:
+        await session.rollback()
+        raise
     finally:
-        await release_opportunity_monitor_lock(session, owner)
+        await release_opportunity_monitor_lock(owner)

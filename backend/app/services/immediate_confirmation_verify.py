@@ -6,12 +6,16 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from app.config import get_effective_settings
 from app.domain.candle_utils import candle_close_ms
+from app.domain.market_freshness import is_market_data_fresh
 from app.domain.setup_lifecycle import ready_state_for_direction, wait_state_for_direction
-from app.services.ict_confirmation_engine import all_required_met, process_bar_sequential
+from app.domain.setup_monitor_boundary import bars_closed_at_or_before_ms, immediate_replay_window_start_ms
+from app.services.ict_confirmation_engine import ConfirmationProgress, all_required_met, process_bar_sequential
 from app.services.market_data import KlineBundle, MarketDataService
 
 MONITOR_INTERVAL = "5m"
+MAX_REPLAY_BARS = 48
 
 
 @dataclass
@@ -25,43 +29,29 @@ class ImmediateConfirmationEvaluation:
     invalidation_reason: str | None = None
 
 
-def _eligible_bars_up_to_now(closed: list, boundary_ms: int, now_ms: int) -> list:
-    out = []
-    for bar in closed:
-        if bar.time_ms < boundary_ms:
-            continue
-        if now_ms < candle_close_ms(bar, MONITOR_INTERVAL):
-            continue
-        out.append(bar)
-    return out
-
-
 async def evaluate_immediate_objective_confirmations(
     *,
     symbol: str,
     direction: str,
     sequence: list[str],
-    boundary_ms: int,
     zone_lo: float,
     zone_hi: float,
     invalidation_level: float,
     structured: dict[str, Any],
+    persist_at: datetime,
     bundle: KlineBundle | None = None,
-    now_ms: int | None = None,
 ) -> ImmediateConfirmationEvaluation:
     """
-    Replay closed 5m bars available at analysis time (no look-ahead).
-    Does not create orders or backdate fills — only determines WAIT vs READY lifecycle.
+    Replay only 5m bars **closed at or before** persist time (prospective — no future bars).
+    Uses a bounded recent window for sweep/MSS/POI context and confirmation.
     """
+    persist_at = persist_at if persist_at.tzinfo else persist_at.replace(tzinfo=timezone.utc)
+    persist_ms = int(persist_at.timestamp() * 1000)
+    settings = get_effective_settings()
+
     market = MarketDataService()
     if bundle is None:
         bundle = await market.fetch_kline_bundle(symbol, MONITOR_INTERVAL, 120)
-    if now_ms is None:
-        if bundle.closed:
-            last = bundle.closed[-1]
-            now_ms = candle_close_ms(last, MONITOR_INTERVAL) + 5_000
-        else:
-            now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
 
     conf_state: dict[str, Any] = {
         "sequence": list(sequence),
@@ -70,7 +60,7 @@ async def evaluate_immediate_objective_confirmations(
         "missing": list(sequence),
         "confirmation_timestamps": {},
     }
-    cursor = boundary_ms - 1
+    cursor = immediate_replay_window_start_ms(persist_ms, MONITOR_INTERVAL, MAX_REPLAY_BARS) - 1
     invalidated = False
     inv_reason: str | None = None
 
@@ -88,9 +78,47 @@ async def evaluate_immediate_objective_confirmations(
             },
         )
 
-    bars = _eligible_bars_up_to_now(bundle.closed, boundary_ms, now_ms)
-    for bar in bars:
-        window = [c for c in bundle.closed if c.time_ms <= bar.time_ms][-48:]
+    closed_before_persist = bars_closed_at_or_before_ms(bundle.closed, persist_ms, MONITOR_INTERVAL)
+    if not closed_before_persist:
+        return ImmediateConfirmationEvaluation(
+            ready=False,
+            invalidated=False,
+            confirmation_state=conf_state,
+            monitor_cursor_ms=cursor,
+            lifecycle_state=wait_state_for_direction(direction),
+            last_validation_result={
+                "ok": False,
+                "reason": "no_closed_candles_at_persist",
+                "missing": list(sequence),
+            },
+        )
+
+    last_closed = closed_before_persist[-1]
+    fresh, age_sec, allowed_age = is_market_data_fresh(
+        last_closed, MONITOR_INTERVAL, persist_ms, settings.market_data_stale_seconds
+    )
+    if not fresh:
+        return ImmediateConfirmationEvaluation(
+            ready=False,
+            invalidated=False,
+            confirmation_state=conf_state,
+            monitor_cursor_ms=cursor,
+            lifecycle_state=wait_state_for_direction(direction),
+            last_validation_result={
+                "ok": False,
+                "reason": "stale_market_data_at_persist",
+                "age_since_close_sec": age_sec,
+                "allowed_age_sec": allowed_age,
+                "missing": list(sequence),
+            },
+        )
+
+    window_start = immediate_replay_window_start_ms(persist_ms, MONITOR_INTERVAL, MAX_REPLAY_BARS)
+    replay_bars = [b for b in closed_before_persist if b.time_ms >= window_start]
+    replay_monitor_from = replay_bars[0].time_ms if replay_bars else window_start
+
+    for bar in replay_bars:
+        window = [c for c in closed_before_persist if c.time_ms <= bar.time_ms][-MAX_REPLAY_BARS:]
         progress = process_bar_sequential(
             direction=direction,
             sequence=sequence,
@@ -101,7 +129,7 @@ async def evaluate_immediate_objective_confirmations(
             zone_hi=zone_hi,
             invalidation_level=invalidation_level,
             structured=structured,
-            monitor_from_ms=boundary_ms,
+            monitor_from_ms=replay_monitor_from,
         )
         conf_state = {
             "sequence": list(sequence),
@@ -115,8 +143,6 @@ async def evaluate_immediate_objective_confirmations(
             invalidated = True
             inv_reason = progress.invalidation_reason
             break
-
-    from app.services.ict_confirmation_engine import ConfirmationProgress
 
     progress_check = ConfirmationProgress(
         sequence=sequence,
@@ -152,6 +178,8 @@ async def evaluate_immediate_objective_confirmations(
                 "ok": True,
                 "source": "immediate_objective_verify_at_persist",
                 "confirmed_on_closed_bars": True,
+                "persist_ms": persist_ms,
+                "last_closed_bar_ms": last_closed.time_ms,
             },
         )
 
@@ -160,7 +188,7 @@ async def evaluate_immediate_objective_confirmations(
         invalidated=False,
         confirmation_state=conf_state,
         monitor_cursor_ms=cursor,
-        lifecycle_state=f"WAIT_{direction.upper()}",
+        lifecycle_state=wait_state_for_direction(direction),
         last_validation_result={
             "ok": False,
             "reason": "missing_confirmations",

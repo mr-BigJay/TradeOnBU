@@ -66,6 +66,7 @@ class BotWorker:
                 self.telegram = self.outbox.notifier
 
                 await self.sim_monitor.monitor_session(session)
+                await session.commit()
 
                 from app.services.opportunity_monitor import run_opportunity_monitor_tick
 

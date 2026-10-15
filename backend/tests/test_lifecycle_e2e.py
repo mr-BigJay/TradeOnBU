@@ -148,8 +148,8 @@ async def test_concurrent_monitor_ticks_one_order():
     async with SessionLocal() as session:
         owner1 = new_monitor_owner()
         owner2 = new_monitor_owner()
-        assert await try_acquire_opportunity_monitor_lock(session, owner1) is True
-        assert await try_acquire_opportunity_monitor_lock(session, owner2) is False
+        assert await try_acquire_opportunity_monitor_lock(owner1) is True
+        assert await try_acquire_opportunity_monitor_lock(owner2) is False
         await session.commit()
 
 
@@ -159,18 +159,16 @@ async def test_monitor_lock_exclusive_across_sessions():
     owner1 = new_monitor_owner()
     owner2 = new_monitor_owner()
     async with SessionLocal() as session1:
-        assert await try_acquire_opportunity_monitor_lock(session1, owner1) is True
+        assert await try_acquire_opportunity_monitor_lock(owner1) is True
         await session1.commit()
     async with SessionLocal() as session2:
-        assert await try_acquire_opportunity_monitor_lock(session2, owner2) is False
+        assert await try_acquire_opportunity_monitor_lock(owner2) is False
         await session2.commit()
     from app.services.opportunity_monitor_lock import release_opportunity_monitor_lock
 
-    async with SessionLocal() as session1:
-        await release_opportunity_monitor_lock(session1, owner1)
-        await session1.commit()
+    await release_opportunity_monitor_lock(owner1)
     async with SessionLocal() as session2:
-        assert await try_acquire_opportunity_monitor_lock(session2, owner2) is True
+        assert await try_acquire_opportunity_monitor_lock(owner2) is True
         await session2.commit()
 
 

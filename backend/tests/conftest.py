@@ -31,7 +31,13 @@ def with_immediate_monitor_fields(structured: dict) -> dict:
     }
 
 
-TEST_ENGINE = create_async_engine(os.environ["DATABASE_URL"], echo=False)
+from app.db import _sqlite_engine_kwargs
+
+TEST_ENGINE = create_async_engine(
+    os.environ["DATABASE_URL"],
+    echo=False,
+    **_sqlite_engine_kwargs(os.environ["DATABASE_URL"]),
+)
 TestSession = async_sessionmaker(TEST_ENGINE, expire_on_commit=False)
 
 
@@ -42,6 +48,11 @@ async def prepare_db():
     reset_settings_overlay()
     get_settings.cache_clear()
     async with TEST_ENGINE.begin() as conn:
+        from sqlalchemy import text
+
+        if conn.dialect.name == "sqlite":
+            await conn.execute(text("PRAGMA journal_mode=WAL"))
+            await conn.execute(text("PRAGMA busy_timeout=30000"))
         await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
     yield

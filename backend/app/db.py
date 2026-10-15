@@ -12,8 +12,27 @@ class Base(DeclarativeBase):
 
 
 settings = get_settings()
-engine = create_async_engine(settings.database_url, echo=False)
+
+
+def _sqlite_engine_kwargs(database_url: str) -> dict:
+    if not database_url.startswith("sqlite"):
+        return {}
+    return {"connect_args": {"timeout": 30}}
+
+
+engine = create_async_engine(
+    settings.database_url,
+    echo=False,
+    **_sqlite_engine_kwargs(settings.database_url),
+)
 SessionLocal = async_sessionmaker(engine, expire_on_commit=False)
+
+
+async def _configure_sqlite_connection(connection) -> None:
+    if connection.dialect.name != "sqlite":
+        return
+    await connection.execute(text("PRAGMA journal_mode=WAL"))
+    await connection.execute(text("PRAGMA busy_timeout=30000"))
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
@@ -103,5 +122,6 @@ async def init_db() -> None:
     from app import models  # noqa: F401
 
     async with engine.begin() as conn:
+        await _configure_sqlite_connection(conn)
         await conn.run_sync(Base.metadata.create_all)
     await migrate_db()

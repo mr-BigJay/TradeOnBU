@@ -983,11 +983,11 @@ async def create_setup_from_structured(
         symbol=symbol,
         direction=decision,
         sequence=sequence,
-        boundary_ms=boundary,
         zone_lo=zone_lo,
         zone_hi=zone_hi,
         invalidation_level=inv_level,
         structured=structured,
+        persist_at=created,
     )
     lifecycle_immediate = eval_result.lifecycle_state
     last_validation = dict(eval_result.last_validation_result)
@@ -1032,7 +1032,7 @@ async def create_setup_from_structured(
         lifecycle_state=lifecycle_immediate,
         monitoring_enabled=monitoring_enabled,
         monitor_from_ms=boundary if monitoring_enabled else 0,
-        monitor_cursor_ms=eval_result.monitor_cursor_ms if monitoring_enabled else 0,
+        monitor_cursor_ms=max(boundary - 1, eval_result.monitor_cursor_ms) if monitoring_enabled else 0,
         confirmation_state=eval_result.confirmation_state,
         conditional_plan={"confirmation_sequence": sequence, "confirmation_type": structured.get("confirmation_type")},
         last_validation_result=last_validation,

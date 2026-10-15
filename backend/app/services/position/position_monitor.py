@@ -265,7 +265,20 @@ class SimPositionMonitorService:
                 entry_filled_this_bar = False
 
                 if pos.status == "pending_entry" and pos.order_type == "limit" and pos.limit_entry_price:
+                    from app.models import AiProposedSetup
                     from app.services.paper_auto_trading import auto_paper_entry_still_valid
+
+                    if pos.ai_setup_id:
+                        setup_row = (
+                            await session.execute(
+                                select(AiProposedSetup).where(AiProposedSetup.setup_id == pos.ai_setup_id)
+                            )
+                        ).scalar_one_or_none()
+                        if setup_row and (setup_row.objective_notes or {}).get("pending_fill_suspended"):
+                            prev_ms = bar.time_ms
+                            pos.last_processed_candle_ms = bar.time_ms
+                            processed += 1
+                            continue
 
                     still_ok, block_reason = await auto_paper_entry_still_valid(session, pos)
                     if not still_ok:
