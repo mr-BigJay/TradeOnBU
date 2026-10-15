@@ -275,6 +275,20 @@ class SimPositionMonitorService:
                         pos.last_processed_candle_ms = bar.time_ms
                         processed += 1
                         continue
+                    # WAIT-derived pending limits may not fill if the price has
+                    # already hit invalidation/target. A same-bar touch is
+                    # ambiguous, so cancel conservatively rather than backfill.
+                    audit = (pos.extra or {}).get("ict_entry_snapshot") or {}
+                    if audit.get("watch_provenance") and (
+                        (pos.direction == "LONG" and (bar.low <= pos.stop_loss or bar.high >= pos.take_profit))
+                        or (pos.direction == "SHORT" and (bar.high >= pos.stop_loss or bar.low <= pos.take_profit))
+                    ):
+                        await self.positions.cancel_pending(session, pos.public_id, commit=False)
+                        pos.extra = {**pos.extra, "auto_paper_cancel_reason": "watch_pre_entry_sl_or_tp_touched"}
+                        prev_ms = bar.time_ms
+                        pos.last_processed_candle_ms = bar.time_ms
+                        processed += 1
+                        continue
                     limit_px = pos.limit_entry_price
                     if _bar_hits_limit(bar, limit_px):
                         ok_fill, _ = await auto_paper_entry_still_valid(session, pos)

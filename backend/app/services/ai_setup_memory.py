@@ -888,9 +888,35 @@ async def build_ai_memory_context(
     closed = await load_recent_closed_setups(session, symbol)
     recent = await load_recent_analysis_summaries(session)
     sim_paper = await _load_sim_paper_position_summaries(session, symbol)
+    # Conditional plans are not paper fills, but keep the analyst aware of
+    # watching/armed WAIT hypotheses instead of proposing identical ones.
+    from app.models import AiConditionalPlan
+
+    active_watch = (
+        await session.execute(
+            select(AiConditionalPlan)
+            .where(AiConditionalPlan.symbol == symbol, AiConditionalPlan.status.in_(("watching", "ready")))
+            .order_by(desc(AiConditionalPlan.id))
+            .limit(12)
+        )
+    ).scalars().all()
     return {
         "symbol": symbol,
         "sim_paper_positions": sim_paper,
+        "active_conditional_wait_plans": [
+            {
+                "direction": p.direction,
+                "zone_low": p.zone_low,
+                "zone_high": p.zone_high,
+                "entry": p.entry_price,
+                "stop_loss": p.stop_loss,
+                "take_profit": p.take_profit,
+                "expires_at": p.expires_at.isoformat(),
+                "status": p.status,
+                "last_reason": p.last_reason,
+            }
+            for p in active_watch
+        ],
         "open_setups": [serialize_setup_row(s) for s in setups],
         "reconciling_expired_setups": [serialize_setup_row(s) for s in reconciling if s not in setups],
         "recent_closed_setups": [serialize_setup_row(s) for s in closed],

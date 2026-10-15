@@ -204,6 +204,34 @@ class AiProposedSetup(Base):
     last_tracked_candle_ms: Mapped[int] = mapped_column(Integer, default=0)
 
 
+
+
+class AiConditionalPlan(Base):
+    """AI WAIT idea: never an executable order until independently confirmed."""
+
+    __tablename__ = "ai_conditional_plans"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source_run_id: Mapped[int] = mapped_column(Integer, index=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    direction: Mapped[str] = mapped_column(String(8))
+    status: Mapped[str] = mapped_column(String(24), index=True, default="watching")
+    zone_low: Mapped[float] = mapped_column(Float)
+    zone_high: Mapped[float] = mapped_column(Float)
+    entry_price: Mapped[float] = mapped_column(Float)
+    stop_loss: Mapped[float] = mapped_column(Float)
+    take_profit: Mapped[float] = mapped_column(Float)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    last_checked_candle_ms: Mapped[int] = mapped_column(Integer, default=0)
+    evidence: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    last_reason: Mapped[str | None] = mapped_column(String(96), nullable=True)
+    linked_setup_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class AiAnalysisRun(Base):
     __tablename__ = "ai_analysis_runs"
 

@@ -20,11 +20,29 @@ type HistoryRow = {
   id: number;
   status: string;
   decision?: string;
+  display_decision?: string;
   report_preview?: string;
   created_at: string;
   created_at_tehran?: string;
   telegram_sent: boolean;
   has_chart?: boolean;
+};
+
+type ConditionalPlan = {
+  id: number;
+  source_run_id: number;
+  symbol: string;
+  direction: "LONG" | "SHORT";
+  status: "watching" | "ready" | "activated" | "expired" | "invalidated";
+  entry_zone_low: number;
+  entry_zone_high: number;
+  entry_price: number;
+  stop_loss: number;
+  take_profit: number;
+  last_reason?: string;
+  expires_at: string;
+  linked_setup_id?: string;
+  evidence?: { sweep_ms?: number; poi_ms?: number; structure_ms?: number };
 };
 
 type HistoryDetail = {
@@ -76,18 +94,21 @@ type Props = {
 export function AiAnalysisPage({ onOpenPaperPosition }: Props) {
   const [status, setStatus] = useState<Status | null>(null);
   const [history, setHistory] = useState<HistoryRow[]>([]);
+  const [plans, setPlans] = useState<ConditionalPlan[]>([]);
   const [msg, setMsg] = useState("");
   const [detail, setDetail] = useState<HistoryDetail | null>(null);
   const [chartZoom, setChartZoom] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const refresh = useCallback(async () => {
-    const [s, h] = await Promise.all([
+    const [s, h, p] = await Promise.all([
       apiFetch("/api/gui/chatgpt/status"),
       apiFetch("/api/gui/chatgpt/history?limit=40"),
+      apiFetch("/api/gui/chatgpt/conditional-plans?limit=50"),
     ]);
     setStatus(s);
     setHistory(h);
+    setPlans(p);
   }, []);
 
   useEffect(() => {
@@ -145,6 +166,26 @@ export function AiAnalysisPage({ onOpenPaperPosition }: Props) {
       {status?.last_error && <p className="toast toast-error">{status.last_error}</p>}
 
       <section className="section">
+        <h2 className="section-title">سناریوهای مشروط ICT (WAIT)</h2>
+        <p className="hint">این سناریوها سفارش نیستند؛ فقط پس از تأیید کندل‌های بسته‌شده و شروط ریسک، سفارش تمرینی Limit ثبت می‌شود. اجرای خودکار به فعال بودن گزینه Paper Auto نیاز دارد.</p>
+        {!plans.length && <p className="hint">هنوز سناریوی مشروط معتبر ذخیره نشده است.</p>}
+        <ul className="history-list">
+          {plans.map((p) => (
+            <li key={p.id} className="history-card">
+              <div className="history-card-top">
+                <span className={decisionBadge(p.direction)}>{p.direction} · {p.status.toUpperCase()}</span>
+                <span className="hint">AI #{p.source_run_id}</span>
+              </div>
+              <p className="history-preview">ورود: {p.entry_price.toLocaleString()} · ناحیه: {p.entry_zone_low.toLocaleString()}–{p.entry_zone_high.toLocaleString()}</p>
+              <p className="history-preview">SL: {p.stop_loss.toLocaleString()} · TP: {p.take_profit.toLocaleString()}</p>
+              <p className="hint">وضعیت پایش: {p.last_reason || "—"} · Sweep: {p.evidence?.sweep_ms ? "✓" : "—"} · POI: {p.evidence?.poi_ms ? "✓" : "—"} · Structure: {p.evidence?.structure_ms ? "✓" : "—"}</p>
+              <p className="history-time">انقضا: {displayTehranTime(undefined, p.expires_at)}{p.linked_setup_id ? " · ستاپ ثبت شده" : ""}</p>
+            </li>
+          ))}
+        </ul>
+      </section>
+
+      <section className="section">
         <h2 className="section-title">گزارش‌های قبلی</h2>
         {!history.length && <p className="hint center-hint">هنوز گزارشی ثبت نشده.</p>}
         <ul className="history-list">
@@ -152,7 +193,7 @@ export function AiAnalysisPage({ onOpenPaperPosition }: Props) {
             <li key={r.id}>
               <button type="button" className="history-card" onClick={() => openDetail(r.id)}>
                 <div className="history-card-top">
-                  <span className={decisionBadge(r.decision)}>{r.decision || "—"}</span>
+                  <span className={decisionBadge(r.decision)}>{r.display_decision || r.decision || "—"}</span>
                   <span className="history-icons">
                     {r.has_chart && <span className="chart-dot" title="نمودار">📈</span>}
                     {r.telegram_sent && <span className="tg-dot" title="ارسال به تلگرام">✓</span>}

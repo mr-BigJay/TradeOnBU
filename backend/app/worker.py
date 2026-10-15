@@ -67,6 +67,14 @@ class BotWorker:
 
                 await self.sim_monitor.monitor_session(session)
 
+                # Monitor user-authorized AI WAIT plans with closed 5m data on each
+                # worker tick; no SIWC calls and no changes to the legacy scanner.
+                from app.services.ai_conditional_plans import monitor_conditional_plans
+
+                watch_events = await monitor_conditional_plans(session, self.market)
+                for event in watch_events:
+                    logger.info("Conditional ICT watch: %s", event)
+
                 monitor_events = await self.monitor.monitor_open_signals(session, runtime)
                 for public_id, evs in monitor_events.items():
                     result = await session.execute(select(Signal).where(Signal.public_id == public_id))

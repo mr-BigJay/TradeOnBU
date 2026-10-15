@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_effective_settings
 from app.db import get_db
-from app.models import AiAnalysisRun, AiAnalysisSettings, SiwcConnectSession
+from app.models import AiAnalysisRun, AiAnalysisSettings, AiConditionalPlan, SiwcConnectSession
 from app.routes.auth import require_dashboard_access
 from app.services.ai_analysis_scheduler import get_or_create_settings, scheduling_allowed
 from app.services.ai_analysis_executor import execute_ai_analysis_with_lock
@@ -228,6 +228,46 @@ async def analyze_now(_=Depends(require_dashboard_access)):
     return {"ok": True, "run_id": run.id, "status": run.status, "decision": run.decision}
 
 
+@router.get("/conditional-plans")
+async def conditional_plans(
+    limit: int = 50,
+    session: AsyncSession = Depends(get_db),
+    _=Depends(require_dashboard_access),
+):
+    """Observable WAIT lifecycle and explicit rejection reasons; no secrets."""
+    rows = (
+        await session.execute(
+            select(AiConditionalPlan)
+            .order_by(desc(AiConditionalPlan.id))
+            .limit(max(1, min(limit, 100)))
+        )
+    ).scalars().all()
+    return [
+        {
+            "id": plan.id,
+            "source_run_id": plan.source_run_id,
+            "symbol": plan.symbol,
+            "direction": plan.direction,
+            "status": plan.status,
+            "entry_zone_low": plan.zone_low,
+            "entry_zone_high": plan.zone_high,
+            "entry_price": plan.entry_price,
+            "stop_loss": plan.stop_loss,
+            "take_profit": plan.take_profit,
+            "last_reason": plan.last_reason,
+            "last_checked_candle_ms": plan.last_checked_candle_ms,
+            "evidence": {
+                key: (plan.evidence or {}).get(key)
+                for key in ("sweep_ms", "poi_ms", "structure_ms", "sweep_level", "sweep_extreme")
+            },
+            "linked_setup_id": plan.linked_setup_id,
+            "created_at": plan.created_at.isoformat(),
+            "expires_at": plan.expires_at.isoformat(),
+        }
+        for plan in rows
+    ]
+
+
 @router.get("/history")
 async def history(limit: int = 50, session: AsyncSession = Depends(get_db), _=Depends(require_dashboard_access)):
     rows = (
@@ -239,6 +279,12 @@ async def history(limit: int = 50, session: AsyncSession = Depends(get_db), _=De
             "status": r.status,
             "trigger": r.trigger,
             "decision": r.decision,
+            "display_decision": (
+                "WAIT_" + str((r.structured or {}).get("potential_direction") or "")
+                if (r.structured or {}).get("final_ai_decision") == "WAIT"
+                and (r.structured or {}).get("potential_direction") in ("LONG", "SHORT")
+                else r.decision
+            ),
             "model_slug": r.model_slug,
             "telegram_sent": r.telegram_sent,
             "telegram_delivery": _telegram_delivery(r),

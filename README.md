@@ -24,6 +24,42 @@ For self-hosted VMs, OpenAI documents completing OAuth locally then transferring
 
 Hourly analysis runs server-side when connected (`store: false`, `stream: true`). Failures are recorded; rule-based reports are **not** substituted as AI. **Paper only.**
 
+## Conditional ICT watch (AI WAIT → verified paper setup)
+
+In **AI-first** mode the scheduled ChatGPT analysis still decides whether to issue
+an immediate LONG/SHORT, an actionable `WAIT` idea, or a genuine `NO_TRADE`.
+A `WAIT` never counts as a fill or an executed trade.
+
+A valid conditional idea must include a numerical entry zone, stop and target,
+the direction, and the three machine-verifiable `confirmation_rule_ids`:
+`liquidity_sweep`, `poi_reaction`, `structure_break_with_displacement`.
+Incomplete or unsupported plans are rejected with a reason in the AI run's
+`_artifacts.conditional_watch` record. Existing plain `NO_TRADE` runs cannot be
+retroactively converted to orders.
+
+The worker evaluates **fully closed 5m candles**, no more often than the configured
+worker tick (default 300 seconds): it records a fresh sweep/reclaim, an entry POI
+rejection and a later displaced directional break of preceding candle highs/lows.
+It fails closed on missing bars, expiration, invalidation or stale price and
+never uses candles from before plan creation to *trigger* a trade. Pre-creation
+candles may only establish previous highs/lows. A confirmed plan is `ready`.
+A `ready` plan may create only a **pending Limit paper order** when the explicit
+`auto_open_paper_positions` setting is enabled, the simulated wallet is initialized,
+live market quote is fresh, the entry remains un-crossed, and net R:R **after costs**
+meets both 2.0 and the configured higher threshold if any. A pending order is not
+an open position until a later verified fill.
+
+Dashboard → **تحلیل ICT** shows WAIT plans, states and block reasons.
+`GET /api/gui/chatgpt/conditional-plans` is authenticated and does not expose OAuth
+secrets. States: `watching`, `ready`, `activated`, `invalidated`, `expired`.
+
+**Safety / rollout:** Paper only, no live Bitunix orders or keys. The watcher
+does NOT enable unattended ChatGPT analysis or automatic paper entry for you.
+Deploy after backing up `data/` and `.env` securely. The new
+`ai_conditional_plans` SQLite table is created by existing `init_db()` on startup;
+existing historical records remain unchanged. Review outcomes over several weeks
+of paper-only forward testing and replay before changing thresholds.
+
 ## Phase 3 — One-command install (Ubuntu/Debian)
 
 Production install (interactive — domain, admin username/password only). **Use the bootstrap entry point** so helper scripts are downloaded before install runs:
