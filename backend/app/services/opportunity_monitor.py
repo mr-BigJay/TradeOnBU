@@ -218,31 +218,40 @@ async def _attempt_ready_paper_order(
     structured = dict(setup.structured_snapshot or {})
     structured["decision"] = setup.direction
 
+    from app.services.position.settings_service import get_or_create_settings
+    from app.services.runtime_settings import get_runtime_settings
+
+    await get_or_create_settings(session)
+    await get_runtime_settings(session)
+    direction = setup.direction
+
     try:
-        auto = await maybe_auto_open_paper_position(
-            session,
-            run_id=setup.run_id,
-            setup=setup,
-            validation=validation,
-            structured=structured,
-            symbol=setup.symbol,
-            commit=False,
-            require_ai_flags=False,
-        )
-        if not auto.get("created"):
-            setup.lifecycle_state = ready_state_for_direction(setup.direction)
-            return False
-        setup.lifecycle_state = PENDING_ENTRY
-        setup.last_validation_result = {
-            "ok": True,
-            "net_rr": net_rr,
-            "order_created_at": now.isoformat(),
-        }
-        await log_setup_event(
-            session, setup_id=setup.setup_id, event_type="order_created", payload=auto
-        )
+        async with session.begin_nested():
+            auto = await maybe_auto_open_paper_position(
+                session,
+                run_id=setup.run_id,
+                setup=setup,
+                validation=validation,
+                structured=structured,
+                symbol=setup.symbol,
+                commit=False,
+                require_ai_flags=False,
+            )
+            if not auto.get("created"):
+                setup.lifecycle_state = ready_state_for_direction(direction)
+                return False
+            setup.lifecycle_state = PENDING_ENTRY
+            setup.last_validation_result = {
+                "ok": True,
+                "net_rr": net_rr,
+                "order_created_at": now.isoformat(),
+            }
+            await log_setup_event(
+                session, setup_id=setup.setup_id, event_type="order_created", payload=auto
+            )
     except Exception:
-        setup.lifecycle_state = ready_state_for_direction(setup.direction)
+        await session.refresh(setup)
+        setup.lifecycle_state = ready_state_for_direction(direction)
         return False
 
     summary["orders"] += 1

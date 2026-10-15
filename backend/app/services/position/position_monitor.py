@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.candles import Candle
+from app.domain.execution_order_policy import pending_limit_fill_blocked_by_5m_backlog
 from app.models import SimPosition
 from app.services.market_data import KlineBundle, MarketDataService
 from app.services.position.equity_service import record_equity_snapshot
@@ -226,6 +227,13 @@ class SimPositionMonitorService:
         limit = self._kline_limit_for_positions(positions)
         bundle = await self.market.fetch_kline_bundle(symbol, "1m", limit)
         closed = bundle.closed
+        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        needs_5m = any(p.status == "pending_entry" and p.ai_setup_id for p in positions)
+        closed_5m: list[Candle] = []
+        if needs_5m:
+            bundle_5m = await self.market.fetch_kline_bundle(symbol, "5m", 120)
+            if bundle_5m.data_complete and bundle_5m.closed:
+                closed_5m = list(bundle_5m.closed)
 
         processed = 0
 
@@ -279,6 +287,24 @@ class SimPositionMonitorService:
                             pos.last_processed_candle_ms = bar.time_ms
                             processed += 1
                             continue
+                        if setup_row and closed_5m:
+                            blocked, block_code = pending_limit_fill_blocked_by_5m_backlog(
+                                direction=setup_row.direction,
+                                invalidation_level=setup_row.invalidation_level,
+                                monitor_cursor_ms=setup_row.monitor_cursor_ms,
+                                closed_5m=closed_5m,
+                                bar_1m=bar,
+                                now_ms=now_ms,
+                            )
+                            if blocked:
+                                notes = dict(setup_row.objective_notes or {})
+                                notes["pending_fill_suspended"] = True
+                                notes["pending_fill_block_reason"] = block_code
+                                setup_row.objective_notes = notes
+                                prev_ms = bar.time_ms
+                                pos.last_processed_candle_ms = bar.time_ms
+                                processed += 1
+                                continue
 
                     still_ok, block_reason = await auto_paper_entry_still_valid(session, pos)
                     if not still_ok:
