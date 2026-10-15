@@ -164,7 +164,7 @@ class AiAnalysisSettings(Base):
     enabled: Mapped[bool] = mapped_column(default=False)
     unattended_consent: Mapped[bool] = mapped_column(default=False)
     unattended_consent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    interval_minutes: Mapped[int] = mapped_column(Integer, default=120)
+    interval_minutes: Mapped[int] = mapped_column(Integer, default=60)
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)

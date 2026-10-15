@@ -13,7 +13,14 @@ from app.config import get_effective_settings
 from app.db import get_db
 from app.models import AiAnalysisRun, AiAnalysisSettings, SiwcConnectSession
 from app.routes.auth import require_dashboard_access
-from app.services.ai_analysis_scheduler import get_or_create_settings, scheduling_allowed
+from app.services.ai_analysis_scheduler import (
+    DEFAULT_AI_INTERVAL_MINUTES,
+    MAX_AI_INTERVAL_MINUTES,
+    MIN_AI_INTERVAL_MINUTES,
+    _reschedule_next_run_after_interval_change,
+    get_or_create_settings,
+    scheduling_allowed,
+)
 from app.services.ai_analysis_executor import execute_ai_analysis_with_lock
 from app.services.siwc.connect_flow import consume_connect_session, new_connect_secret
 from app.services.siwc.credentials import disconnect, get_access_token, get_credential_row
@@ -52,7 +59,11 @@ def _telegram_delivery(run: AiAnalysisRun) -> dict:
 class SettingsBody(BaseModel):
     enabled: bool = False
     unattended_consent: bool = False
-    interval_minutes: int = Field(default=120, ge=120, le=360)
+    interval_minutes: int = Field(
+        default=DEFAULT_AI_INTERVAL_MINUTES,
+        ge=MIN_AI_INTERVAL_MINUTES,
+        le=MAX_AI_INTERVAL_MINUTES,
+    )
     preferred_model: str | None = None
 
 
@@ -97,7 +108,9 @@ async def status(session: AsyncSession = Depends(get_db), _=Depends(require_dash
         "paper_only": True,
         "ai_analysis_model": get_effective_settings().ai_analysis_model,
         "ai_reasoning_effort": get_effective_settings().ai_reasoning_effort,
-        "schedule_default_minutes": 120,
+        "schedule_default_minutes": DEFAULT_AI_INTERVAL_MINUTES,
+        "schedule_min_minutes": MIN_AI_INTERVAL_MINUTES,
+        "schedule_max_minutes": MAX_AI_INTERVAL_MINUTES,
     }
 
 
@@ -202,7 +215,11 @@ async def put_settings(body: SettingsBody, session: AsyncSession = Depends(get_d
         raise HTTPException(400, "Explicit unattended ChatGPT usage consent is required to enable scheduling")
     cfg = await get_or_create_settings(session)
     cfg.enabled = body.enabled
+    prev_interval = cfg.interval_minutes
     cfg.interval_minutes = body.interval_minutes
+    cfg.interval_migrated_from_60 = False
+    if prev_interval != body.interval_minutes:
+        _reschedule_next_run_after_interval_change(cfg)
     if body.unattended_consent and not cfg.unattended_consent:
         cfg.unattended_consent = True
         cfg.unattended_consent_at = datetime.now(timezone.utc)

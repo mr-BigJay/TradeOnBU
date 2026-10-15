@@ -44,7 +44,7 @@ class Settings(BaseSettings):
     ai_reasoning_effort: str = "max"
     ai_response_timeout_seconds: float = 600.0
     ai_analysis_lock_ttl_seconds: int = 1800
-    ai_default_interval_minutes: int = 120
+    ai_default_interval_minutes: int = 60
     ai_candle_limit_4h: int = 80
     ai_candle_limit_1h: int = 100
     ai_candle_limit_15m: int = 120

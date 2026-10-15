@@ -294,19 +294,18 @@ async def test_invalid_levels_not_persisted(session):
     assert validate_proposed_setup_levels("LONG", 100, 101, 105)[0] is False
 
 
-def test_schedule_migration_one_time_only():
+def test_schedule_migration_restores_legacy_auto_one_twenty_once():
     nr = datetime.now(timezone.utc) + timedelta(minutes=25)
     cfg = AiAnalysisSettings(
         enabled=True,
         unattended_consent=True,
-        interval_minutes=60,
+        interval_minutes=120,
         next_run_at=nr,
-        interval_migrated_from_60=False,
+        interval_migrated_from_60=True,
     )
     assert migrate_ai_schedule_settings(cfg) is True
-    assert cfg.interval_minutes == 120
-    assert cfg.interval_migrated_from_60 is True
-    assert cfg.next_run_at == nr
+    assert cfg.interval_minutes == 60
+    assert cfg.interval_migrated_from_60 is False
     assert migrate_ai_schedule_settings(cfg) is False
 
 
@@ -317,7 +316,7 @@ async def test_failure_retry_single_backoff_not_hourly_loop(session):
         enabled=True,
         unattended_consent=True,
         interval_minutes=120,
-        interval_migrated_from_60=True,
+        interval_migrated_from_60=False,
     )
     session.add(cfg)
     await session.commit()

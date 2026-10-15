@@ -98,7 +98,7 @@ async def test_stream_analysis_rejects_reasoning_downgrade():
     assert exc.value.code == "reasoning_downgraded"
 
 
-def test_migrate_schedule_60_to_120_preserves_consent():
+def test_migrate_schedule_leaves_sixty_minute_installs_unchanged():
     nr = datetime.now(timezone.utc) + timedelta(minutes=20)
     cfg = AiAnalysisSettings(
         enabled=True,
@@ -108,11 +108,11 @@ def test_migrate_schedule_60_to_120_preserves_consent():
         next_run_at=nr,
         interval_migrated_from_60=False,
     )
-    assert migrate_ai_schedule_settings(cfg) is True
-    assert cfg.interval_minutes == DEFAULT_AI_INTERVAL_MINUTES
+    assert migrate_ai_schedule_settings(cfg) is False
+    assert cfg.interval_minutes == 60
     assert cfg.unattended_consent is True
     assert cfg.next_run_at == nr
-    assert cfg.interval_migrated_from_60 is True
+    assert cfg.interval_migrated_from_60 is False
 
 
 @pytest.mark.asyncio

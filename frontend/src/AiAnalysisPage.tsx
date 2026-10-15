@@ -144,7 +144,7 @@ export function AiAnalysisPage({ onOpenPaperPosition }: Props) {
         <p className="meta-line">
           آخرین اجرا: {displayTehranTime(status.last_run_at_tehran, status.last_run_at)}
           {status.next_run_at &&
-            ` · بعدی (هر ${status.interval_minutes || 120} دقیقه): ${displayTehranTime(
+            ` · بعدی (هر ${status.interval_minutes || 60} دقیقه): ${displayTehranTime(
               status.next_run_at_tehran,
               status.next_run_at,
             )}`}
