@@ -66,6 +66,14 @@ def watch_closed_bars(
             return WatchResult(seen, bar.time_ms, "invalidated", "sl_or_target_touched_before_order")
 
         if state != "ready":
+            # A one-hour-old sweep cannot validate a fresh intraday entry.
+            if seen.get("sweep_ms") is not None and bar.time_ms - seen["sweep_ms"] > 12 * STEP_MS:
+                seen.pop("sweep_ms", None)
+                seen.pop("sweep_level", None)
+                seen.pop("sweep_extreme", None)
+                seen.pop("poi_ms", None)
+            if seen.get("poi_ms") is not None and bar.time_ms - seen["poi_ms"] > 6 * STEP_MS:
+                seen.pop("poi_ms", None)
             ref_low = min(c.low for c in prior)
             ref_high = max(c.high for c in prior)
             swept = (
