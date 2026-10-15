@@ -321,7 +321,7 @@ export function ChatGptSettingsPage() {
           saveSchedule();
         }}
       >
-        <h3 className="section-title">تحلیل خودکار (پیش‌فرض هر ۶۰ دقیقه)</h3>
+        <h3 className="section-title">تحلیل خودکار (هر ساعت · :۳۰ به وقت تهران)</h3>
         {status?.ai_analysis_model && (
           <p className="hint">
             مدل: {status.ai_analysis_model} · reasoning: {(status.ai_reasoning_effort || "max").toUpperCase()}
@@ -341,16 +341,11 @@ export function ChatGptSettingsPage() {
           <span>فعال‌سازی زمان‌بندی</span>
         </label>
         <label>
-          هر چند دقیقه؟ (۶۰–۳۶۰ · پیش‌فرض ۶۰)
-          <input
-            type="number"
-            min={60}
-            max={360}
-            inputMode="numeric"
-            value={intervalMin}
-            onChange={(e) => setIntervalMin(Number(e.target.value))}
-            disabled={!connected}
-          />
+          <span className="hint">
+            زمان‌بندی ثابت: ۰۰:۳۰، ۰۱:۳۰، … ۲۳:۳۰ Asia/Tehran (شروع ~۱۰ ثانیه بعد از :۳۰). فاصله
+            بین گزارش‌ها به پایان تحلیل قبلی وابسته نیست.
+          </span>
+          <input type="hidden" value={intervalMin} readOnly />
         </label>
         {status && (
           <p className="hint">

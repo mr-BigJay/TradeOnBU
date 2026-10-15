@@ -433,13 +433,18 @@ async def test_telegram_delivery_on_success(session):
 async def test_should_run_scheduled_respects_interval(session):
     from app.services.ai_analysis_scheduler import should_run_scheduled
 
+    from app.services.ai_tehran_schedule import active_due_slot_fire_utc, slot_fire_ms
+
+    now = datetime.now(timezone.utc)
+    due = active_due_slot_fire_utc(now)
+    slot_ms = slot_fire_ms(due) if due else int(now.timestamp() * 1000)
     cfg = AiAnalysisSettings(
         id=1,
         enabled=True,
         unattended_consent=True,
         interval_minutes=60,
-        last_run_at=datetime.now(timezone.utc),
-        next_run_at=datetime.now(timezone.utc) + timedelta(minutes=60),
+        last_run_at=now,
+        last_scheduled_slot_ms=slot_ms,
     )
     session.add(cfg)
     cred = ChatGptCredential(

@@ -83,8 +83,9 @@ async def test_migration_next_run_not_before_last_success_plus_sixty(session):
     async with SessionLocal() as s1:
         cfg = await get_or_create_settings(s1, autocommit_migration=True)
         assert cfg.interval_minutes == 60
-        assert _ensure_utc(cfg.next_run_at) >= last_ok + timedelta(minutes=60)
-        assert _ensure_utc(cfg.next_run_at) <= datetime.now(timezone.utc) + timedelta(minutes=55)
+        from app.services.ai_tehran_schedule import next_tehran_scheduled_fire_utc
+
+        assert abs((_ensure_utc(cfg.next_run_at) - next_tehran_scheduled_fire_utc()).total_seconds()) < 2
 
 
 @pytest.mark.asyncio
@@ -104,7 +105,14 @@ async def test_scheduler_skips_duplicate_run_after_migration(session):
     )
     await session.commit()
 
+    from app.services.ai_tehran_schedule import active_due_slot_fire_utc, slot_fire_ms
+
+    due = active_due_slot_fire_utc(datetime.now(timezone.utc))
     async with SessionLocal() as s1:
+        if due:
+            cfg = await get_or_create_settings(s1)
+            cfg.last_scheduled_slot_ms = slot_fire_ms(due)
+            await s1.commit()
         assert await should_run_scheduled(s1) is False
 
     with patch("app.services.ai_analysis_executor.run_ai_analysis", AsyncMock()) as mock_run:

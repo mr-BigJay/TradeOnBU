@@ -311,6 +311,8 @@ def test_schedule_migration_restores_legacy_auto_one_twenty_once():
 
 @pytest.mark.asyncio
 async def test_failure_retry_single_backoff_not_hourly_loop(session):
+    from app.services.ai_tehran_schedule import active_due_slot_fire_utc, slot_fire_ms
+
     cfg = AiAnalysisSettings(
         id=1,
         enabled=True,
@@ -320,13 +322,12 @@ async def test_failure_retry_single_backoff_not_hourly_loop(session):
     )
     session.add(cfg)
     await session.commit()
-    record_run_outcome(cfg, "failed", "openai_error", trigger="scheduled")
-    first_next = cfg.next_run_at
-    assert cfg.auto_retry_pending is True
-    assert await should_run_scheduled(session) is False
+    due = active_due_slot_fire_utc(datetime.now(timezone.utc))
+    if due:
+        cfg.last_scheduled_slot_ms = slot_fire_ms(due)
     record_run_outcome(cfg, "failed", "openai_error", trigger="scheduled")
     assert cfg.auto_retry_pending is False
-    assert cfg.next_run_at > first_next + timedelta(minutes=60)
+    assert await should_run_scheduled(session) is False
 
 
 @pytest.mark.asyncio

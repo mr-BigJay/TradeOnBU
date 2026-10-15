@@ -54,23 +54,17 @@ def test_legacy_migration_restores_sixty_from_auto_one_twenty():
     assert cfg.interval_minutes == 60
     assert cfg.interval_migrated_from_60 is False
     assert cfg.next_run_at is not None
-    assert _ensure_utc(cfg.next_run_at) <= nr
-    assert _ensure_utc(cfg.next_run_at) >= last_ok + timedelta(minutes=60)
+    from app.services.ai_tehran_schedule import next_tehran_scheduled_fire_utc
+
+    assert abs((_ensure_utc(cfg.next_run_at) - next_tehran_scheduled_fire_utc()).total_seconds()) < 2
 
 
-def test_reschedule_shortening_moves_next_run_earlier_with_floor():
-    now = datetime.now(timezone.utc)
-    last_ok = now - timedelta(minutes=30)
-    cfg = AiAnalysisSettings(
-        interval_minutes=60,
-        last_success_at=last_ok,
-        next_run_at=now + timedelta(minutes=90),
-    )
-    _reschedule_next_run_after_interval_change(
-        cfg, now=now, previous_interval_minutes=120
-    )
-    assert _ensure_utc(cfg.next_run_at) >= last_ok + timedelta(minutes=60)
-    assert _ensure_utc(cfg.next_run_at) <= now + timedelta(minutes=31)
+def test_reschedule_syncs_tehran_next_run():
+    from app.services.ai_tehran_schedule import next_tehran_scheduled_fire_utc
+
+    cfg = AiAnalysisSettings(interval_minutes=60)
+    _reschedule_next_run_after_interval_change(cfg)
+    assert abs((cfg.next_run_at - next_tehran_scheduled_fire_utc()).total_seconds()) < 2
 
 
 def test_manual_one_twenty_not_restored_without_migration_flag():
@@ -82,11 +76,14 @@ def test_manual_one_twenty_not_restored_without_migration_flag():
     assert cfg.interval_minutes == 120
 
 
-def test_record_run_outcome_schedules_sixty_minutes_after_success():
+def test_record_run_outcome_schedules_next_tehran_slot_after_success():
+    from app.services.ai_tehran_schedule import next_tehran_scheduled_fire_utc
+
     cfg = AiAnalysisSettings(interval_minutes=60)
     record_run_outcome(cfg, "completed", trigger="scheduled")
-    assert cfg.next_run_at > datetime.now(timezone.utc) + timedelta(minutes=59)
-    assert cfg.next_run_at < datetime.now(timezone.utc) + timedelta(minutes=61)
+    expected = next_tehran_scheduled_fire_utc()
+    assert cfg.next_run_at is not None
+    assert abs((cfg.next_run_at - expected).total_seconds()) < 2
 
 
 @pytest.mark.asyncio
@@ -123,7 +120,7 @@ def test_opportunity_monitor_tick_independent_of_ai_scheduler():
     from app.config import get_settings
 
     src = inspect.getsource(main.lifespan)
-    assert 'id="ai_ict_scheduled"' in src
+    assert 'id="ai_ict_tehran_cron"' in src
     assert "minutes=1" in src
     assert 'id="ict_opportunity_monitor"' in src
     assert "opportunity_monitor_interval_seconds" in src

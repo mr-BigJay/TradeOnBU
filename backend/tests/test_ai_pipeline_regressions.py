@@ -81,15 +81,19 @@ async def test_no_open_write_during_delayed_openai(session):
 
 
 def test_record_run_outcome_sets_future_next_attempt():
+    from app.services.ai_tehran_schedule import next_tehran_scheduled_fire_utc
+
     cfg = AiAnalysisSettings(interval_minutes=60)
     record_run_outcome(cfg, "completed", trigger="scheduled")
-    assert cfg.next_run_at > datetime.now(timezone.utc) + timedelta(minutes=59)
+    assert cfg.next_run_at >= datetime.now(timezone.utc)
     record_run_outcome(cfg, "failed", "openai_error", trigger="scheduled")
-    assert cfg.next_run_at > datetime.now(timezone.utc) + timedelta(minutes=FAILURE_BACKOFF_MINUTES - 1)
+    assert cfg.next_run_at >= next_tehran_scheduled_fire_utc() - timedelta(seconds=2)
 
 
 @pytest.mark.asyncio
 async def test_stale_past_next_run_fixed_after_failure_persisted(session):
+    from app.services.ai_tehran_schedule import active_due_slot_fire_utc, slot_fire_ms
+
     cfg = AiAnalysisSettings(
         id=1,
         enabled=True,
@@ -107,7 +111,10 @@ async def test_stale_past_next_run_fixed_after_failure_persisted(session):
         )
     )
     await session.commit()
-    assert await should_run_scheduled(session) is True
+    if active_due_slot_fire_utc(datetime.now(timezone.utc)):
+        assert await should_run_scheduled(session) is True
+        due = active_due_slot_fire_utc(datetime.now(timezone.utc))
+        cfg.last_scheduled_slot_ms = slot_fire_ms(due)
     record_run_outcome(cfg, "failed", "quota", trigger="scheduled")
     await session.commit()
     await session.refresh(cfg)
@@ -120,7 +127,10 @@ async def test_stale_past_next_run_fixed_after_failure_persisted(session):
 
 @pytest.mark.asyncio
 async def test_failed_run_backoff_blocks_minute_scheduler(session):
+    from app.services.ai_tehran_schedule import active_due_slot_fire_utc, slot_fire_ms
+
     now = datetime.now(timezone.utc)
+    due = active_due_slot_fire_utc(now)
     session.add(
         AiAnalysisSettings(
             id=1,
@@ -129,7 +139,7 @@ async def test_failed_run_backoff_blocks_minute_scheduler(session):
             interval_minutes=60,
             last_run_at=now,
             last_success_at=now - timedelta(hours=2),
-            next_run_at=now + timedelta(minutes=FAILURE_BACKOFF_MINUTES),
+            last_scheduled_slot_ms=slot_fire_ms(due) if due else None,
         )
     )
     session.add(

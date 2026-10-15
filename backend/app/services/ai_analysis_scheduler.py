@@ -7,6 +7,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import SessionLocal
 from app.models import AiAnalysisSettings, SystemState
+from app.services.ai_tehran_schedule import (
+    active_due_slot_fire_utc,
+    next_tehran_scheduled_fire_utc,
+    slot_fire_ms,
+    sync_next_run_at_from_tehran_schedule,
+)
 from app.services.siwc.credentials import get_credential_row
 from app.services.siwc.oauth import has_plan_scope
 from app.services.system_state import get_system_state
@@ -31,12 +37,24 @@ def _effective_interval_minutes(cfg: AiAnalysisSettings) -> int:
     return min(MAX_AI_INTERVAL_MINUTES, max(MIN_AI_INTERVAL_MINUTES, int(raw)))
 
 
-def _earliest_next_run(cfg: AiAnalysisSettings, interval: int, now: datetime) -> datetime:
-    if cfg.last_success_at:
-        return max(_ensure_utc(cfg.last_success_at) + timedelta(minutes=interval), now)
-    if cfg.last_run_at:
-        return max(_ensure_utc(cfg.last_run_at) + timedelta(minutes=interval), now)
-    return now
+def scheduled_slot_already_completed(cfg: AiAnalysisSettings, slot_fire_utc: datetime) -> bool:
+    slot_ms = slot_fire_ms(slot_fire_utc)
+    return (cfg.last_scheduled_slot_ms or 0) >= slot_ms
+
+
+def due_scheduled_slot(cfg: AiAnalysisSettings, now_utc: datetime | None = None) -> datetime | None:
+    now_utc = _ensure_utc(now_utc or _utc_now())
+    fire = active_due_slot_fire_utc(now_utc)
+    if fire is None or now_utc < fire:
+        return None
+    if scheduled_slot_already_completed(cfg, fire):
+        return None
+    return fire
+
+
+def claim_scheduled_slot(cfg: AiAnalysisSettings, slot_fire_utc: datetime) -> None:
+    cfg.last_scheduled_slot_ms = slot_fire_ms(slot_fire_utc)
+    sync_next_run_at_from_tehran_schedule(cfg)
 
 
 def _reschedule_next_run_after_interval_change(
@@ -45,45 +63,18 @@ def _reschedule_next_run_after_interval_change(
     *,
     previous_interval_minutes: int | None = None,
 ) -> None:
-    """
-    Recompute next_run_at for a new interval.
-
-    When shortening the interval, snap to the new cadence (never before
-    last_success_at + new interval). When lengthening, do not move next_run
-    earlier than the previous scheduled time.
-    """
-    now = now or _utc_now()
-    interval = _effective_interval_minutes(cfg)
-    floor = _earliest_next_run(cfg, interval, now)
-    current = _ensure_utc(cfg.next_run_at) if cfg.next_run_at else None
-
-    if previous_interval_minutes is not None and previous_interval_minutes > interval:
-        cfg.next_run_at = floor
-        return
-
-    if current and current > now:
-        cfg.next_run_at = max(current, floor)
-    else:
-        cfg.next_run_at = floor
+    """Legacy interval UI: next run display follows Tehran hourly cadence."""
+    sync_next_run_at_from_tehran_schedule(cfg, now)
 
 
 def migrate_ai_schedule_settings(cfg: AiAnalysisSettings) -> bool:
-    """
-    One-time restore for rows auto-bumped 60→120 by legacy migration.
-
-    Skips installs where the user explicitly kept 120 (interval_migrated_from_60
-    cleared via settings save) or chose another interval.
-    """
     if not cfg.interval_migrated_from_60:
         return False
     if cfg.interval_minutes != LEGACY_AUTO_MIGRATED_INTERVAL_MINUTES:
         return False
-    previous = cfg.interval_minutes
     cfg.interval_minutes = DEFAULT_AI_INTERVAL_MINUTES
     cfg.interval_migrated_from_60 = False
-    _reschedule_next_run_after_interval_change(
-        cfg, previous_interval_minutes=previous
-    )
+    sync_next_run_at_from_tehran_schedule(cfg)
     return True
 
 
@@ -93,22 +84,12 @@ def apply_user_schedule_interval_choice(
     previous_interval_minutes: int,
     requested_interval_minutes: int,
 ) -> None:
-    """
-    Record an explicit user interval choice without touching unrelated fields.
-
-    Clears the legacy migration marker only when the user changes the interval
-    or re-saves 120 while the legacy auto-migrate flag is still set (confirming
-    an intentional 120-minute schedule).
-    """
     cfg.interval_minutes = requested_interval_minutes
     if requested_interval_minutes != previous_interval_minutes:
         cfg.interval_migrated_from_60 = False
     elif cfg.interval_migrated_from_60 and requested_interval_minutes == LEGACY_AUTO_MIGRATED_INTERVAL_MINUTES:
         cfg.interval_migrated_from_60 = False
-    if requested_interval_minutes != previous_interval_minutes:
-        _reschedule_next_run_after_interval_change(
-            cfg, previous_interval_minutes=previous_interval_minutes
-        )
+    sync_next_run_at_from_tehran_schedule(cfg)
 
 
 async def get_or_create_settings(
@@ -129,6 +110,7 @@ async def get_or_create_settings(
         session.add(row)
         created = True
         await session.flush()
+        sync_next_run_at_from_tehran_schedule(row)
     migrated = False
     if apply_legacy_restore and not created:
         migrated = migrate_ai_schedule_settings(row)
@@ -140,7 +122,6 @@ async def get_or_create_settings(
 
 
 def confirm_legacy_one_twenty_schedule(cfg: AiAnalysisSettings) -> None:
-    """User explicitly kept 120 minutes; skip automatic restore to 60."""
     if cfg.interval_migrated_from_60:
         cfg.interval_migrated_from_60 = False
 
@@ -162,16 +143,6 @@ async def scheduling_allowed(
     return True, None
 
 
-def _next_regular_run_at(cfg: AiAnalysisSettings, now: datetime) -> datetime:
-    interval = _effective_interval_minutes(cfg)
-    anchor = cfg.last_success_at or cfg.last_run_at or now
-    anchor = _ensure_utc(anchor)
-    nxt = anchor + timedelta(minutes=interval)
-    if nxt <= now:
-        nxt = now + timedelta(minutes=interval)
-    return nxt
-
-
 def record_run_outcome(
     cfg: AiAnalysisSettings,
     run_status: str,
@@ -181,25 +152,21 @@ def record_run_outcome(
 ) -> None:
     now = _utc_now()
     cfg.last_run_at = now
-    interval = _effective_interval_minutes(cfg)
+    if trigger != "scheduled":
+        if run_status.startswith("completed"):
+            cfg.last_success_at = now
+            cfg.last_error = None
+        elif error_detail:
+            cfg.last_error = error_detail
+        return
+
     if run_status.startswith("completed"):
         cfg.last_success_at = now
         cfg.last_error = None
-        cfg.auto_retry_pending = False
-        cfg.next_run_at = now + timedelta(minutes=interval)
-        return
-
-    cfg.last_error = error_detail or "run_failed"
-    if trigger != "scheduled":
-        return
-
-    if not cfg.auto_retry_pending:
-        cfg.auto_retry_pending = True
-        cfg.next_run_at = now + timedelta(minutes=FAILURE_BACKOFF_MINUTES)
-        return
-
+    else:
+        cfg.last_error = error_detail or "run_failed"
     cfg.auto_retry_pending = False
-    cfg.next_run_at = _next_regular_run_at(cfg, now)
+    sync_next_run_at_from_tehran_schedule(cfg, now)
 
 
 async def _try_acquire_analysis_lock(session: AsyncSession, owner: str, ttl_seconds: int) -> bool:
@@ -274,6 +241,4 @@ async def should_run_scheduled(session: AsyncSession) -> bool:
     ok, _ = await scheduling_allowed(session, cfg)
     if not ok:
         return False
-    if cfg.next_run_at is None:
-        return True
-    return _utc_now() >= _ensure_utc(cfg.next_run_at)
+    return due_scheduled_slot(cfg) is not None

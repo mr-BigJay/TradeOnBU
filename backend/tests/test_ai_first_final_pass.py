@@ -196,15 +196,13 @@ async def test_gap_recovery_continues_from_pending(session):
     assert setup.last_tracked_candle_ms == c2.time_ms
 
 
-def test_scheduled_failure_one_retry_then_regular_interval():
+def test_scheduled_failure_keeps_tehran_cadence_without_retry():
+    from app.services.ai_tehran_schedule import next_tehran_scheduled_fire_utc
+
     cfg = AiAnalysisSettings(interval_minutes=120, last_success_at=datetime.now(timezone.utc) - timedelta(hours=1))
     record_run_outcome(cfg, "failed", "err", trigger="scheduled")
-    assert cfg.auto_retry_pending is True
-    retry_at = cfg.next_run_at
-    assert retry_at <= datetime.now(timezone.utc) + timedelta(minutes=FAILURE_BACKOFF_MINUTES + 1)
-    record_run_outcome(cfg, "failed", "err", trigger="scheduled")
     assert cfg.auto_retry_pending is False
-    assert cfg.next_run_at > retry_at + timedelta(minutes=30)
+    assert abs((cfg.next_run_at - next_tehran_scheduled_fire_utc()).total_seconds()) < 2
 
 
 def test_manual_failure_does_not_alter_schedule():
