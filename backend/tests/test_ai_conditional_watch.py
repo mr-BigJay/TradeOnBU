@@ -97,6 +97,7 @@ def wait_json() -> dict:
         "stop_loss": 97.0,
         "take_profit": 110.0,
         "confirmation_required": "liquidity sweep, POI reaction, displacement and directional BOS",
+        "confirmation_rule_ids": ["liquidity_sweep", "poi_reaction", "structure_break_with_displacement"],
         "proposed_setup": {"expires_hours": 8},
     }
 
