@@ -58,6 +58,13 @@ async def persist_conditional_plan(
     if decision != "NO_TRADE" or (mode != "conditional" and final != "WAIT"):
         return {**meta, "reason": "not_conditional_wait"}
 
+    # Only execute plans whose complete required confirmations have known,
+    # deterministic semantics. Natural-language conditions are not executable.
+    required_rules = {"liquidity_sweep", "poi_reaction", "structure_break_with_displacement"}
+    raw_rules = structured.get("confirmation_rule_ids")
+    if not isinstance(raw_rules, list) or set(map(str, raw_rules)) != required_rules or len(raw_rules) != 3:
+        return {**meta, "reason": "unmonitorable_confirmation_rules"}
+
     direction = str(structured.get("potential_direction") or "").upper()
     if direction not in ("LONG", "SHORT"):
         return {**meta, "reason": "missing_potential_direction"}
