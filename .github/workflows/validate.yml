@@ -22,6 +22,7 @@ jobs:
           SKIP_CONFIG_GUARD: "1"
           DISABLE_APP_BACKGROUND: "1"
         run: |
+          mkdir -p data
           python -m compileall -q app tests
           python -m pytest tests -q
       - uses: actions/setup-node@v4
