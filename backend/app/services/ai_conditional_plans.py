@@ -20,6 +20,7 @@ from app.services.conditional_ict import REFERENCE_BARS, STEP_MS, watch_closed_b
 from app.services.execution_model import ExecutionModel
 from app.services.market_data import MarketDataService
 from app.services.paper_auto_trading import maybe_auto_open_paper_position
+from app.services.position.settings_service import get_or_create_settings
 from app.services.runtime_settings import get_runtime_settings
 
 logger = logging.getLogger(__name__)
@@ -162,6 +163,7 @@ async def monitor_conditional_plans(
     now = datetime.now(timezone.utc)
     now_ms = int(now.timestamp() * 1000)
     runtime = await get_runtime_settings(session)
+    paper_settings = await get_or_create_settings(session)
     rows = (
         await session.execute(
             select(AiConditionalPlan)
@@ -269,6 +271,12 @@ async def monitor_conditional_plans(
 
         if runtime.paper_trading_paused:
             plan.last_reason = "paper_trading_paused"
+            continue
+        if not paper_settings.auto_open_paper_positions:
+            plan.last_reason = "auto_open_disabled"
+            continue
+        if not paper_settings.initial_balance_set:
+            plan.last_reason = "wallet_not_initialized"
             continue
 
         # Limit orders must be on the non-marketable side; no instant/backdated fills.
