@@ -873,6 +873,10 @@ async def create_setup_from_structured(
         return await _persist_conditional_setup(session, run_id=run_id, symbol=symbol, structured=structured)
 
     decision = str(structured.get("decision", "NO_TRADE")).upper()
+    if decision in ("LONG", "SHORT") and contract_err:
+        meta["skipped"] = True
+        meta["reason"] = contract_err
+        return None, meta
     if decision not in ("LONG", "SHORT"):
         meta["skipped"] = True
         meta["reason"] = "not_trade_decision"
@@ -948,15 +952,19 @@ async def create_setup_from_structured(
     from app.services.conditional_setup import resolve_immediate_confirmation_sequence
     from app.domain.setup_monitor_boundary import first_eligible_bar_open_ms
 
-    inv_level = _parse_float(proposed.get("invalidation_level") or structured.get("structural_invalidation_level") or structured.get("invalidation_level"))
+    inv_level = _parse_float(
+        proposed.get("invalidation_level")
+        or structured.get("structural_invalidation_level")
+        or structured.get("invalidation_level")
+    )
     sequence, seq_err = resolve_immediate_confirmation_sequence(structured)
-    monitoring_enabled = True
     if not sequence or inv_level is None:
-        monitoring_enabled = False
-        sequence = []
-        lifecycle_immediate = ready_state_for_direction(decision)
-    else:
-        lifecycle_immediate = wait_state_for_direction(decision)
+        meta["skipped"] = True
+        meta["reason"] = seq_err or "immediate_missing_monitor_requirements"
+        return None, meta
+
+    lifecycle_immediate = wait_state_for_direction(decision)
+    monitoring_enabled = True
 
     zone_lo = _parse_float(proposed.get("entry_zone_low") or structured.get("entry_zone_low"))
     zone_hi = _parse_float(proposed.get("entry_zone_high") or structured.get("entry_zone_high"))

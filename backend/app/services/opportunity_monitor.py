@@ -38,6 +38,7 @@ from app.services.market_data import MarketDataService
 from app.services.opportunity_audit import log_setup_event
 from app.services.opportunity_monitor_lock import (
     new_monitor_owner,
+    refresh_opportunity_monitor_lock,
     release_opportunity_monitor_lock,
     try_acquire_opportunity_monitor_lock,
 )
@@ -103,14 +104,22 @@ def _zone_bounds(setup: AiProposedSetup) -> tuple[float, float]:
 
 
 def _net_rr_ok(setup: AiProposedSetup) -> tuple[bool, float | None]:
-    settings = get_effective_settings()
+    from app.domain.paper_execution_policy import HARD_MIN_AUTO_PAPER_NET_RR
+
     entry = setup.entry_price
     sl = setup.stop_loss
     tp = setup.take_profit
     if entry is None or sl is None or tp is None:
         return False, None
     model = ExecutionModel()
-    rr = model.calc_rr(setup.direction, float(entry), float(sl), float(tp), "LIMIT", min_net_rr=settings.min_net_rr)
+    rr = model.calc_rr(
+        setup.direction,
+        float(entry),
+        float(sl),
+        float(tp),
+        "LIMIT",
+        min_net_rr=HARD_MIN_AUTO_PAPER_NET_RR,
+    )
     return bool(rr.acceptable), rr.net_rr
 
 
@@ -138,11 +147,15 @@ class OpportunityMonitorService:
     def __init__(self, market: MarketDataService | None = None) -> None:
         self.market = market or MarketDataService()
 
-    async def monitor_setups(self, session: AsyncSession, *, symbol: str | None = None) -> dict[str, Any]:
+    async def monitor_setups(
+        self, session: AsyncSession, *, symbol: str | None = None, lock_owner: str | None = None
+    ) -> dict[str, Any]:
         settings = get_effective_settings()
         symbol = symbol or settings.default_symbol
         now = _utc_now()
         now_ms = int(now.timestamp() * 1000)
+        if lock_owner:
+            await refresh_opportunity_monitor_lock(session, lock_owner)
 
         result = await session.execute(
             select(AiProposedSetup)
@@ -182,6 +195,8 @@ class OpportunityMonitorService:
             return summary
 
         for setup in setups:
+            if lock_owner:
+                await refresh_opportunity_monitor_lock(session, lock_owner)
             await _sync_position_lifecycle(session, setup)
             if setup.lifecycle_state in (PENDING_ENTRY, POSITION_OPEN, POSITION_CLOSED):
                 continue
@@ -344,6 +359,6 @@ async def run_opportunity_monitor_tick(session: AsyncSession) -> dict[str, Any]:
         return {"skipped": True, "reason": "monitor_lock_held"}
     try:
         svc = OpportunityMonitorService()
-        return await svc.monitor_setups(session)
+        return await svc.monitor_setups(session, lock_owner=owner)
     finally:
         await release_opportunity_monitor_lock(session, owner)

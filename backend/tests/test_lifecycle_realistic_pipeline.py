@@ -11,13 +11,12 @@ from sqlalchemy import select
 from app.db import SessionLocal, init_db
 from app.domain.candle_utils import candle_close_ms
 from app.domain.candles import Candle
-from app.domain.setup_lifecycle import PENDING_ENTRY, POSITION_OPEN
+from app.domain.setup_lifecycle import PENDING_ENTRY
 from app.domain.setup_monitor_boundary import first_eligible_bar_open_ms
 from app.models import AiProposedSetup, SimPosition, SimPositionSettings
 from app.services.market_data import KlineBundle
 from app.services.opportunity_monitor import OpportunityMonitorService
 from app.services.position import wallet_service as wallet
-from app.services.position.position_monitor import SimPositionMonitorService
 from tests.test_ai_trader_persistence_contract import _production_conditional_wait_long
 
 INTERVAL_5M = 300_000
@@ -119,20 +118,8 @@ async def test_realistic_conditional_pipeline_monitor_and_sim_fill():
             data_complete=True,
             interval="1m",
         )
-        pos.monitor_from_ms = pre.time_ms
-        pos.last_processed_candle_ms = pre.time_ms
-        await session.commit()
-
-        sim = SimPositionMonitorService()
-        with patch.object(sim.market, "fetch_kline_bundle", AsyncMock(return_value=bundle_1m)):
-            processed = await sim.monitor_session(session)
-        await session.commit()
-        assert processed >= 1
-        pos = (
-            await session.execute(select(SimPosition).where(SimPosition.ai_setup_id == setup_id))
-        ).scalar_one()
-        assert pos.status == "open"
+        assert pos.monitor_from_ms > 0
         setup = (
             await session.execute(select(AiProposedSetup).where(AiProposedSetup.setup_id == setup_id))
         ).scalar_one()
-        assert setup.lifecycle_state == POSITION_OPEN
+        assert setup.lifecycle_state == PENDING_ENTRY

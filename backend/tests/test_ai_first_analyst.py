@@ -142,15 +142,19 @@ async def test_failure_backoff_does_not_schedule_hourly_routine(session):
 
 @pytest.mark.asyncio
 async def test_setup_memory_persist_and_objective_touch(session):
-    structured = {
-        "decision": "LONG",
-        "entry_price": 100.0,
-        "entry_zone_low": 99.5,
-        "entry_zone_high": 100.5,
-        "stop_loss": 98.0,
-        "take_profit": 105.0,
-        "proposed_setup": {"new_setup": True, "thesis_fa": "تست"},
-    }
+    from tests.conftest import with_immediate_monitor_fields
+
+    structured = with_immediate_monitor_fields(
+        {
+            "decision": "LONG",
+            "entry_price": 100.0,
+            "entry_zone_low": 99.5,
+            "entry_zone_high": 100.5,
+            "stop_loss": 98.0,
+            "take_profit": 105.0,
+            "proposed_setup": {"new_setup": True, "thesis_fa": "تست"},
+        }
+    )
     row, meta = await create_setup_from_structured(session, run_id=1, symbol="BTCUSDT", structured=structured)
     await session.commit()
     assert row is not None and meta["created"]

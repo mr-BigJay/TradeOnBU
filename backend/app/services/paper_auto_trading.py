@@ -184,6 +184,27 @@ async def maybe_auto_open_paper_position(
         meta["reason"] = setup_reason
         return meta
 
+    from app.domain.paper_execution_policy import HARD_MIN_AUTO_PAPER_NET_RR
+    from app.services.execution_model import ExecutionModel
+
+    entry_f = float(setup.entry_price)  # type: ignore[arg-type]
+    sl_f = float(setup.stop_loss)  # type: ignore[arg-type]
+    tp_f = float(setup.take_profit)  # type: ignore[arg-type]
+    rr = ExecutionModel().calc_rr(
+        setup.direction,
+        entry_f,
+        sl_f,
+        tp_f,
+        "LIMIT",
+        min_net_rr=HARD_MIN_AUTO_PAPER_NET_RR,
+    )
+    if not rr.acceptable:
+        meta["skipped"] = True
+        meta["reason"] = "net_rr_below_min"
+        meta["net_rr"] = rr.net_rr
+        meta["required_min_net_rr"] = HARD_MIN_AUTO_PAPER_NET_RR
+        return meta
+
     if await _has_position_for_setup(session, setup.setup_id):
         meta["skipped"] = True
         meta["reason"] = "position_already_active_for_setup"

@@ -25,7 +25,7 @@ def validate_structured_for_persistence(structured: dict[str, Any]) -> str | Non
     """
     Return an error code when structured output cannot be persisted safely.
     Conditional WAIT plans must satisfy parse_conditional_plan (fail closed).
-    Immediate LONG/SHORT may omit monitor fields (legacy immediate path disables monitoring).
+    Immediate LONG/SHORT must include monitor fields or persistence is rejected.
     """
     if not isinstance(structured, dict):
         return "structured_not_object"
@@ -37,15 +37,13 @@ def validate_structured_for_persistence(structured: dict[str, Any]) -> str | Non
     decision = str(structured.get("decision", "NO_TRADE")).upper()
     if decision in ("LONG", "SHORT"):
         seq, seq_err = resolve_immediate_confirmation_sequence(structured)
-        if seq:
-            inv = _parse_float(
-                structured.get("structural_invalidation_level") or structured.get("invalidation_level")
-            )
-            if inv is None:
-                return "missing_structural_invalidation_level"
-        elif seq_err:
-            # Monitoring disabled when sequence missing — allowed for immediate entry.
-            pass
+        inv = _parse_float(
+            structured.get("structural_invalidation_level") or structured.get("invalidation_level")
+        )
+        if not seq:
+            return seq_err or "immediate_missing_monitor_requirements"
+        if inv is None:
+            return "missing_structural_invalidation_level"
     return None
 
 
@@ -53,6 +51,6 @@ def contract_hint_for_model() -> str:
     """Short reminder embedded in instructions (kept in sync with validators)."""
     types = ", ".join(sorted(ALLOWED_CONFIRMATION_TYPES))
     return (
-        f"confirmation_type ({types}) OR confirmation_sequence (ordered ICT tokens); "
-        "structural_invalidation_level (numeric) required for conditional WAIT and for monitored immediate plans"
+        f"confirmation_type ({types}) OR confirmation_sequence exactly matching a profile; "
+        "structural_invalidation_level (numeric) required for conditional WAIT and immediate LONG/SHORT"
     )

@@ -55,8 +55,15 @@ def _parse_float(val: Any) -> float | None:
         return None
 
 
+def _sequence_matches_known_profile(tokens: list[str]) -> tuple[list[str] | None, str | None]:
+    for profile_seq in CONFIRMATION_PROFILES.values():
+        if tokens == profile_seq:
+            return list(profile_seq), None
+    return None, "unapproved_confirmation_sequence"
+
+
 def resolve_confirmation_sequence(structured: dict[str, Any]) -> tuple[list[str] | None, str | None]:
-    """Fail closed: require confirmation_type profile or explicit confirmation_sequence array."""
+    """Fail closed: only approved ICT strategy profiles (no arbitrary token bags)."""
     ctype = structured.get("confirmation_type")
     if isinstance(ctype, str) and ctype in CONFIRMATION_PROFILES:
         return list(CONFIRMATION_PROFILES[ctype]), None
@@ -64,9 +71,9 @@ def resolve_confirmation_sequence(structured: dict[str, Any]) -> tuple[list[str]
     seq = structured.get("confirmation_sequence")
     if isinstance(seq, list) and len(seq) >= 2:
         tokens = [str(x).strip() for x in seq]
-        if all(t in ALLOWED_CONFIRMATION_TOKENS for t in tokens):
-            return tokens, None
-        return None, "unsupported_confirmation_sequence_token"
+        if not all(t in ALLOWED_CONFIRMATION_TOKENS for t in tokens):
+            return None, "unsupported_confirmation_sequence_token"
+        return _sequence_matches_known_profile(tokens)
 
     return None, "missing_structured_confirmation_type"
 

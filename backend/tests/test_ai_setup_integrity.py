@@ -158,13 +158,17 @@ async def test_continue_preserves_original_forecast(session):
     )
     session.add(row)
     await session.commit()
-    structured = {
-        "decision": "LONG",
-        "entry_price": 100.0,
-        "stop_loss": 98.0,
-        "take_profit": 106.0,
-        "proposed_setup": {"continue_setup_id": "orig", "thesis_fa": "revised thesis"},
-    }
+    from tests.conftest import with_immediate_monitor_fields
+
+    structured = with_immediate_monitor_fields(
+        {
+            "decision": "LONG",
+            "entry_price": 100.0,
+            "stop_loss": 98.0,
+            "take_profit": 106.0,
+            "proposed_setup": {"continue_setup_id": "orig", "thesis_fa": "revised thesis"},
+        }
+    )
     _, meta = await create_setup_from_structured(session, run_id=99, symbol="BTCUSDT", structured=structured)
     await session.refresh(row)
     assert meta["reason"] == "revision_appended"
@@ -179,22 +183,28 @@ async def test_continue_preserves_original_forecast(session):
 
 @pytest.mark.asyncio
 async def test_dedupe_preserves_original_run_id(session):
-    structured = {
-        "decision": "LONG",
-        "entry_price": 100.0,
-        "stop_loss": 98.0,
-        "take_profit": 105.0,
-        "proposed_setup": {"new_setup": True, "thesis_fa": "first"},
-    }
+    from tests.conftest import with_immediate_monitor_fields
+
+    structured = with_immediate_monitor_fields(
+        {
+            "decision": "LONG",
+            "entry_price": 100.0,
+            "stop_loss": 98.0,
+            "take_profit": 105.0,
+            "proposed_setup": {"new_setup": True, "thesis_fa": "first"},
+        }
+    )
     r1, _ = await create_setup_from_structured(session, run_id=5, symbol="BTCUSDT", structured=structured)
     await session.commit()
-    structured2 = {
-        "decision": "LONG",
-        "entry_price": 100.0,
-        "stop_loss": 98.0,
-        "take_profit": 105.0,
-        "proposed_setup": {"new_setup": True, "thesis_fa": "second"},
-    }
+    structured2 = with_immediate_monitor_fields(
+        {
+            "decision": "LONG",
+            "entry_price": 100.0,
+            "stop_loss": 98.0,
+            "take_profit": 105.0,
+            "proposed_setup": {"new_setup": True, "thesis_fa": "second"},
+        }
+    )
     _, meta = await create_setup_from_structured(session, run_id=6, symbol="BTCUSDT", structured=structured2)
     await session.refresh(r1)
     assert meta["reason"] == "deduped_revision_appended"
@@ -315,13 +325,17 @@ def test_same_candle_ambiguous_stable_on_refresh():
 async def test_create_setup_finalizes_after_expiry_when_reconciled(session):
     created = datetime.now(timezone.utc) - timedelta(hours=3)
     expires = datetime.now(timezone.utc) - timedelta(minutes=15)
-    structured = {
-        "decision": "LONG",
-        "entry_price": 100.0,
-        "stop_loss": 98.0,
-        "take_profit": 105.0,
-        "proposed_setup": {"new_setup": True, "thesis_fa": "test", "expires_hours": 48},
-    }
+    from tests.conftest import with_immediate_monitor_fields
+
+    structured = with_immediate_monitor_fields(
+        {
+            "decision": "LONG",
+            "entry_price": 100.0,
+            "stop_loss": 98.0,
+            "take_profit": 105.0,
+            "proposed_setup": {"new_setup": True, "thesis_fa": "test", "expires_hours": 48},
+        }
+    )
     row, meta = await create_setup_from_structured(session, run_id=1, symbol="BTCUSDT", structured=structured)
     assert meta["created"]
     row.created_at = created

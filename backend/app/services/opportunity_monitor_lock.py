@@ -20,6 +20,23 @@ def new_monitor_owner() -> str:
     return f"opp-mon-{uuid.uuid4().hex[:10]}"
 
 
+async def refresh_opportunity_monitor_lock(session: AsyncSession, owner: str) -> bool:
+    """Extend lease while a tick is still running (prevents overlap if processing > TTL)."""
+    await get_system_state(session)
+    now_ms = _now_ms()
+    until_ms = now_ms + _LOCK_TTL_SECONDS * 1000
+    stmt = (
+        update(SystemState)
+        .where(SystemState.id == 1)
+        .where(SystemState.opportunity_monitor_lock_owner == owner)
+        .values(opportunity_monitor_lock_until_ms=until_ms)
+    )
+    result = await session.execute(stmt)
+    await session.flush()
+    await session.commit()
+    return result.rowcount == 1
+
+
 async def try_acquire_opportunity_monitor_lock(session: AsyncSession, owner: str) -> bool:
     await get_system_state(session)
     now_ms = _now_ms()

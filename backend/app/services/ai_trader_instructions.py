@@ -47,8 +47,7 @@ The backend persists conditional plans as monitored WAIT_LONG/WAIT_SHORT rows (n
 - confirmation_required: human-readable summary (report only — not used for execution)
 - confirmation_type: **required for backend monitor** — one of:
   sweep_mss_poi | sweep_bos_poi | bos_fvg_retest | mss_fvg_retest
-  OR confirmation_sequence: ordered JSON array of tokens:
-  liquidity_sweep, mss, bos, fvg_retest, order_block_retest, entry_zone_touch, displacement
+  OR confirmation_sequence: must **exactly match** one profile sequence (not arbitrary token lists)
 - structural_invalidation_level: **required numeric price** — objective invalidation (prose conditional_invalidation alone is not enough)
 - conditional_invalidation: text explanation of invalidation (report + audit)
 - stop_loss, take_profit: planned levels if confirmation occurs (required for conditional persistence)

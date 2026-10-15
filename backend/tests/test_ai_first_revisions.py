@@ -246,24 +246,30 @@ async def test_missing_candles_marks_unknown(session):
 
 @pytest.mark.asyncio
 async def test_duplicate_setup_suppressed(session):
-    structured = {
-        "decision": "LONG",
-        "entry_price": 100.0,
-        "stop_loss": 98.0,
-        "take_profit": 105.0,
-        "proposed_setup": {"new_setup": True, "thesis_fa": "اول"},
-    }
+    from tests.conftest import with_immediate_monitor_fields
+
+    structured = with_immediate_monitor_fields(
+        {
+            "decision": "LONG",
+            "entry_price": 100.0,
+            "stop_loss": 98.0,
+            "take_profit": 105.0,
+            "proposed_setup": {"new_setup": True, "thesis_fa": "اول"},
+        }
+    )
     row1, meta1 = await create_setup_from_structured(session, run_id=1, symbol="BTCUSDT", structured=structured)
     await session.commit()
     assert meta1["created"] is True
 
-    structured2 = {
-        "decision": "LONG",
-        "entry_price": 100.05,
-        "stop_loss": 98.0,
-        "take_profit": 105.0,
-        "proposed_setup": {"new_setup": False, "thesis_fa": "تکرار"},
-    }
+    structured2 = with_immediate_monitor_fields(
+        {
+            "decision": "LONG",
+            "entry_price": 100.05,
+            "stop_loss": 98.0,
+            "take_profit": 105.0,
+            "proposed_setup": {"new_setup": False, "thesis_fa": "تکرار"},
+        }
+    )
     row2, meta2 = await create_setup_from_structured(session, run_id=2, symbol="BTCUSDT", structured=structured2)
     assert meta2.get("reason") == "deduped_revision_appended"
     assert row2.setup_id == row1.setup_id
@@ -271,13 +277,17 @@ async def test_duplicate_setup_suppressed(session):
 
 @pytest.mark.asyncio
 async def test_invalid_levels_not_persisted(session):
-    bad = {
-        "decision": "LONG",
-        "entry_price": 100.0,
-        "stop_loss": 101.0,
-        "take_profit": 105.0,
-        "proposed_setup": {"new_setup": True},
-    }
+    from tests.conftest import with_immediate_monitor_fields
+
+    bad = with_immediate_monitor_fields(
+        {
+            "decision": "LONG",
+            "entry_price": 100.0,
+            "stop_loss": 101.0,
+            "take_profit": 105.0,
+            "proposed_setup": {"new_setup": True},
+        }
+    )
     row, meta = await create_setup_from_structured(session, run_id=1, symbol="BTCUSDT", structured=bad)
     assert row is None
     assert meta["reason"] == "long_levels_not_ordered_sl_entry_tp"

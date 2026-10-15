@@ -109,8 +109,28 @@ async def test_immediate_monitored_json_persists_with_monitoring():
         await session.commit()
         assert meta.get("created") is True
         assert row.monitoring_enabled is True
+        assert row.lifecycle_state == WAIT_LONG
         seq = (row.confirmation_state or {}).get("sequence") or []
         assert seq[0] == "liquidity_sweep"
+
+
+@pytest.mark.asyncio
+async def test_immediate_long_without_monitor_fields_rejected():
+    await init_db()
+    data = {
+        "decision": "LONG",
+        "final_ai_decision": "LONG",
+        "setup_mode": "immediate",
+        "entry_price": 100.0,
+        "stop_loss": 94.0,
+        "take_profit": 115.0,
+        "proposed_setup": {"new_setup": True},
+    }
+    async with SessionLocal() as session:
+        row, meta = await create_setup_from_structured(session, run_id=44, symbol="BTCUSDT", structured=data)
+        assert row is None
+        assert meta["skipped"] is True
+        assert meta["reason"] in ("immediate_missing_monitor_requirements", "missing_structured_confirmation_type")
 
 
 @pytest.mark.asyncio

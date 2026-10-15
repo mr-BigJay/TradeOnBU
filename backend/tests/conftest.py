@@ -19,6 +19,18 @@ from app.main import app
 
 get_settings.cache_clear()
 
+
+def with_immediate_monitor_fields(structured: dict) -> dict:
+    """Fields required for immediate LONG/SHORT persistence (production contract)."""
+    return {
+        **structured,
+        "confirmation_type": structured.get("confirmation_type", "sweep_mss_poi"),
+        "structural_invalidation_level": structured.get(
+            "structural_invalidation_level", structured.get("stop_loss", 97.0) - 1.0
+        ),
+    }
+
+
 TEST_ENGINE = create_async_engine(os.environ["DATABASE_URL"], echo=False)
 TestSession = async_sessionmaker(TEST_ENGINE, expire_on_commit=False)
 
