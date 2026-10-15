@@ -272,6 +272,10 @@ async def monitor_conditional_plans(
                 plan.status, plan.last_reason = "invalidated", "linked_setup_missing"
                 continue
 
+        # Setup persistence clamps TTL to at least one hour; NEVER extend the
+        # original AI plan validity when confirmation happens near expiration.
+        if utc(setup.expires_at) > utc(plan.expires_at):
+            setup.expires_at = plan.expires_at
         if utc(setup.expires_at) <= now or setup.status != "open":
             plan.status, plan.last_reason = "expired", "linked_setup_not_active"
             continue
