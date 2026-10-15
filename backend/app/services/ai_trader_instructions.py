@@ -46,7 +46,7 @@ Define the trading plan as a **conditional setup** (final_ai_decision WAIT, deci
 - confirmation_required: what must happen before entry (MSS, FVG retest, sweep, etc.)
 - conditional_invalidation: level/condition that voids the plan
 - REQUIRED numeric plan levels: conditional_entry_price (inside the zone), stop_loss (beyond the structural invalidation), take_profit (at an identifiable liquidity pool). Never invent levels where the candles do not support them.
-- Include confirmation_required as specific, externally observable events. The deterministic watcher supports only: liquidity sweep/reclaim, POI rejection, and later 5m displacement with directional structure break. Other discretionary/subjective criteria cannot be automatically executed.
+- Include confirmation_required as specific, externally observable events. Set confirmation_rule_ids to EXACTLY ["liquidity_sweep", "poi_reaction", "structure_break_with_displacement"] for machine-trackable plans. Other criteria cannot be automatically executed, so do NOT output a conditional plan if extra unmonitorable conditions are essential.
 - Specify expires_hours (prefer intraday 6–24h), and a numeric entry zone.
 - Calculate a realistic net R:R after fees/slippage; if you cannot find credible levels meeting >= 1:2, return flat NO_TRADE rather than an unexecutable WAIT.
 
@@ -72,7 +72,7 @@ final_ai_decision (LONG|SHORT|WAIT|NO_TRADE),
 setup_mode (immediate|conditional|flat),
 potential_direction (LONG|SHORT — required when setup_mode=conditional),
 conditional_entry_zone_low, conditional_entry_zone_high, conditional_entry_price,
-confirmation_required (required when conditional),
+confirmation_required and confirmation_rule_ids (required when conditional; exact IDs above),
 conditional_invalidation (required when conditional),
 current_price,
 market_bias,
