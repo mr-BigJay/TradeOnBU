@@ -6,7 +6,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.candles import Candle
-from app.domain.execution_order_policy import pending_limit_fill_blocked_by_5m_backlog
+from app.domain.execution_order_policy import (
+    bar_hits_limit,
+    reconcile_pending_ai_limit_order,
+)
+from app.domain.time_utils import ensure_utc
 from app.models import SimPosition
 from app.services.market_data import KlineBundle, MarketDataService
 from app.services.position.equity_service import record_equity_snapshot
@@ -230,9 +234,13 @@ class SimPositionMonitorService:
         now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
         needs_5m = any(p.status == "pending_entry" and p.ai_setup_id for p in positions)
         closed_5m: list[Candle] = []
+        five_m_data_verified = False
         if needs_5m:
             bundle_5m = await self.market.fetch_kline_bundle(symbol, "5m", 120)
-            if bundle_5m.data_complete and bundle_5m.closed:
+            five_m_data_verified = bool(
+                bundle_5m.data_complete and bundle_5m.closed
+            )
+            if five_m_data_verified:
                 closed_5m = list(bundle_5m.closed)
 
         processed = 0
@@ -249,6 +257,63 @@ class SimPositionMonitorService:
 
             if not self._try_clear_suspension(pos, bundle, closed):
                 continue
+
+            force_fill_bar_ms: int | None = None
+            if (
+                pos.status == "pending_entry"
+                and pos.ai_setup_id
+                and pos.order_type == "limit"
+                and pos.limit_entry_price
+            ):
+                from app.models import AiProposedSetup
+
+                setup_row = (
+                    await session.execute(
+                        select(AiProposedSetup).where(AiProposedSetup.setup_id == pos.ai_setup_id)
+                    )
+                ).scalar_one_or_none()
+                if setup_row:
+                    order_ms = pos.monitor_from_ms or 0
+                    if order_ms <= 0 and pos.created_at:
+                        created = ensure_utc(pos.created_at)
+                        if created:
+                            order_ms = int(created.timestamp() * 1000)
+                    outcome = reconcile_pending_ai_limit_order(
+                        order_ms=order_ms,
+                        direction=setup_row.direction,
+                        invalidation_level=setup_row.invalidation_level,
+                        monitor_cursor_ms=setup_row.monitor_cursor_ms,
+                        limit_price=float(pos.limit_entry_price or 0),
+                        closed_1m=eligible,
+                        closed_5m=closed_5m,
+                        now_ms=now_ms,
+                        five_m_data_verified=five_m_data_verified,
+                    )
+                    if outcome.action == "suspend":
+                        notes = dict(setup_row.objective_notes or {})
+                        notes["pending_fill_suspended"] = True
+                        notes["pending_fill_block_reason"] = outcome.reason
+                        setup_row.objective_notes = notes
+                        for bar in eligible:
+                            pos.last_processed_candle_ms = bar.time_ms
+                            processed += 1
+                        continue
+                    if outcome.action == "cancel":
+                        await self.positions.cancel_pending(session, pos.public_id, commit=False)
+                        pos.extra = {
+                            **pos.extra,
+                            "auto_paper_cancel_reason": outcome.reason or "structural_invalidation",
+                        }
+                        from app.domain.setup_lifecycle import INVALIDATED
+
+                        setup_row.status = "invalidated"
+                        setup_row.lifecycle_state = INVALIDATED
+                        for bar in eligible:
+                            pos.last_processed_candle_ms = bar.time_ms
+                            processed += 1
+                        continue
+                    if outcome.action == "fill" and outcome.fill_bar_1m is not None:
+                        force_fill_bar_ms = outcome.fill_bar_1m.time_ms
 
             prev_ms = cursor
             for bar in eligible:
@@ -287,24 +352,15 @@ class SimPositionMonitorService:
                             pos.last_processed_candle_ms = bar.time_ms
                             processed += 1
                             continue
-                        if setup_row and closed_5m:
-                            blocked, block_code = pending_limit_fill_blocked_by_5m_backlog(
-                                direction=setup_row.direction,
-                                invalidation_level=setup_row.invalidation_level,
-                                monitor_cursor_ms=setup_row.monitor_cursor_ms,
-                                closed_5m=closed_5m,
-                                bar_1m=bar,
-                                now_ms=now_ms,
-                            )
-                            if blocked:
-                                notes = dict(setup_row.objective_notes or {})
-                                notes["pending_fill_suspended"] = True
-                                notes["pending_fill_block_reason"] = block_code
-                                setup_row.objective_notes = notes
-                                prev_ms = bar.time_ms
-                                pos.last_processed_candle_ms = bar.time_ms
-                                processed += 1
-                                continue
+                        if setup_row and not five_m_data_verified:
+                            notes = dict(setup_row.objective_notes or {})
+                            notes["pending_fill_suspended"] = True
+                            notes["pending_fill_block_reason"] = "missing_or_incomplete_5m_data"
+                            setup_row.objective_notes = notes
+                            prev_ms = bar.time_ms
+                            pos.last_processed_candle_ms = bar.time_ms
+                            processed += 1
+                            continue
 
                     still_ok, block_reason = await auto_paper_entry_still_valid(session, pos)
                     if not still_ok:
@@ -315,7 +371,20 @@ class SimPositionMonitorService:
                         processed += 1
                         continue
                     limit_px = pos.limit_entry_price
-                    if _bar_hits_limit(bar, limit_px):
+                    fill_this_bar = _bar_hits_limit(bar, limit_px)
+                    if force_fill_bar_ms is not None and bar.time_ms == force_fill_bar_ms:
+                        if not fill_this_bar:
+                            notes = dict(setup_row.objective_notes or {}) if setup_row else {}
+                            notes["pending_fill_suspended"] = True
+                            notes["pending_fill_block_reason"] = "ambiguous_fill_vs_5m_timing"
+                            if setup_row:
+                                setup_row.objective_notes = notes
+                            prev_ms = bar.time_ms
+                            pos.last_processed_candle_ms = bar.time_ms
+                            processed += 1
+                            continue
+                        fill_this_bar = True
+                    if fill_this_bar:
                         ok_fill, _ = await auto_paper_entry_still_valid(session, pos)
                         if not ok_fill:
                             await self.positions.cancel_pending(session, pos.public_id, commit=False)

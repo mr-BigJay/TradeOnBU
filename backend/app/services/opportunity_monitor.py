@@ -29,6 +29,7 @@ from app.domain.setup_lifecycle import (
     WAIT_SHORT,
     ready_state_for_direction,
 )
+from app.domain.execution_order_policy import reconcile_pending_ai_limit_order
 from app.domain.setup_monitor_boundary import first_eligible_bar_open_ms
 from app.domain.time_utils import ensure_utc
 from app.models import AiProposedSetup, SimPosition
@@ -146,6 +147,65 @@ async def _pending_position_for_setup(session: AsyncSession, setup_id: str) -> S
     return result.scalar_one_or_none()
 
 
+async def _invalidate_setup_structurally(
+    session: AsyncSession,
+    setup: AiProposedSetup,
+    *,
+    bar,
+    pos: SimPosition | None,
+    summary: dict[str, Any],
+    event_type: str = "invalidated",
+) -> None:
+    svc = SimPositionService()
+    if pos:
+        await svc.cancel_pending(session, pos.public_id, commit=False)
+    setup.status = "invalidated"
+    setup.lifecycle_state = INVALIDATED
+    setup.last_rejection_reason = REASON_STRUCTURAL_INVALIDATION
+    setup.last_validation_result = {
+        "ok": False,
+        "reason": REASON_STRUCTURAL_INVALIDATION,
+        "bar_ms": bar.time_ms,
+    }
+    await log_setup_event(
+        session,
+        setup_id=setup.setup_id,
+        event_type=event_type,
+        reason_code=REASON_STRUCTURAL_INVALIDATION,
+        payload={"bar_ms": bar.time_ms, "position_id": pos.public_id if pos else None},
+    )
+    summary["invalidated"] += 1
+    setup.monitor_cursor_ms = bar.time_ms
+
+
+async def _monitor_ready_structural_invalidation_before_order(
+    session: AsyncSession,
+    setup: AiProposedSetup,
+    bundle,
+    now_ms: int,
+    now: datetime,
+    summary: dict[str, Any],
+) -> bool:
+    """Apply closed 5m structural invalidations before READY→PENDING order creation."""
+    if setup.invalidation_level is None:
+        return False
+    new_bars = _eligible_closed_bars_since_cursor(setup, bundle.closed, now_ms)
+    if not new_bars:
+        setup.last_monitor_at = now
+        return False
+    for bar in new_bars:
+        if _check_invalidation_on_bar(
+            bar, direction=setup.direction, invalidation_level=setup.invalidation_level
+        ):
+            await _invalidate_setup_structurally(
+                session, setup, bar=bar, pos=None, summary=summary, event_type="ready_invalidated"
+            )
+            return True
+        setup.monitor_cursor_ms = bar.time_ms
+    setup.last_monitor_at = now
+    return False
+
+
 async def _monitor_pending_structural_invalidation(
     session: AsyncSession,
     setup: AiProposedSetup,
@@ -153,10 +213,58 @@ async def _monitor_pending_structural_invalidation(
     now_ms: int,
     now: datetime,
     summary: dict[str, Any],
+    *,
+    market: MarketDataService,
 ) -> None:
     if setup.invalidation_level is None:
         return
+    pos = await _pending_position_for_setup(session, setup.setup_id)
     new_bars = _eligible_closed_bars_since_cursor(setup, bundle.closed, now_ms)
+    five_m_verified = bundle.data_complete and bool(bundle.closed)
+    closed_5m = list(bundle.closed) if five_m_verified else []
+
+    if pos:
+        order_ms = pos.monitor_from_ms or 0
+        if order_ms <= 0 and pos.created_at:
+            created = ensure_utc(pos.created_at)
+            if created:
+                order_ms = int(created.timestamp() * 1000)
+        bundle_1m = await market.fetch_kline_bundle(setup.symbol, "1m", 120)
+        closed_1m = list(bundle_1m.closed) if bundle_1m.data_complete and bundle_1m.closed else []
+        outcome = reconcile_pending_ai_limit_order(
+            order_ms=order_ms,
+            direction=setup.direction,
+            invalidation_level=setup.invalidation_level,
+            monitor_cursor_ms=setup.monitor_cursor_ms,
+            limit_price=float(pos.limit_entry_price or setup.entry_price or 0),
+            closed_1m=closed_1m,
+            closed_5m=closed_5m,
+            now_ms=now_ms,
+            five_m_data_verified=five_m_verified,
+        )
+        if outcome.action == "suspend":
+            notes = dict(setup.objective_notes or {})
+            notes["pending_fill_suspended"] = True
+            notes["pending_fill_block_reason"] = outcome.reason
+            setup.objective_notes = notes
+            setup.last_monitor_at = now
+            return
+        if outcome.action == "fill":
+            for bar in new_bars:
+                setup.monitor_cursor_ms = bar.time_ms
+            setup.last_monitor_at = now
+            return
+        if outcome.action == "cancel" and outcome.invalidation_bar_5m is not None:
+            await _invalidate_setup_structurally(
+                session,
+                setup,
+                bar=outcome.invalidation_bar_5m,
+                pos=pos,
+                summary=summary,
+                event_type="pending_invalidated",
+            )
+            return
+
     if not new_bars:
         setup.last_monitor_at = now
         return
@@ -164,27 +272,14 @@ async def _monitor_pending_structural_invalidation(
         if _check_invalidation_on_bar(
             bar, direction=setup.direction, invalidation_level=setup.invalidation_level
         ):
-            pos = await _pending_position_for_setup(session, setup.setup_id)
-            svc = SimPositionService()
-            if pos:
-                await svc.cancel_pending(session, pos.public_id, commit=False)
-            setup.status = "invalidated"
-            setup.lifecycle_state = INVALIDATED
-            setup.last_rejection_reason = REASON_STRUCTURAL_INVALIDATION
-            setup.last_validation_result = {
-                "ok": False,
-                "reason": REASON_STRUCTURAL_INVALIDATION,
-                "bar_ms": bar.time_ms,
-            }
-            await log_setup_event(
+            await _invalidate_setup_structurally(
                 session,
-                setup_id=setup.setup_id,
+                setup,
+                bar=bar,
+                pos=pos,
+                summary=summary,
                 event_type="pending_invalidated",
-                reason_code=REASON_STRUCTURAL_INVALIDATION,
-                payload={"bar_ms": bar.time_ms, "position_id": pos.public_id if pos else None},
             )
-            summary["invalidated"] += 1
-            setup.monitor_cursor_ms = bar.time_ms
             return
         setup.monitor_cursor_ms = bar.time_ms
     setup.last_monitor_at = now
@@ -394,13 +489,17 @@ class OpportunityMonitorService:
 
             if setup.lifecycle_state == PENDING_ENTRY:
                 await _monitor_pending_structural_invalidation(
-                    session, setup, bundle, now_ms, now, summary
+                    session, setup, bundle, now_ms, now, summary, market=self.market
                 )
                 continue
             if setup.lifecycle_state in (POSITION_OPEN, POSITION_CLOSED):
                 continue
 
             if setup.lifecycle_state in (READY_LONG, READY_SHORT):
+                if await _monitor_ready_structural_invalidation_before_order(
+                    session, setup, bundle, now_ms, now, summary
+                ):
+                    continue
                 await _attempt_ready_paper_order(session, setup, now=now, summary=summary)
                 if setup.lifecycle_state == PENDING_ENTRY:
                     continue
@@ -510,6 +609,10 @@ class OpportunityMonitorService:
                 summary["promoted"] += 1
 
             if setup.lifecycle_state in (READY_LONG, READY_SHORT):
+                if await _monitor_ready_structural_invalidation_before_order(
+                    session, setup, bundle, now_ms, now, summary
+                ):
+                    continue
                 await _attempt_ready_paper_order(session, setup, now=now, summary=summary)
 
         await session.flush()
