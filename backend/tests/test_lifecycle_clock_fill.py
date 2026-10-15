@@ -119,8 +119,22 @@ async def test_limit_fill_only_after_order_creation_time():
             interval="1m",
         )
         sim = SimPositionMonitorService()
-        with patch.object(sim.market, "fetch_kline_bundle", AsyncMock(return_value=bundle_pre)):
-            await sim.monitor_session(session)
+        fresh_5m = KlineBundle(
+            closed=closed_5m,
+            forming=None,
+            gaps_detected=[],
+            gaps_remaining=[],
+            data_complete=True,
+            interval="5m",
+        )
+
+        def _sim_fetch(_symbol: str, interval: str, _limit: int):
+            return fresh_5m if interval == "5m" else bundle_pre
+
+        with patch.object(sim.market, "fetch_kline_bundle", AsyncMock(side_effect=_sim_fetch)):
+            with patch("app.services.opportunity_monitor._utc_now", return_value=promote_at):
+                with patch("app.services.opportunity_monitor.is_market_data_fresh", return_value=(True, 5, 600)):
+                    await sim.monitor_session(session)
         await session.commit()
         pos = (await session.execute(select(SimPosition).where(SimPosition.ai_setup_id == setup_id))).scalar_one()
         assert pos.status == "pending_entry"
@@ -133,8 +147,13 @@ async def test_limit_fill_only_after_order_creation_time():
             data_complete=True,
             interval="1m",
         )
-        with patch.object(sim.market, "fetch_kline_bundle", AsyncMock(return_value=bundle_post)):
-            await sim.monitor_session(session)
+        def _sim_fetch_post(_symbol: str, interval: str, _limit: int):
+            return fresh_5m if interval == "5m" else bundle_post
+
+        with patch.object(sim.market, "fetch_kline_bundle", AsyncMock(side_effect=_sim_fetch_post)):
+            with patch("app.services.opportunity_monitor._utc_now", return_value=promote_at):
+                with patch("app.services.opportunity_monitor.is_market_data_fresh", return_value=(True, 5, 600)):
+                    await sim.monitor_session(session)
         await session.commit()
         pos = (await session.execute(select(SimPosition).where(SimPosition.ai_setup_id == setup_id))).scalar_one()
         assert pos.status == "open"

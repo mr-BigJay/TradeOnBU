@@ -91,6 +91,7 @@ async def test_sim_blocks_fill_when_5m_incomplete_and_opportunity_tick_skipped()
         interval="5m",
     )
 
+    monitor_at = datetime.fromtimestamp((order_ms + INTERVAL_1M * 2) / 1000, tz=timezone.utc)
     worker = BotWorker()
 
     async def _fetch(symbol: str, interval: str, limit: int):
@@ -112,7 +113,9 @@ async def test_sim_blocks_fill_when_5m_incomplete_and_opportunity_tick_skipped()
                         "app.services.market_data.MarketDataService.fetch_kline_bundle",
                         AsyncMock(side_effect=_fetch),
                     ):
-                        await worker.run_cycle()
+                        with patch("app.services.opportunity_monitor._utc_now", return_value=monitor_at):
+                            with patch("app.services.paper_auto_trading._utc_now", return_value=monitor_at):
+                                await worker.run_cycle()
 
     async with SessionLocal() as session:
         pos = (

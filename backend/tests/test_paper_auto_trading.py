@@ -266,8 +266,21 @@ async def test_monitor_cancels_expired_auto_pending_before_fill():
             interval="1m",
         )
 
+        bundle_5m = KlineBundle(
+            closed=[bar],
+            forming=None,
+            gaps_detected=[],
+            gaps_remaining=[],
+            data_complete=True,
+            interval="5m",
+        )
+
+        def _fetch(_symbol: str, interval: str, _limit: int):
+            return bundle_5m if interval == "5m" else bundle
+
         mon = SimPositionMonitorService()
-        with patch.object(mon.market, "fetch_kline_bundle", AsyncMock(return_value=bundle)):
-            await mon.monitor_session(session)
+        with patch.object(mon.market, "fetch_kline_bundle", AsyncMock(side_effect=_fetch)):
+            with patch("app.services.opportunity_monitor.is_market_data_fresh", return_value=(True, 5, 600)):
+                await mon.monitor_session(session)
         pos = (await session.execute(select(SimPosition))).scalar_one()
         assert pos.status == "cancelled"

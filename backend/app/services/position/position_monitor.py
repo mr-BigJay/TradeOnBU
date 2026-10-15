@@ -6,9 +6,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.candles import Candle
+from app.config import get_effective_settings
 from app.domain.execution_order_policy import (
     bar_hits_limit,
     reconcile_pending_ai_limit_order,
+    verify_five_m_for_pending_fills,
 )
 from app.domain.time_utils import ensure_utc
 from app.models import SimPosition
@@ -231,17 +233,18 @@ class SimPositionMonitorService:
         limit = self._kline_limit_for_positions(positions)
         bundle = await self.market.fetch_kline_bundle(symbol, "1m", limit)
         closed = bundle.closed
-        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        from app.services.opportunity_monitor import _utc_now
+
+        now_ms = int(_utc_now().timestamp() * 1000)
+        settings_effective = get_effective_settings()
         needs_5m = any(p.status == "pending_entry" and p.ai_setup_id for p in positions)
         closed_5m: list[Candle] = []
         five_m_data_verified = False
+        five_m_verify_reason: str | None = None
+        bundle_5m: KlineBundle | None = None
         if needs_5m:
             bundle_5m = await self.market.fetch_kline_bundle(symbol, "5m", 120)
-            five_m_data_verified = bool(
-                bundle_5m.data_complete and bundle_5m.closed
-            )
-            if five_m_data_verified:
-                closed_5m = list(bundle_5m.closed)
+            closed_5m = list(bundle_5m.closed) if bundle_5m.closed else []
 
         processed = 0
 
@@ -266,6 +269,7 @@ class SimPositionMonitorService:
                 and pos.limit_entry_price
             ):
                 from app.models import AiProposedSetup
+                from app.services.paper_auto_trading import auto_paper_entry_still_valid
 
                 setup_row = (
                     await session.execute(
@@ -278,6 +282,34 @@ class SimPositionMonitorService:
                         created = ensure_utc(pos.created_at)
                         if created:
                             order_ms = int(created.timestamp() * 1000)
+                    if bundle_5m is not None:
+                        five_m_data_verified, five_m_verify_reason = verify_five_m_for_pending_fills(
+                            data_complete=bundle_5m.data_complete,
+                            closed_5m=closed_5m,
+                            now_ms=now_ms,
+                            configured_stale_seconds=settings_effective.market_data_stale_seconds,
+                            order_ms=order_ms,
+                            monitor_cursor_ms=setup_row.monitor_cursor_ms,
+                        )
+                    if not five_m_data_verified:
+                        still_ok, block_reason = await auto_paper_entry_still_valid(session, pos)
+                        if not still_ok:
+                            await self.positions.cancel_pending(session, pos.public_id, commit=False)
+                            pos.extra = {**pos.extra, "auto_paper_cancel_reason": block_reason}
+                            for bar in eligible:
+                                pos.last_processed_candle_ms = bar.time_ms
+                                processed += 1
+                            continue
+                        notes = dict(setup_row.objective_notes or {})
+                        notes["pending_fill_suspended"] = True
+                        notes["pending_fill_block_reason"] = (
+                            five_m_verify_reason or "missing_or_incomplete_5m_data"
+                        )
+                        setup_row.objective_notes = notes
+                        for bar in eligible:
+                            pos.last_processed_candle_ms = bar.time_ms
+                            processed += 1
+                        continue
                     outcome = reconcile_pending_ai_limit_order(
                         order_ms=order_ms,
                         direction=setup_row.direction,
@@ -288,6 +320,7 @@ class SimPositionMonitorService:
                         closed_5m=closed_5m,
                         now_ms=now_ms,
                         five_m_data_verified=five_m_data_verified,
+                        one_m_data_complete=bundle.data_complete,
                     )
                     if outcome.action == "suspend":
                         notes = dict(setup_row.objective_notes or {})
@@ -355,7 +388,9 @@ class SimPositionMonitorService:
                         if setup_row and not five_m_data_verified:
                             notes = dict(setup_row.objective_notes or {})
                             notes["pending_fill_suspended"] = True
-                            notes["pending_fill_block_reason"] = "missing_or_incomplete_5m_data"
+                            notes["pending_fill_block_reason"] = (
+                                five_m_verify_reason or "missing_or_incomplete_5m_data"
+                            )
                             setup_row.objective_notes = notes
                             prev_ms = bar.time_ms
                             pos.last_processed_candle_ms = bar.time_ms

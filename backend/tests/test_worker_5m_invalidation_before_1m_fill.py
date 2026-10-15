@@ -97,8 +97,12 @@ async def test_worker_invalidates_pending_on_5m_before_1m_limit_fill():
         data_complete=True,
         interval="5m",
     )
+    pre_inv_1m = [_1m(order_ms + INTERVAL_1M, o=98.0, h=99.0, l=97.5, c=98.5)] + [
+        _1m(five_m_open + i * INTERVAL_1M, o=98.0, h=99.0, l=97.5, c=98.5)
+        for i in range(1, 6)
+    ]
     bundle_1m = KlineBundle(
-        closed=[fill_1m],
+        closed=[*pre_inv_1m, fill_1m],
         forming=None,
         gaps_detected=[],
         gaps_remaining=[],

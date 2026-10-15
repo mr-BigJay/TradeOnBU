@@ -29,7 +29,10 @@ from app.domain.setup_lifecycle import (
     WAIT_SHORT,
     ready_state_for_direction,
 )
-from app.domain.execution_order_policy import reconcile_pending_ai_limit_order
+from app.domain.execution_order_policy import (
+    reconcile_pending_ai_limit_order,
+    verify_five_m_for_pending_fills,
+)
 from app.domain.setup_monitor_boundary import first_eligible_bar_open_ms
 from app.domain.time_utils import ensure_utc
 from app.models import AiProposedSetup, SimPosition
@@ -220,17 +223,35 @@ async def _monitor_pending_structural_invalidation(
         return
     pos = await _pending_position_for_setup(session, setup.setup_id)
     new_bars = _eligible_closed_bars_since_cursor(setup, bundle.closed, now_ms)
-    five_m_verified = bundle.data_complete and bool(bundle.closed)
-    closed_5m = list(bundle.closed) if five_m_verified else []
-
+    settings = get_effective_settings()
+    closed_5m = list(bundle.closed) if bundle.closed else []
+    order_ms_for_verify = 0
     if pos:
-        order_ms = pos.monitor_from_ms or 0
-        if order_ms <= 0 and pos.created_at:
+        order_ms_for_verify = pos.monitor_from_ms or 0
+        if order_ms_for_verify <= 0 and pos.created_at:
             created = ensure_utc(pos.created_at)
             if created:
-                order_ms = int(created.timestamp() * 1000)
+                order_ms_for_verify = int(created.timestamp() * 1000)
+    five_m_verified, _five_m_reason = verify_five_m_for_pending_fills(
+        data_complete=bundle.data_complete,
+        closed_5m=closed_5m,
+        now_ms=now_ms,
+        configured_stale_seconds=settings.market_data_stale_seconds,
+        order_ms=order_ms_for_verify,
+        monitor_cursor_ms=setup.monitor_cursor_ms,
+    )
+
+    if pos:
+        order_ms = order_ms_for_verify
         bundle_1m = await market.fetch_kline_bundle(setup.symbol, "1m", 120)
-        closed_1m = list(bundle_1m.closed) if bundle_1m.data_complete and bundle_1m.closed else []
+        closed_1m = list(bundle_1m.closed) if bundle_1m.closed else []
+        if not five_m_verified:
+            notes = dict(setup.objective_notes or {})
+            notes["pending_fill_suspended"] = True
+            notes["pending_fill_block_reason"] = _five_m_reason or "missing_or_incomplete_5m_data"
+            setup.objective_notes = notes
+            setup.last_monitor_at = now
+            return
         outcome = reconcile_pending_ai_limit_order(
             order_ms=order_ms,
             direction=setup.direction,
@@ -240,7 +261,8 @@ async def _monitor_pending_structural_invalidation(
             closed_1m=closed_1m,
             closed_5m=closed_5m,
             now_ms=now_ms,
-            five_m_data_verified=five_m_verified,
+            five_m_data_verified=True,
+            one_m_data_complete=bundle_1m.data_complete,
         )
         if outcome.action == "suspend":
             notes = dict(setup.objective_notes or {})
@@ -250,8 +272,6 @@ async def _monitor_pending_structural_invalidation(
             setup.last_monitor_at = now
             return
         if outcome.action == "fill":
-            for bar in new_bars:
-                setup.monitor_cursor_ms = bar.time_ms
             setup.last_monitor_at = now
             return
         if outcome.action == "cancel" and outcome.invalidation_bar_5m is not None:
