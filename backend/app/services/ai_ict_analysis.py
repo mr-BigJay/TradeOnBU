@@ -309,6 +309,15 @@ async def _persist_run_draft(run_id: int, draft: _RunDraft, *, symbol: str) -> A
                 session, run_id=run_id, symbol=symbol, structured=draft.structured
             )
             draft.structured = _merge_artifacts(draft.structured, {"setup_persistence": setup_meta})
+            # NO_TRADE / WAIT remains an AI NO_TRADE for auditing. Separately
+            # store the conditional idea for deterministic post-analysis watching.
+            from app.services.ai_conditional_plans import persist_conditional_plan
+
+            watch_meta = await persist_conditional_plan(
+                session, run_id=run_id, symbol=symbol, structured=draft.structured
+            )
+            if watch_meta.get("reason") != "not_conditional_wait":
+                draft.structured = _merge_artifacts(draft.structured, {"conditional_watch": watch_meta})
             run.structured = draft.structured
         cfg = await get_or_create_settings(session)
         record_run_outcome(cfg, run.status, draft.error_detail, trigger=run.trigger or "scheduled")
