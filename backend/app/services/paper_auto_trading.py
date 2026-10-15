@@ -32,7 +32,9 @@ def setup_eligible_for_auto_entry(setup: AiProposedSetup, *, now: datetime | Non
     now = now or _utc_now()
     if setup.status != "open":
         return False, f"setup_status_{setup.status}"
-    if setup.expires_at is not None and setup.expires_at <= now:
+    # SQLite returns naive datetimes even for timezone=True columns.
+    expiry = setup.expires_at
+    if expiry is not None and (expiry if expiry.tzinfo else expiry.replace(tzinfo=timezone.utc)) <= now:
         return False, "setup_expired"
     entry = setup.entry_price
     sl = setup.stop_loss
@@ -77,6 +79,7 @@ def build_ict_entry_audit_snapshot(
         "poi_reaction_clear": structured.get("poi_reaction_clear"),
         "structural_confirmation_clear": structured.get("structural_confirmation_clear"),
         "logical_invalidation_clear": structured.get("logical_invalidation_clear"),
+        "watch_provenance": structured.get("watch_provenance"),
     }
 
 
