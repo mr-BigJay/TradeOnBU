@@ -296,6 +296,9 @@ async def _persist_run_draft(run_id: int, draft: _RunDraft, *, symbol: str) -> A
         run.status = draft.status
         run.model_slug = draft.model_slug
         run.decision = draft.decision
+        structured = draft.structured or {}
+        run.final_ai_decision = str(structured.get("final_ai_decision") or draft.decision or "NO_TRADE").upper()
+        run.setup_mode = str(structured.get("setup_mode") or "flat").lower()
         run.report_fa = draft.report_fa
         run.structured = draft.structured
         run.validation = draft.validation
@@ -313,20 +316,18 @@ async def _persist_run_draft(run_id: int, draft: _RunDraft, *, symbol: str) -> A
         cfg = await get_or_create_settings(session)
         record_run_outcome(cfg, run.status, draft.error_detail, trigger=run.trigger or "scheduled")
         if setup_row is not None and draft.status.startswith("completed"):
-            from app.services.paper_auto_trading import maybe_auto_open_paper_position
-
-            auto_meta = await maybe_auto_open_paper_position(
-                session,
-                run_id=run_id,
-                setup=setup_row,
-                validation=draft.validation or {},
-                structured=draft.structured or {},
-                symbol=symbol,
-                commit=False,
+            draft.structured = _merge_artifacts(
+                draft.structured,
+                {
+                    "opportunity": {
+                        "setup_id": setup_row.setup_id,
+                        "lifecycle_state": setup_row.lifecycle_state,
+                        "setup_mode": setup_row.setup_mode,
+                        "note": "Paper execution deferred to opportunity monitor until READY + objective confirmations.",
+                    }
+                },
             )
-            if auto_meta.get("attempted"):
-                draft.structured = _merge_artifacts(draft.structured, {"auto_paper": auto_meta})
-                run.structured = draft.structured
+            run.structured = draft.structured
         await session.commit()
         await session.refresh(run)
         return run

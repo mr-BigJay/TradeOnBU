@@ -52,6 +52,17 @@ SIGNAL_MIGRATIONS = [
     "ALTER TABLE sim_positions ADD COLUMN quantity_btc FLOAT",
     "ALTER TABLE sim_positions ADD COLUMN execution_state VARCHAR(32) DEFAULT 'normal'",
     "ALTER TABLE sim_position_settings ADD COLUMN auto_open_paper_positions BOOLEAN DEFAULT 0",
+    "ALTER TABLE ai_analysis_runs ADD COLUMN final_ai_decision VARCHAR(16)",
+    "ALTER TABLE ai_analysis_runs ADD COLUMN setup_mode VARCHAR(16)",
+    "ALTER TABLE ai_proposed_setups ADD COLUMN lifecycle_state VARCHAR(32) DEFAULT 'WAIT_LONG'",
+    "ALTER TABLE ai_proposed_setups ADD COLUMN setup_mode VARCHAR(16) DEFAULT 'conditional'",
+    "ALTER TABLE ai_proposed_setups ADD COLUMN final_ai_decision VARCHAR(16)",
+    "ALTER TABLE ai_proposed_setups ADD COLUMN conditional_plan JSON",
+    "ALTER TABLE ai_proposed_setups ADD COLUMN confirmation_state JSON",
+    "ALTER TABLE ai_proposed_setups ADD COLUMN last_monitor_at DATETIME",
+    "ALTER TABLE ai_proposed_setups ADD COLUMN last_rejection_reason VARCHAR(64)",
+    "ALTER TABLE ai_proposed_setups ADD COLUMN last_validation_result JSON",
+    "ALTER TABLE ai_proposed_setups ADD COLUMN monitor_cursor_ms INTEGER DEFAULT 0",
 ]
 
 

@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     min_net_rr: float = 2.0
 
     scan_interval_seconds: int = 300
+    opportunity_monitor_interval_seconds: int = 60
 
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""

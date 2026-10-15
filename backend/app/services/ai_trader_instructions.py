@@ -39,7 +39,8 @@ If any of the four is missing or ambiguous → **prefer NO_TRADE** or **conditio
 - Use ~0.80% move to TP1 as a **scalp smell test** when TP is NOT backed by HTF liquidity — not as automatic rejection of every sub-0.8% target.
 
 When immediate entry is NOT valid yet, do NOT respond with only NO_TRADE.
-Define the trading plan as a **conditional setup** (final_ai_decision WAIT, decision NO_TRADE for persistence until triggered):
+Define the trading plan as a **conditional setup** (final_ai_decision WAIT, decision NO_TRADE).
+The backend persists conditional plans as monitored WAIT_LONG/WAIT_SHORT rows (not discarded):
 
 - potential_direction: LONG or SHORT
 - conditional_entry_zone_low / conditional_entry_zone_high (or entry_zone_* for the planned POI)

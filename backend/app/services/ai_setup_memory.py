@@ -10,8 +10,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.candle_utils import candle_close_ms, interval_ms
 from app.domain.candles import Candle
+from app.domain.setup_lifecycle import SETUP_MODE_CONDITIONAL, SETUP_MODE_IMMEDIATE, wait_state_for_direction
 from app.models import AiAnalysisRun, AiProposedSetup
+from app.services.conditional_setup import apply_conditional_plan_to_setup_row, parse_conditional_plan
 from app.services.market_data import KlineBundle, MarketDataService
+from app.services.ai_trader_report import _has_conditional_plan
 
 LIFECYCLE_ENTRY_NOT_REACHED = "entry_not_reached"
 LIFECYCLE_ENTRY_TOUCHED = "entry_touched"
@@ -727,6 +730,66 @@ async def _find_duplicate_open(
     return None
 
 
+async def _persist_conditional_setup(
+    session: AsyncSession,
+    *,
+    run_id: int,
+    symbol: str,
+    structured: dict[str, Any],
+) -> tuple[AiProposedSetup | None, dict[str, Any]]:
+    meta: dict[str, Any] = {"created": False, "updated": False, "skipped": False}
+    plan, err = parse_conditional_plan(structured)
+    if not plan:
+        meta["skipped"] = True
+        meta["reason"] = err or "conditional_parse_failed"
+        return None, meta
+
+    direction = plan["potential_direction"]
+    dup = await _find_duplicate_open(session, symbol=symbol, direction=direction, entry=plan["proposed_entry_mid"])
+    if dup:
+        _store_original_forecast(dup)
+        dup.structured_snapshot = structured
+        dup.conditional_plan = plan
+        dup.confirmation_state = {
+            "required": plan["required_confirmations"],
+            "completed": dup.confirmation_state.get("completed", []) if dup.confirmation_state else [],
+            "missing": [t for t in plan["required_confirmations"] if t not in (dup.confirmation_state or {}).get("completed", [])],
+        }
+        meta["updated"] = True
+        meta["setup_id"] = dup.setup_id
+        meta["reason"] = "conditional_revision"
+        await session.flush()
+        return dup, meta
+
+    expires_at = datetime.fromisoformat(plan["expires_at"])
+    row = AiProposedSetup(
+        setup_id=str(uuid.uuid4()),
+        run_id=run_id,
+        symbol=symbol,
+        direction=direction,
+        status="open",
+        thesis_fa=structured.get("trade_reason") or structured.get("structure_summary"),
+        expires_at=expires_at,
+        structured_snapshot=structured,
+        objective_notes={
+            "disclaimer": "Conditional ICT plan — objective monitor confirms before paper execution.",
+            "lifecycle_phase": LIFECYCLE_ENTRY_NOT_REACHED,
+            "validity_status": VALIDITY_ACTIVE,
+            "outcome_tracking_status": TRACKING_INCOMPLETE,
+        },
+        last_tracked_candle_ms=0,
+        monitor_cursor_ms=0,
+    )
+    apply_conditional_plan_to_setup_row(row, plan=plan, run_id=run_id, structured=structured)
+    session.add(row)
+    await session.flush()
+    _store_original_forecast(row)
+    meta["created"] = True
+    meta["setup_id"] = row.setup_id
+    meta["reason"] = "conditional_created"
+    return row, meta
+
+
 async def create_setup_from_structured(
     session: AsyncSession,
     *,
@@ -736,6 +799,9 @@ async def create_setup_from_structured(
 ) -> tuple[AiProposedSetup | None, dict[str, Any]]:
     """Returns (row or None, persistence_meta for artifacts)."""
     meta: dict[str, Any] = {"created": False, "updated": False, "skipped": False}
+    if _has_conditional_plan(structured):
+        return await _persist_conditional_setup(session, run_id=run_id, symbol=symbol, structured=structured)
+
     decision = str(structured.get("decision", "NO_TRADE")).upper()
     if decision not in ("LONG", "SHORT"):
         meta["skipped"] = True
@@ -809,6 +875,16 @@ async def create_setup_from_structured(
         meta["reason"] = "duplicate_open_requires_distinct_new_setup"
         return None, meta
 
+    from app.services.conditional_setup import normalize_confirmation_tokens
+
+    conf_text = str(structured.get("confirmation_required") or "")
+    required_conf = normalize_confirmation_tokens(conf_text) if conf_text else ["entry_zone_touch", "liquidity_sweep", "mss"]
+    zone_lo = _parse_float(proposed.get("entry_zone_low") or structured.get("entry_zone_low"))
+    zone_hi = _parse_float(proposed.get("entry_zone_high") or structured.get("entry_zone_high"))
+    if zone_lo is None or zone_hi is None:
+        zone_lo = entry * 0.999
+        zone_hi = entry * 1.001
+
     row = AiProposedSetup(
         setup_id=str(uuid.uuid4()),
         run_id=run_id,
@@ -817,21 +893,27 @@ async def create_setup_from_structured(
         status="open",
         thesis_fa=proposed.get("thesis_fa") or structured.get("thesis_fa") or structured.get("structure_summary"),
         entry_price=entry,
-        entry_zone_low=_parse_float(proposed.get("entry_zone_low") or structured.get("entry_zone_low")),
-        entry_zone_high=_parse_float(proposed.get("entry_zone_high") or structured.get("entry_zone_high")),
+        entry_zone_low=zone_lo,
+        entry_zone_high=zone_hi,
         stop_loss=sl,
         take_profit=tp,
         invalidation=proposed.get("invalidation") or structured.get("invalidation"),
         invalidation_level=_parse_float(proposed.get("invalidation_level") or structured.get("invalidation_level")),
         expires_at=_utc() + timedelta(hours=expires_hours),
         structured_snapshot=structured,
+        setup_mode=SETUP_MODE_IMMEDIATE,
+        final_ai_decision=decision,
+        lifecycle_state=wait_state_for_direction(decision),
+        confirmation_state={"required": required_conf, "completed": [], "missing": list(required_conf)},
+        conditional_plan={},
         objective_notes={
-            "disclaimer": "Touches are objective price observations, not paper fills.",
+            "disclaimer": "Immediate ICT plan — objective monitor confirms before paper execution.",
             "lifecycle_phase": LIFECYCLE_ENTRY_NOT_REACHED,
             "validity_status": VALIDITY_ACTIVE,
             "outcome_tracking_status": TRACKING_INCOMPLETE,
         },
         last_tracked_candle_ms=0,
+        monitor_cursor_ms=0,
     )
     session.add(row)
     await session.flush()

@@ -202,6 +202,26 @@ class AiProposedSetup(Base):
     )
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_tracked_candle_ms: Mapped[int] = mapped_column(Integer, default=0)
+    lifecycle_state: Mapped[str] = mapped_column(String(32), index=True, default="WAIT_LONG")
+    setup_mode: Mapped[str] = mapped_column(String(16), default="conditional")
+    final_ai_decision: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    conditional_plan: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    confirmation_state: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    last_monitor_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_rejection_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_validation_result: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    monitor_cursor_ms: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class IctSetupAuditEvent(Base):
+    __tablename__ = "ict_setup_audit_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    setup_id: Mapped[str] = mapped_column(String(36), index=True)
+    event_type: Mapped[str] = mapped_column(String(64), index=True)
+    reason_code: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
 
 
 class AiAnalysisRun(Base):
@@ -212,6 +232,8 @@ class AiAnalysisRun(Base):
     trigger: Mapped[str] = mapped_column(String(32), default="scheduled")
     model_slug: Mapped[str | None] = mapped_column(String(64), nullable=True)
     decision: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    final_ai_decision: Mapped[str | None] = mapped_column(String(16), nullable=True, index=True)
+    setup_mode: Mapped[str | None] = mapped_column(String(16), nullable=True, index=True)
     report_fa: Mapped[str | None] = mapped_column(Text, nullable=True)
     structured: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     validation: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
