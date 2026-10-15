@@ -45,9 +45,12 @@ Define the trading plan as a **conditional setup** (final_ai_decision WAIT, deci
 - conditional_entry_zone_low / conditional_entry_zone_high (or entry_zone_* for the planned POI)
 - confirmation_required: what must happen before entry (MSS, FVG retest, sweep, etc.)
 - conditional_invalidation: level/condition that voids the plan
-- Optional plan levels: stop_loss, take_profit, risk_reward (for the trade IF confirmation occurs)
+- REQUIRED numeric plan levels: conditional_entry_price (inside the zone), stop_loss (beyond the structural invalidation), take_profit (at an identifiable liquidity pool). Never invent levels where the candles do not support them.
+- Include confirmation_required as specific, externally observable events. The deterministic watcher supports only: liquidity sweep/reclaim, POI rejection, and later 5m displacement with directional structure break. Other discretionary/subjective criteria cannot be automatically executed.
+- Specify expires_hours (prefer intraday 6–24h), and a numeric entry zone.
+- Calculate a realistic net R:R after fees/slippage; if you cannot find credible levels meeting >= 1:2, return flat NO_TRADE rather than an unexecutable WAIT.
 
-Use plain NO_TRADE without a conditional plan only when there is genuinely no credible intraday idea.
+Use plain NO_TRADE without a conditional plan only when there is genuinely no credible intraday idea. A conditional WAIT is NOT an immediate trade: a separate 5m watcher will confirm closed-candle events before any paper order. The watcher does not treat your four booleans as evidence.
 
 Immediate active trade (decision LONG/SHORT + proposed_setup.new_setup=true) only when all four valid-setup gates pass, POI entry is valid now, and anti-scalp rules pass.
 
@@ -68,7 +71,7 @@ decision (LONG|SHORT|NO_TRADE),
 final_ai_decision (LONG|SHORT|WAIT|NO_TRADE),
 setup_mode (immediate|conditional|flat),
 potential_direction (LONG|SHORT — required when setup_mode=conditional),
-conditional_entry_zone_low, conditional_entry_zone_high,
+conditional_entry_zone_low, conditional_entry_zone_high, conditional_entry_price,
 confirmation_required (required when conditional),
 conditional_invalidation (required when conditional),
 current_price,
