@@ -10,7 +10,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.candle_utils import candle_close_ms, interval_ms
 from app.domain.candles import Candle
-from app.domain.setup_lifecycle import SETUP_MODE_CONDITIONAL, SETUP_MODE_IMMEDIATE, wait_state_for_direction
+from app.domain.setup_lifecycle import (
+    SETUP_MODE_CONDITIONAL,
+    SETUP_MODE_IMMEDIATE,
+    ready_state_for_direction,
+    wait_state_for_direction,
+)
 from app.models import AiAnalysisRun, AiProposedSetup
 from app.services.conditional_setup import apply_conditional_plan_to_setup_row, parse_conditional_plan
 from app.services.market_data import KlineBundle, MarketDataService
@@ -750,10 +755,13 @@ async def _persist_conditional_setup(
         _store_original_forecast(dup)
         dup.structured_snapshot = structured
         dup.conditional_plan = plan
+        seq = plan["confirmation_sequence"]
         dup.confirmation_state = {
-            "required": plan["required_confirmations"],
-            "completed": dup.confirmation_state.get("completed", []) if dup.confirmation_state else [],
-            "missing": [t for t in plan["required_confirmations"] if t not in (dup.confirmation_state or {}).get("completed", [])],
+            "sequence": list(seq),
+            "required": list(seq),
+            "completed": (dup.confirmation_state or {}).get("completed") or [],
+            "missing": [t for t in seq if t not in ((dup.confirmation_state or {}).get("completed") or [])],
+            "confirmation_timestamps": (dup.confirmation_state or {}).get("confirmation_timestamps") or {},
         }
         meta["updated"] = True
         meta["setup_id"] = dup.setup_id
@@ -875,15 +883,27 @@ async def create_setup_from_structured(
         meta["reason"] = "duplicate_open_requires_distinct_new_setup"
         return None, meta
 
-    from app.services.conditional_setup import normalize_confirmation_tokens
+    from app.services.conditional_setup import resolve_immediate_confirmation_sequence
+    from app.domain.setup_monitor_boundary import first_eligible_bar_open_ms
 
-    conf_text = str(structured.get("confirmation_required") or "")
-    required_conf = normalize_confirmation_tokens(conf_text) if conf_text else ["entry_zone_touch", "liquidity_sweep", "mss"]
+    inv_level = _parse_float(proposed.get("invalidation_level") or structured.get("structural_invalidation_level") or structured.get("invalidation_level"))
+    sequence, seq_err = resolve_immediate_confirmation_sequence(structured)
+    monitoring_enabled = True
+    if not sequence or inv_level is None:
+        monitoring_enabled = False
+        sequence = []
+        lifecycle_immediate = ready_state_for_direction(decision)
+    else:
+        lifecycle_immediate = wait_state_for_direction(decision)
+
     zone_lo = _parse_float(proposed.get("entry_zone_low") or structured.get("entry_zone_low"))
     zone_hi = _parse_float(proposed.get("entry_zone_high") or structured.get("entry_zone_high"))
     if zone_lo is None or zone_hi is None:
         zone_lo = entry * 0.999
         zone_hi = entry * 1.001
+
+    created = _utc()
+    boundary = first_eligible_bar_open_ms(created, "5m")
 
     row = AiProposedSetup(
         setup_id=str(uuid.uuid4()),
@@ -898,14 +918,23 @@ async def create_setup_from_structured(
         stop_loss=sl,
         take_profit=tp,
         invalidation=proposed.get("invalidation") or structured.get("invalidation"),
-        invalidation_level=_parse_float(proposed.get("invalidation_level") or structured.get("invalidation_level")),
+        invalidation_level=inv_level,
         expires_at=_utc() + timedelta(hours=expires_hours),
         structured_snapshot=structured,
         setup_mode=SETUP_MODE_IMMEDIATE,
         final_ai_decision=decision,
-        lifecycle_state=wait_state_for_direction(decision),
-        confirmation_state={"required": required_conf, "completed": [], "missing": list(required_conf)},
-        conditional_plan={},
+        lifecycle_state=lifecycle_immediate,
+        monitoring_enabled=monitoring_enabled,
+        monitor_from_ms=boundary if monitoring_enabled else 0,
+        monitor_cursor_ms=(boundary - 1) if monitoring_enabled else 0,
+        confirmation_state={
+            "sequence": list(sequence),
+            "required": list(sequence),
+            "completed": [],
+            "missing": list(sequence),
+            "confirmation_timestamps": {},
+        },
+        conditional_plan={"confirmation_sequence": sequence, "confirmation_type": structured.get("confirmation_type")},
         objective_notes={
             "disclaimer": "Immediate ICT plan — objective monitor confirms before paper execution.",
             "lifecycle_phase": LIFECYCLE_ENTRY_NOT_REACHED,
@@ -913,7 +942,6 @@ async def create_setup_from_structured(
             "outcome_tracking_status": TRACKING_INCOMPLETE,
         },
         last_tracked_candle_ms=0,
-        monitor_cursor_ms=0,
     )
     session.add(row)
     await session.flush()

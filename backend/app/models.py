@@ -50,6 +50,8 @@ class SystemState(Base):
     worker_lock_until_ms: Mapped[int] = mapped_column(Integer, default=0)
     ai_analysis_lock_owner: Mapped[str | None] = mapped_column(String(64), nullable=True)
     ai_analysis_lock_until_ms: Mapped[int] = mapped_column(Integer, default=0)
+    opportunity_monitor_lock_owner: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    opportunity_monitor_lock_until_ms: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class RuntimeSettings(Base):
@@ -202,8 +204,10 @@ class AiProposedSetup(Base):
     )
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_tracked_candle_ms: Mapped[int] = mapped_column(Integer, default=0)
-    lifecycle_state: Mapped[str] = mapped_column(String(32), index=True, default="WAIT_LONG")
-    setup_mode: Mapped[str] = mapped_column(String(16), default="conditional")
+    lifecycle_state: Mapped[str | None] = mapped_column(String(32), index=True, nullable=True)
+    setup_mode: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    monitoring_enabled: Mapped[bool] = mapped_column(default=True)
+    monitor_from_ms: Mapped[int] = mapped_column(Integer, default=0)
     final_ai_decision: Mapped[str | None] = mapped_column(String(16), nullable=True)
     conditional_plan: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     confirmation_state: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)

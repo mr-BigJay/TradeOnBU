@@ -8,8 +8,10 @@ from app.domain.candles import Candle
 
 @dataclass
 class ConfirmationProgress:
+    sequence: list[str] = field(default_factory=list)
     completed: list[str] = field(default_factory=list)
     missing: list[str] = field(default_factory=list)
+    confirmation_timestamps: dict[str, int] = field(default_factory=dict)
     invalidated: bool = False
     invalidation_reason: str | None = None
     last_bar_ms: int = 0
@@ -98,7 +100,7 @@ def _avg_range(candles: list[Candle], n: int = 10) -> float:
     return sum(c.high - c.low for c in window) / len(window)
 
 
-def _fvg_retest_from_snapshot(bar: Candle, structured: dict[str, Any], direction: str) -> bool:
+def _fvg_retest_from_snapshot(bar: Candle, structured: dict[str, Any]) -> bool:
     overlays = structured.get("chart_overlays") or {}
     zones = overlays.get("fvg_zones") or structured.get("ict_fvg") or []
     if not isinstance(zones, list):
@@ -119,87 +121,132 @@ def _fvg_retest_from_snapshot(bar: Candle, structured: dict[str, Any], direction
     return False
 
 
-def _check_token(
+def _token_on_bar(
     token: str,
     *,
     direction: str,
-    candles: list[Candle],
+    window: list[Candle],
     zone_lo: float,
     zone_hi: float,
     structured: dict[str, Any],
 ) -> bool:
-    bar = candles[-1]
+    if not window:
+        return False
+    bar = window[-1]
     d = direction.upper()
     if token == "entry_zone_touch":
-        return any(_bar_in_zone(c, zone_lo, zone_hi) for c in candles)
+        return _bar_in_zone(bar, zone_lo, zone_hi)
     if token == "liquidity_sweep":
-        return _liquidity_sweep_long(candles) if d == "LONG" else _liquidity_sweep_short(candles)
+        return _liquidity_sweep_long(window) if d == "LONG" else _liquidity_sweep_short(window)
     if token == "mss":
-        return _mss_long(candles) if d == "LONG" else _mss_short(candles)
+        return _mss_long(window) if d == "LONG" else _mss_short(window)
     if token == "bos":
-        return _bos_long(candles) if d == "LONG" else _bos_short(candles)
+        return _bos_long(window) if d == "LONG" else _bos_short(window)
     if token == "displacement":
-        avg = _avg_range(candles)
+        avg = _avg_range(window)
         return _displacement_long(bar, avg) if d == "LONG" else _displacement_short(bar, avg)
     if token == "fvg_retest":
-        return _fvg_retest_from_snapshot(bar, structured, direction)
+        return _fvg_retest_from_snapshot(bar, structured)
     if token == "order_block_retest":
         return _bar_in_zone(bar, zone_lo, zone_hi)
     return False
 
 
-def evaluate_confirmations(
+def _check_invalidation_on_bar(
+    bar: Candle,
     *,
     direction: str,
-    required: list[str],
-    completed_prior: list[str],
-    candles: list[Candle],
+    invalidation_level: float | None,
+) -> bool:
+    if invalidation_level is None:
+        return False
+    d = direction.upper()
+    if d == "LONG" and bar.close < invalidation_level:
+        return True
+    if d == "SHORT" and bar.close > invalidation_level:
+        return True
+    return False
+
+
+def next_sequence_token(sequence: list[str], completed: list[str]) -> str | None:
+    for tok in sequence:
+        if tok not in completed:
+            return tok
+    return None
+
+
+def sequence_order_valid(sequence: list[str], timestamps: dict[str, int]) -> bool:
+    last_ms = -1
+    for tok in sequence:
+        if tok not in timestamps:
+            return False
+        ms = timestamps[tok]
+        if ms < last_ms:
+            return False
+        last_ms = ms
+    return True
+
+
+def process_bar_sequential(
+    *,
+    direction: str,
+    sequence: list[str],
+    confirmation_state: dict[str, Any],
+    bar: Candle,
+    window: list[Candle],
     zone_lo: float,
     zone_hi: float,
     invalidation_level: float | None,
     structured: dict[str, Any],
+    monitor_from_ms: int,
 ) -> ConfirmationProgress:
-    """Evaluate objective confirmations on closed candles only (no look-ahead)."""
+    """Evaluate one closed bar; confirmations must occur in order after monitor_from_ms."""
+    timestamps = dict(confirmation_state.get("confirmation_timestamps") or {})
+    completed = [t for t in sequence if t in timestamps]
     progress = ConfirmationProgress(
-        completed=list(completed_prior),
-        missing=[t for t in required if t not in completed_prior],
+        sequence=list(sequence),
+        completed=completed,
+        missing=[t for t in sequence if t not in completed],
+        confirmation_timestamps=timestamps,
+        last_bar_ms=bar.time_ms,
     )
-    if not candles:
-        progress.missing = list(required)
+
+    if bar.time_ms < monitor_from_ms:
         return progress
 
-    progress.last_bar_ms = candles[-1].time_ms
-    d = direction.upper()
+    if _check_invalidation_on_bar(bar, direction=direction, invalidation_level=invalidation_level):
+        progress.invalidated = True
+        progress.invalidation_reason = "structural_invalidation_level_breached"
+        return progress
 
-    if invalidation_level is not None:
-        for bar in candles:
-            if d == "LONG" and bar.close < invalidation_level:
-                progress.invalidated = True
-                progress.invalidation_reason = "structural_invalidation_level_breached"
-                return progress
-            if d == "SHORT" and bar.close > invalidation_level:
-                progress.invalidated = True
-                progress.invalidation_reason = "structural_invalidation_level_breached"
-                return progress
+    nxt = next_sequence_token(sequence, completed)
+    if nxt is None:
+        progress.completed = list(sequence)
+        progress.missing = []
+        return progress
 
-    completed = set(progress.completed)
-    for token in required:
-        if token in completed:
-            continue
-        if _check_token(
-            token,
-            direction=direction,
-            candles=candles,
-            zone_lo=zone_lo,
-            zone_hi=zone_hi,
-            structured=structured,
-        ):
-            completed.add(token)
+    if _token_on_bar(
+        nxt,
+        direction=direction,
+        window=window,
+        zone_lo=zone_lo,
+        zone_hi=zone_hi,
+        structured=structured,
+    ):
+        timestamps[nxt] = bar.time_ms
+        completed = [t for t in sequence if t in timestamps]
+        progress.confirmation_timestamps = timestamps
+        progress.completed = completed
+        progress.missing = [t for t in sequence if t not in completed]
 
-    progress.completed = [t for t in required if t in completed]
-    progress.missing = [t for t in required if t not in completed]
     return progress
 
 
 def all_required_met(progress: ConfirmationProgress) -> bool:
-    return not progress.missing and not progress.invalidated
+    if progress.invalidated:
+        return False
+    if progress.missing:
+        return False
+    if not progress.sequence:
+        return False
+    return sequence_order_valid(progress.sequence, progress.confirmation_timestamps)

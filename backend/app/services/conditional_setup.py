@@ -1,14 +1,33 @@
 from __future__ import annotations
 
-import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from app.domain.setup_lifecycle import SETUP_MODE_CONDITIONAL, wait_state_for_direction
+from app.domain.setup_monitor_boundary import first_eligible_bar_open_ms
 from app.services.ai_trader_report import _has_conditional_plan
 
 MIN_EXPIRES_HOURS = 1.0
 MAX_EXPIRES_HOURS = 168.0
+
+ALLOWED_CONFIRMATION_TOKENS = frozenset(
+    {
+        "liquidity_sweep",
+        "mss",
+        "bos",
+        "fvg_retest",
+        "order_block_retest",
+        "entry_zone_touch",
+        "displacement",
+    }
+)
+
+CONFIRMATION_PROFILES: dict[str, list[str]] = {
+    "sweep_mss_poi": ["liquidity_sweep", "mss", "entry_zone_touch"],
+    "sweep_bos_poi": ["liquidity_sweep", "bos", "entry_zone_touch"],
+    "bos_fvg_retest": ["bos", "fvg_retest", "entry_zone_touch"],
+    "mss_fvg_retest": ["mss", "fvg_retest", "entry_zone_touch"],
+}
 
 
 def _validate_levels(direction: str, entry: float, sl: float, tp: float) -> tuple[bool, str | None]:
@@ -29,43 +48,27 @@ def _parse_float(val: Any) -> float | None:
         if val is None:
             return None
         f = float(val)
-        if f != f or f <= 0:  # NaN
+        if f != f or f <= 0:
             return None
         return f
     except (TypeError, ValueError):
         return None
 
 
-def normalize_confirmation_tokens(text: str) -> list[str]:
-    """Map free-text confirmation hints to objective monitor tokens."""
-    t = text.lower()
-    tokens: list[str] = []
-    if re.search(r"\bmss\b|market structure shift", t):
-        tokens.append("mss")
-    if re.search(r"\bbos\b|break of structure", t):
-        tokens.append("bos")
-    if re.search(r"\bfvg\b|fair value gap", t):
-        tokens.append("fvg_retest")
-    if re.search(r"\bob\b|order block", t):
-        tokens.append("order_block_retest")
-    if re.search(r"sweep|liquidity", t):
-        tokens.append("liquidity_sweep")
-    if re.search(r"displacement", t):
-        tokens.append("displacement")
-    if re.search(r"poi|point of interest|retest", t):
-        tokens.append("entry_zone_touch")
-    if not tokens:
-        tokens = ["entry_zone_touch", "liquidity_sweep", "mss"]
-    if "entry_zone_touch" not in tokens:
-        tokens.insert(0, "entry_zone_touch")
-    # preserve order, unique
-    seen: set[str] = set()
-    out: list[str] = []
-    for tok in tokens:
-        if tok not in seen:
-            seen.add(tok)
-            out.append(tok)
-    return out
+def resolve_confirmation_sequence(structured: dict[str, Any]) -> tuple[list[str] | None, str | None]:
+    """Fail closed: require confirmation_type profile or explicit confirmation_sequence array."""
+    ctype = structured.get("confirmation_type")
+    if isinstance(ctype, str) and ctype in CONFIRMATION_PROFILES:
+        return list(CONFIRMATION_PROFILES[ctype]), None
+
+    seq = structured.get("confirmation_sequence")
+    if isinstance(seq, list) and len(seq) >= 2:
+        tokens = [str(x).strip() for x in seq]
+        if all(t in ALLOWED_CONFIRMATION_TOKENS for t in tokens):
+            return tokens, None
+        return None, "unsupported_confirmation_sequence_token"
+
+    return None, "missing_structured_confirmation_type"
 
 
 def parse_conditional_plan(structured: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
@@ -85,14 +88,8 @@ def parse_conditional_plan(structured: dict[str, Any]) -> tuple[dict[str, Any] |
     if lo is None or hi is None or lo >= hi:
         return None, "invalid_entry_zone"
 
-    sl = _parse_float(
-        structured.get("proposed_stop_loss")
-        or structured.get("stop_loss")
-    )
-    tp = _parse_float(
-        structured.get("proposed_take_profit")
-        or structured.get("take_profit")
-    )
+    sl = _parse_float(structured.get("proposed_stop_loss") or structured.get("stop_loss"))
+    tp = _parse_float(structured.get("proposed_take_profit") or structured.get("take_profit"))
     if sl is None or tp is None:
         return None, "missing_proposed_levels"
 
@@ -105,12 +102,12 @@ def parse_conditional_plan(structured: dict[str, Any]) -> tuple[dict[str, Any] |
         structured.get("structural_invalidation_level")
         or structured.get("invalidation_level")
     )
-    conf_text = str(
-        structured.get("confirmation_required")
-        or structured.get("confirmation_conditions")
-        or ""
-    )
-    required = normalize_confirmation_tokens(conf_text)
+    if inv_level is None:
+        return None, "missing_structural_invalidation_level"
+
+    sequence, seq_err = resolve_confirmation_sequence(structured)
+    if not sequence:
+        return None, seq_err or "missing_confirmation_sequence"
 
     expires_hours = structured.get("expires_hours") or 48
     try:
@@ -124,31 +121,33 @@ def parse_conditional_plan(structured: dict[str, Any]) -> tuple[dict[str, Any] |
         "setup_timeframe": structured.get("setup_timeframe") or structured.get("confirmation_timeframe"),
         "entry_zone_low": lo,
         "entry_zone_high": hi,
-        "liquidity_reference": structured.get("liquidity_reference"),
-        "liquidity_sweep_requirement": structured.get("liquidity_sweep_requirement"),
-        "poi_type": structured.get("entry_poi_type") or structured.get("poi_type"),
-        "poi_zone": {"low": lo, "high": hi},
         "confirmation_type": structured.get("confirmation_type"),
-        "confirmation_timeframe": structured.get("confirmation_timeframe") or "5m",
-        "confirmation_conditions": conf_text,
-        "required_confirmations": required,
+        "confirmation_sequence": sequence,
         "structural_invalidation_level": inv_level,
         "proposed_stop_loss": sl,
         "proposed_take_profit": tp,
         "proposed_entry_mid": entry_mid,
-        "market_bias": structured.get("market_bias"),
-        "risk_reward_estimate": structured.get("risk_reward"),
+        "confirmation_timeframe": structured.get("confirmation_timeframe") or "5m",
     }
     plan["expires_at"] = (datetime.now(timezone.utc) + timedelta(hours=expires_hours)).isoformat()
     return plan, None
 
 
-def apply_conditional_plan_to_setup_row(row: Any, *, plan: dict[str, Any], run_id: int, structured: dict[str, Any]) -> None:
+def apply_conditional_plan_to_setup_row(
+    row: Any, *, plan: dict[str, Any], run_id: int, structured: dict[str, Any], created_at: datetime | None = None
+) -> None:
     direction = plan["potential_direction"]
+    sequence = plan["confirmation_sequence"]
+    created_at = created_at or datetime.now(timezone.utc)
+    boundary = first_eligible_bar_open_ms(created_at, "5m")
+
     row.direction = direction
     row.setup_mode = SETUP_MODE_CONDITIONAL
     row.final_ai_decision = "WAIT"
     row.lifecycle_state = wait_state_for_direction(direction)
+    row.monitoring_enabled = True
+    row.monitor_from_ms = boundary
+    row.monitor_cursor_ms = boundary - 1
     row.entry_zone_low = plan["entry_zone_low"]
     row.entry_zone_high = plan["entry_zone_high"]
     row.entry_price = plan["proposed_entry_mid"]
@@ -158,9 +157,15 @@ def apply_conditional_plan_to_setup_row(row: Any, *, plan: dict[str, Any], run_i
     row.invalidation = structured.get("conditional_invalidation") or structured.get("invalidation_condition")
     row.conditional_plan = plan
     row.confirmation_state = {
-        "required": list(plan["required_confirmations"]),
+        "sequence": list(sequence),
+        "required": list(sequence),
         "completed": [],
-        "missing": list(plan["required_confirmations"]),
+        "missing": list(sequence),
+        "confirmation_timestamps": {},
     }
     row.run_id = run_id
     row.structured_snapshot = structured
+
+
+def resolve_immediate_confirmation_sequence(structured: dict[str, Any]) -> tuple[list[str] | None, str | None]:
+    return resolve_confirmation_sequence(structured)

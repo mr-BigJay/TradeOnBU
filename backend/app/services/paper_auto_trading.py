@@ -7,7 +7,8 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.setup_lifecycle import READY_LONG, READY_SHORT
+from app.domain.setup_lifecycle import PENDING_ENTRY, READY_LONG, READY_SHORT
+from app.domain.time_utils import ensure_utc
 from app.models import AiProposedSetup, SimPosition, SimPositionSettings
 from app.services.ai_setup_memory import validate_proposed_setup_levels
 from app.services.position.execution_adapters import OrderRequest
@@ -38,7 +39,8 @@ def setup_eligible_for_auto_entry(
     now = now or _utc_now()
     if setup.status != "open":
         return False, f"setup_status_{setup.status}"
-    if setup.expires_at is not None and setup.expires_at <= now:
+    exp = ensure_utc(setup.expires_at)
+    if exp is not None and exp <= (now if now.tzinfo else now.replace(tzinfo=timezone.utc)):
         return False, "setup_expired"
     entry = setup.entry_price
     sl = setup.stop_loss
@@ -170,6 +172,12 @@ async def maybe_auto_open_paper_position(
         meta["reason"] = val_reason
         return meta
 
+    lifecycle = (setup.lifecycle_state or "").upper()
+    if validation.get("objective_ready") and lifecycle not in (READY_LONG, READY_SHORT, PENDING_ENTRY):
+        meta["skipped"] = True
+        meta["reason"] = "lifecycle_not_ready"
+        return meta
+
     ok_setup, setup_reason = setup_eligible_for_auto_entry(setup, require_ai_flags=require_ai_flags)
     if not ok_setup:
         meta["skipped"] = True
@@ -274,3 +282,6 @@ async def mark_setup_paper_fill(session: AsyncSession, pos: SimPosition) -> None
     ).scalar_one_or_none()
     if setup:
         setup.paper_fill_recorded = True
+        from app.domain.setup_lifecycle import POSITION_OPEN
+
+        setup.lifecycle_state = POSITION_OPEN

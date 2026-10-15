@@ -63,7 +63,27 @@ SIGNAL_MIGRATIONS = [
     "ALTER TABLE ai_proposed_setups ADD COLUMN last_rejection_reason VARCHAR(64)",
     "ALTER TABLE ai_proposed_setups ADD COLUMN last_validation_result JSON",
     "ALTER TABLE ai_proposed_setups ADD COLUMN monitor_cursor_ms INTEGER DEFAULT 0",
+    "ALTER TABLE system_state ADD COLUMN opportunity_monitor_lock_owner VARCHAR(64)",
+    "ALTER TABLE system_state ADD COLUMN opportunity_monitor_lock_until_ms INTEGER DEFAULT 0",
+    "ALTER TABLE ai_proposed_setups ADD COLUMN monitoring_enabled BOOLEAN DEFAULT 1",
+    "ALTER TABLE ai_proposed_setups ADD COLUMN monitor_from_ms INTEGER DEFAULT 0",
 ]
+
+LEGACY_SETUP_BACKFILL = """
+UPDATE ai_proposed_setups
+SET
+  monitoring_enabled = 0,
+  setup_mode = COALESCE(setup_mode, 'legacy_immediate'),
+  lifecycle_state = CASE
+    WHEN status = 'invalidated' THEN 'INVALIDATED'
+    WHEN status = 'expired' THEN 'EXPIRED'
+    WHEN UPPER(direction) = 'SHORT' THEN 'READY_SHORT'
+    ELSE 'READY_LONG'
+  END
+WHERE monitoring_enabled IS NULL
+   OR (monitor_from_ms = 0 AND final_ai_decision IS NULL AND setup_mode = 'conditional')
+   OR lifecycle_state = 'WAIT_LONG' AND final_ai_decision IS NULL
+"""
 
 
 async def migrate_db() -> None:
@@ -73,6 +93,10 @@ async def migrate_db() -> None:
                 await conn.execute(text(stmt))
             except Exception:
                 pass
+        try:
+            await conn.execute(text(LEGACY_SETUP_BACKFILL))
+        except Exception:
+            pass
 
 
 async def init_db() -> None:

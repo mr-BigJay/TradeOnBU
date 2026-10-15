@@ -4,10 +4,12 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_effective_settings
+from app.domain.candle_utils import candle_close_ms, interval_ms
+from app.domain.market_freshness import is_market_data_fresh
 from app.domain.setup_lifecycle import (
     EXPIRED,
     INVALIDATED,
@@ -23,23 +25,39 @@ from app.domain.setup_lifecycle import (
     REASON_STALE_MARKET_DATA,
     REASON_STRUCTURAL_INVALIDATION,
     REASON_WALLET_NOT_INITIALIZED,
-    SETUP_MODE_IMMEDIATE,
     WAIT_LONG,
     WAIT_SHORT,
     ready_state_for_direction,
 )
+from app.domain.setup_monitor_boundary import first_eligible_bar_open_ms
+from app.domain.time_utils import ensure_utc
 from app.models import AiProposedSetup, SimPosition
 from app.services.execution_model import ExecutionModel
-from app.services.ict_confirmation_engine import ConfirmationProgress, all_required_met, evaluate_confirmations
+from app.services.ict_confirmation_engine import all_required_met, process_bar_sequential
 from app.services.market_data import MarketDataService
 from app.services.opportunity_audit import log_setup_event
+from app.services.opportunity_monitor_lock import (
+    new_monitor_owner,
+    release_opportunity_monitor_lock,
+    try_acquire_opportunity_monitor_lock,
+)
 from app.services.paper_auto_trading import maybe_auto_open_paper_position
 
 logger = logging.getLogger(__name__)
 
+MONITOR_INTERVAL = "5m"
+
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _setup_expired(setup: AiProposedSetup, now: datetime) -> bool:
+    exp = ensure_utc(setup.expires_at)
+    if exp is None:
+        return False
+    now_u = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
+    return exp <= now_u
 
 
 async def _sync_position_lifecycle(session: AsyncSession, setup: AiProposedSetup) -> None:
@@ -63,16 +81,16 @@ async def _sync_position_lifecycle(session: AsyncSession, setup: AiProposedSetup
             setup.lifecycle_state = POSITION_CLOSED
 
 
-def _required_tokens(setup: AiProposedSetup) -> list[str]:
+def _confirmation_sequence(setup: AiProposedSetup) -> list[str]:
     state = setup.confirmation_state or {}
-    req = state.get("required")
-    if isinstance(req, list) and req:
-        return [str(x) for x in req]
+    seq = state.get("sequence") or state.get("required")
+    if isinstance(seq, list) and seq:
+        return [str(x) for x in seq]
     plan = setup.conditional_plan or {}
-    req2 = plan.get("required_confirmations")
-    if isinstance(req2, list) and req2:
-        return [str(x) for x in req2]
-    return ["entry_zone_touch", "liquidity_sweep", "mss"]
+    seq2 = plan.get("confirmation_sequence")
+    if isinstance(seq2, list) and seq2:
+        return [str(x) for x in seq2]
+    return []
 
 
 def _zone_bounds(setup: AiProposedSetup) -> tuple[float, float]:
@@ -96,6 +114,26 @@ def _net_rr_ok(setup: AiProposedSetup) -> tuple[bool, float | None]:
     return bool(rr.acceptable), rr.net_rr
 
 
+def _eligible_closed_bars(
+    setup: AiProposedSetup,
+    closed: list,
+    now_ms: int,
+) -> list:
+    boundary = setup.monitor_from_ms or first_eligible_bar_open_ms(setup.created_at, MONITOR_INTERVAL)
+    cursor = setup.monitor_cursor_ms if setup.monitor_cursor_ms else boundary - 1
+    step = interval_ms(MONITOR_INTERVAL)
+    out = []
+    for bar in closed:
+        if bar.time_ms < boundary:
+            continue
+        if bar.time_ms <= cursor:
+            continue
+        if now_ms < candle_close_ms(bar, MONITOR_INTERVAL):
+            continue
+        out.append(bar)
+    return out
+
+
 class OpportunityMonitorService:
     def __init__(self, market: MarketDataService | None = None) -> None:
         self.market = market or MarketDataService()
@@ -104,11 +142,13 @@ class OpportunityMonitorService:
         settings = get_effective_settings()
         symbol = symbol or settings.default_symbol
         now = _utc_now()
+        now_ms = int(now.timestamp() * 1000)
 
         result = await session.execute(
             select(AiProposedSetup)
             .where(AiProposedSetup.symbol == symbol)
             .where(AiProposedSetup.status == "open")
+            .where(AiProposedSetup.monitoring_enabled.is_(True))
             .where(
                 AiProposedSetup.lifecycle_state.in_(
                     (WAIT_LONG, WAIT_SHORT, READY_LONG, READY_SHORT, PENDING_ENTRY, POSITION_OPEN)
@@ -118,7 +158,7 @@ class OpportunityMonitorService:
         setups = list(result.scalars().all())
         summary: dict[str, Any] = {"checked": len(setups), "promoted": 0, "invalidated": 0, "expired": 0, "orders": 0}
 
-        bundle = await self.market.fetch_kline_bundle(symbol, "5m", 120)
+        bundle = await self.market.fetch_kline_bundle(symbol, MONITOR_INTERVAL, 120)
         if not bundle.data_complete or not bundle.closed:
             for setup in setups:
                 setup.last_rejection_reason = REASON_MISSING_MARKET_DATA
@@ -126,13 +166,18 @@ class OpportunityMonitorService:
             await session.flush()
             return summary
 
-        stale_limit = settings.market_data_stale_seconds
-        last_close_ms = bundle.closed[-1].time_ms
-        age_sec = max(0, int(now.timestamp() * 1000) - last_close_ms) // 1000
-        if age_sec > stale_limit:
+        fresh, age_sec, allowed_age = is_market_data_fresh(
+            bundle.closed[-1], MONITOR_INTERVAL, now_ms, settings.market_data_stale_seconds
+        )
+        if not fresh:
             for setup in setups:
                 setup.last_rejection_reason = REASON_STALE_MARKET_DATA
-                setup.last_validation_result = {"ok": False, "reason": REASON_STALE_MARKET_DATA, "age_sec": age_sec}
+                setup.last_validation_result = {
+                    "ok": False,
+                    "reason": REASON_STALE_MARKET_DATA,
+                    "age_since_close_sec": age_sec,
+                    "allowed_age_sec": allowed_age,
+                }
             await session.flush()
             return summary
 
@@ -141,7 +186,7 @@ class OpportunityMonitorService:
             if setup.lifecycle_state in (PENDING_ENTRY, POSITION_OPEN, POSITION_CLOSED):
                 continue
 
-            if setup.expires_at and setup.expires_at <= now:
+            if _setup_expired(setup, now):
                 setup.status = "expired"
                 setup.lifecycle_state = EXPIRED
                 setup.last_rejection_reason = REASON_SETUP_EXPIRED
@@ -149,44 +194,55 @@ class OpportunityMonitorService:
                 summary["expired"] += 1
                 continue
 
-            cursor = setup.monitor_cursor_ms or 0
-            closed = [c for c in bundle.closed if c.time_ms > cursor]
-            if not closed:
+            sequence = _confirmation_sequence(setup)
+            if not sequence or setup.invalidation_level is None:
+                setup.last_rejection_reason = REASON_MISSING_CONFIRMATIONS
+                setup.last_validation_result = {"ok": False, "reason": "missing_structured_monitor_requirements"}
+                continue
+
+            boundary = setup.monitor_from_ms or first_eligible_bar_open_ms(setup.created_at, MONITOR_INTERVAL)
+            new_bars = _eligible_closed_bars(setup, bundle.closed, now_ms)
+            if not new_bars:
                 setup.last_monitor_at = now
                 continue
 
-            required = _required_tokens(setup)
-            completed_prior = list((setup.confirmation_state or {}).get("completed") or [])
             zone_lo, zone_hi = _zone_bounds(setup)
-
-            # Incremental evaluation — only bars after cursor (closed candles).
-            progress_completed: list[str] = list(completed_prior)
+            conf_state = dict(setup.confirmation_state or {})
             invalidated = False
             inv_reason: str | None = None
-            for bar in closed:
-                window = [c for c in bundle.closed if c.time_ms <= bar.time_ms][-40:]
-                progress = evaluate_confirmations(
+
+            for bar in new_bars:
+                window = [
+                    c
+                    for c in bundle.closed
+                    if boundary <= c.time_ms <= bar.time_ms and now_ms >= candle_close_ms(c, MONITOR_INTERVAL)
+                ][-40:]
+                progress = process_bar_sequential(
                     direction=setup.direction,
-                    required=required,
-                    completed_prior=progress_completed,
-                    candles=window,
+                    sequence=sequence,
+                    confirmation_state=conf_state,
+                    bar=bar,
+                    window=window,
                     zone_lo=zone_lo,
                     zone_hi=zone_hi,
                     invalidation_level=setup.invalidation_level,
                     structured=setup.structured_snapshot or {},
+                    monitor_from_ms=boundary,
                 )
-                progress_completed = progress.completed
+                conf_state = {
+                    "sequence": sequence,
+                    "required": sequence,
+                    "completed": progress.completed,
+                    "missing": progress.missing,
+                    "confirmation_timestamps": progress.confirmation_timestamps,
+                }
                 if progress.invalidated:
                     invalidated = True
                     inv_reason = progress.invalidation_reason
                     break
                 setup.monitor_cursor_ms = bar.time_ms
 
-            setup.confirmation_state = {
-                "required": required,
-                "completed": progress_completed,
-                "missing": [t for t in required if t not in progress_completed],
-            }
+            setup.confirmation_state = conf_state
             setup.last_monitor_at = now
 
             if invalidated:
@@ -203,17 +259,22 @@ class OpportunityMonitorService:
                 summary["invalidated"] += 1
                 continue
 
+            from app.services.ict_confirmation_engine import ConfirmationProgress
+
+            progress_check = ConfirmationProgress(
+                sequence=sequence,
+                completed=conf_state.get("completed") or [],
+                missing=conf_state.get("missing") or [],
+                confirmation_timestamps=conf_state.get("confirmation_timestamps") or {},
+            )
+
             if setup.lifecycle_state in (WAIT_LONG, WAIT_SHORT):
-                progress_check = ConfirmationProgress(
-                    completed=progress_completed,
-                    missing=setup.confirmation_state["missing"],
-                )
                 if not all_required_met(progress_check):
                     setup.last_rejection_reason = REASON_MISSING_CONFIRMATIONS
                     setup.last_validation_result = {
                         "ok": False,
                         "reason": REASON_MISSING_CONFIRMATIONS,
-                        "missing": setup.confirmation_state["missing"],
+                        "missing": progress_check.missing,
                     }
                     continue
 
@@ -233,6 +294,18 @@ class OpportunityMonitorService:
                 if not rr_ok:
                     setup.last_rejection_reason = REASON_NET_RR_BELOW_MIN
                     continue
+
+                claim = await session.execute(
+                    update(AiProposedSetup)
+                    .where(AiProposedSetup.id == setup.id)
+                    .where(AiProposedSetup.lifecycle_state.in_((READY_LONG, READY_SHORT)))
+                    .where(AiProposedSetup.setup_id == setup.setup_id)
+                    .values(lifecycle_state=PENDING_ENTRY)
+                )
+                await session.flush()
+                if claim.rowcount != 1:
+                    continue
+
                 validation = {
                     "ai_decision": setup.direction,
                     "acceptable_rr": True,
@@ -252,10 +325,10 @@ class OpportunityMonitorService:
                     require_ai_flags=False,
                 )
                 if auto.get("created"):
-                    setup.lifecycle_state = PENDING_ENTRY
                     summary["orders"] += 1
                     await log_setup_event(session, setup_id=setup.setup_id, event_type="order_created", payload=auto)
-                elif auto.get("skipped"):
+                else:
+                    setup.lifecycle_state = ready_state_for_direction(setup.direction)
                     setup.last_rejection_reason = auto.get("reason")
                     if auto.get("reason") == "wallet_not_initialized":
                         setup.last_validation_result = {"ok": False, "reason": REASON_WALLET_NOT_INITIALIZED}
@@ -265,5 +338,11 @@ class OpportunityMonitorService:
 
 
 async def run_opportunity_monitor_tick(session: AsyncSession) -> dict[str, Any]:
-    svc = OpportunityMonitorService()
-    return await svc.monitor_setups(session)
+    owner = new_monitor_owner()
+    if not await try_acquire_opportunity_monitor_lock(session, owner):
+        return {"skipped": True, "reason": "monitor_lock_held"}
+    try:
+        svc = OpportunityMonitorService()
+        return await svc.monitor_setups(session)
+    finally:
+        await release_opportunity_monitor_lock(session, owner)

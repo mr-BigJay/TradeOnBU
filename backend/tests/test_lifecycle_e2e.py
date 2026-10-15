@@ -1,0 +1,194 @@
+from __future__ import annotations
+
+import asyncio
+from datetime import datetime, timedelta, timezone
+from unittest.mock import AsyncMock, patch
+
+import pytest
+from sqlalchemy import func, select
+
+from app.db import SessionLocal, init_db
+from app.domain.candles import Candle
+from app.domain.setup_lifecycle import PENDING_ENTRY, POSITION_OPEN, READY_LONG, WAIT_LONG
+from app.domain.setup_monitor_boundary import first_eligible_bar_open_ms
+from app.models import AiProposedSetup, SimPosition, SimPositionSettings
+from app.services.market_data import KlineBundle
+from app.services.opportunity_monitor import OpportunityMonitorService, run_opportunity_monitor_tick
+from app.services.opportunity_monitor_lock import new_monitor_owner, try_acquire_opportunity_monitor_lock
+from app.services.position import wallet_service as wallet
+from app.services.position.position_monitor import SimPositionMonitorService
+
+
+def _5m_bar(open_ms: int, *, low: float, high: float, close: float) -> Candle:
+    return Candle(time_ms=open_ms, open=close, high=high, low=low, close=close, volume=1.0)
+
+
+def _build_bundle_from_boundary(boundary_ms: int, steps: list[tuple[float, float, float]]) -> KlineBundle:
+    closed = []
+    for i, (lo, hi, cl) in enumerate(steps):
+        closed.append(_5m_bar(boundary_ms + i * 300_000, low=lo, high=hi, close=cl))
+    return KlineBundle(
+        closed=closed,
+        forming=None,
+        gaps_detected=[],
+        gaps_remaining=[],
+        data_complete=True,
+        interval="5m",
+    )
+
+
+@pytest.mark.asyncio
+async def test_full_wait_ready_pending_open_e2e():
+    await init_db()
+    created = datetime.now(timezone.utc) - timedelta(minutes=30)
+    boundary = first_eligible_bar_open_ms(created, "5m")
+
+    async with SessionLocal() as session:
+        await wallet.append_ledger(session, entry_type=wallet.LEDGER_INITIAL, amount_usdt=50_000.0)
+        settings = (await session.execute(select(SimPositionSettings))).scalar_one_or_none()
+        if not settings:
+            session.add(SimPositionSettings(id=1))
+        settings = (await session.execute(select(SimPositionSettings))).scalar_one()
+        settings.initial_balance_set = True
+        settings.auto_open_paper_positions = True
+        settings.max_risk_pct_per_position = 100.0
+        settings.default_margin_usdt = 50.0
+        settings.default_leverage = 10
+
+        setup = AiProposedSetup(
+            setup_id="e2e-setup-1",
+            run_id=1,
+            symbol="BTCUSDT",
+            direction="LONG",
+            status="open",
+            lifecycle_state=WAIT_LONG,
+            setup_mode="conditional",
+            monitoring_enabled=True,
+            monitor_from_ms=boundary,
+            monitor_cursor_ms=boundary - 1,
+            created_at=created,
+            entry_price=100.0,
+            entry_zone_low=99.0,
+            entry_zone_high=101.0,
+            stop_loss=94.0,
+            take_profit=115.0,
+            invalidation_level=94.0,
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
+            confirmation_state={
+                "sequence": ["entry_zone_touch"],
+                "required": ["entry_zone_touch"],
+                "completed": [],
+                "missing": ["entry_zone_touch"],
+                "confirmation_timestamps": {},
+            },
+            conditional_plan={"confirmation_sequence": ["entry_zone_touch"]},
+            structured_snapshot={"confirmation_type": "sweep_mss_poi"},
+        )
+        session.add(setup)
+        await session.commit()
+
+    bundle = _build_bundle_from_boundary(boundary, [(98, 102, 100), (99.5, 100.5, 100.2)])
+    last_open = bundle.closed[-1].time_ms
+    now_ms = last_open + 300_000 + 10_000
+
+    async with SessionLocal() as session:
+        mon = OpportunityMonitorService()
+        with patch.object(mon.market, "fetch_kline_bundle", AsyncMock(return_value=bundle)):
+            with patch("app.services.opportunity_monitor._utc_now") as mock_now:
+                mock_now.return_value = datetime.fromtimestamp(now_ms / 1000, tz=timezone.utc)
+                with patch("app.services.opportunity_monitor.is_market_data_fresh", return_value=(True, 10, 600)):
+                    summary = await mon.monitor_setups(session, symbol="BTCUSDT")
+        await session.commit()
+
+        row = (await session.execute(select(AiProposedSetup).where(AiProposedSetup.setup_id == "e2e-setup-1"))).scalar_one()
+        assert summary["promoted"] >= 1
+        assert summary["orders"] >= 1
+        assert row.lifecycle_state == PENDING_ENTRY
+        pos_count = (await session.execute(select(func.count()).select_from(SimPosition))).scalar_one()
+        assert pos_count == 1
+
+        with patch.object(mon.market, "fetch_kline_bundle", AsyncMock(return_value=bundle)):
+            with patch("app.services.opportunity_monitor._utc_now") as mock_now2:
+                mock_now2.return_value = datetime.fromtimestamp(now_ms / 1000, tz=timezone.utc)
+                with patch("app.services.opportunity_monitor.is_market_data_fresh", return_value=(True, 10, 600)):
+                    summary2 = await mon.monitor_setups(session, symbol="BTCUSDT")
+        await session.commit()
+        assert summary2.get("orders", 0) == 0
+        pos_count2 = (await session.execute(select(func.count()).select_from(SimPosition))).scalar_one()
+        assert pos_count2 == 1
+
+        pos = (await session.execute(select(SimPosition))).scalar_one()
+        pos.limit_entry_price = 100.0
+        hit_bar = _5m_bar(last_open + 300_000, low=99.0, high=101.0, close=100.0)
+        hit_bundle = KlineBundle(
+            closed=bundle.closed + [hit_bar],
+            forming=None,
+            gaps_detected=[],
+            gaps_remaining=[],
+            data_complete=True,
+            interval="1m",
+        )
+        from app.services.position.settings_service import get_or_create_settings
+        from app.services.position.position_service import SimPositionService
+
+        settings = await get_or_create_settings(session)
+        svc = SimPositionService()
+        await svc._fill_entry(session, pos, settings, 100.0, transition_suffix="e2e_limit_fill")
+        await session.commit()
+
+        pos = (await session.execute(select(SimPosition))).scalar_one()
+        assert pos.status == "open"
+        row = (await session.execute(select(AiProposedSetup).where(AiProposedSetup.setup_id == "e2e-setup-1"))).scalar_one()
+        assert row.lifecycle_state == POSITION_OPEN
+
+
+@pytest.mark.asyncio
+async def test_concurrent_monitor_ticks_one_order():
+    await init_db()
+    async with SessionLocal() as session:
+        owner1 = new_monitor_owner()
+        owner2 = new_monitor_owner()
+        assert await try_acquire_opportunity_monitor_lock(session, owner1) is True
+        assert await try_acquire_opportunity_monitor_lock(session, owner2) is False
+        await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_expiration_naive_sqlite_datetime():
+    await init_db()
+    async with SessionLocal() as session:
+        setup = AiProposedSetup(
+            setup_id="exp-1",
+            run_id=1,
+            symbol="BTCUSDT",
+            direction="LONG",
+            status="open",
+            lifecycle_state=WAIT_LONG,
+            monitoring_enabled=True,
+            monitor_from_ms=0,
+            monitor_cursor_ms=-1,
+            entry_price=100,
+            stop_loss=95,
+            take_profit=110,
+            invalidation_level=90,
+            expires_at=datetime(2020, 1, 1, 0, 0, 0),  # naive UTC stored like SQLite
+            confirmation_state={"sequence": ["entry_zone_touch"], "required": ["entry_zone_touch"], "completed": [], "missing": ["entry_zone_touch"], "confirmation_timestamps": {}},
+        )
+        session.add(setup)
+        await session.commit()
+
+        mon = OpportunityMonitorService()
+        bundle = KlineBundle(
+            closed=[_5m_bar(0, low=99, high=101, close=100)],
+            forming=None,
+            gaps_detected=[],
+            gaps_remaining=[],
+            data_complete=True,
+            interval="5m",
+        )
+        with patch.object(mon.market, "fetch_kline_bundle", AsyncMock(return_value=bundle)):
+            with patch("app.services.opportunity_monitor.is_market_data_fresh", return_value=(True, 1, 600)):
+                await mon.monitor_setups(session)
+        await session.commit()
+        row = (await session.execute(select(AiProposedSetup).where(AiProposedSetup.setup_id == "exp-1"))).scalar_one()
+        assert row.lifecycle_state == "EXPIRED"
