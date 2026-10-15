@@ -963,7 +963,6 @@ async def create_setup_from_structured(
         meta["reason"] = seq_err or "immediate_missing_monitor_requirements"
         return None, meta
 
-    lifecycle_immediate = wait_state_for_direction(decision)
     monitoring_enabled = True
 
     zone_lo = _parse_float(proposed.get("entry_zone_low") or structured.get("entry_zone_low"))
@@ -974,6 +973,43 @@ async def create_setup_from_structured(
 
     created = _utc()
     boundary = first_eligible_bar_open_ms(created, "5m")
+
+    from app.domain.paper_execution_policy import HARD_MIN_AUTO_PAPER_NET_RR
+    from app.domain.setup_lifecycle import REASON_NET_RR_BELOW_MIN, ready_state_for_direction, wait_state_for_direction
+    from app.services.execution_model_sim import net_rr_acceptable_for_auto_paper
+    from app.services.immediate_confirmation_verify import evaluate_immediate_objective_confirmations
+
+    eval_result = await evaluate_immediate_objective_confirmations(
+        symbol=symbol,
+        direction=decision,
+        sequence=sequence,
+        boundary_ms=boundary,
+        zone_lo=zone_lo,
+        zone_hi=zone_hi,
+        invalidation_level=inv_level,
+        structured=structured,
+    )
+    lifecycle_immediate = eval_result.lifecycle_state
+    last_validation = dict(eval_result.last_validation_result)
+    if eval_result.ready:
+        rr_ok, net_rr = await net_rr_acceptable_for_auto_paper(
+            session,
+            direction=decision,
+            entry=entry,
+            sl=sl,
+            tp=tp,
+            min_net_rr=HARD_MIN_AUTO_PAPER_NET_RR,
+        )
+        if not rr_ok:
+            lifecycle_immediate = wait_state_for_direction(decision)
+            last_validation = {
+                "ok": False,
+                "reason": REASON_NET_RR_BELOW_MIN,
+                "net_rr": net_rr,
+                "source": "immediate_objective_verify_at_persist",
+            }
+        else:
+            last_validation["net_rr"] = net_rr
 
     row = AiProposedSetup(
         setup_id=str(uuid.uuid4()),
@@ -996,20 +1032,17 @@ async def create_setup_from_structured(
         lifecycle_state=lifecycle_immediate,
         monitoring_enabled=monitoring_enabled,
         monitor_from_ms=boundary if monitoring_enabled else 0,
-        monitor_cursor_ms=(boundary - 1) if monitoring_enabled else 0,
-        confirmation_state={
-            "sequence": list(sequence),
-            "required": list(sequence),
-            "completed": [],
-            "missing": list(sequence),
-            "confirmation_timestamps": {},
-        },
+        monitor_cursor_ms=eval_result.monitor_cursor_ms if monitoring_enabled else 0,
+        confirmation_state=eval_result.confirmation_state,
         conditional_plan={"confirmation_sequence": sequence, "confirmation_type": structured.get("confirmation_type")},
+        last_validation_result=last_validation,
         objective_notes={
-            "disclaimer": "Immediate ICT plan — objective monitor confirms before paper execution.",
+            "disclaimer": "Immediate ICT plan — objective replay on closed 5m bars at persist (no backdated fills).",
+            "execution_path": "immediate_objective",
             "lifecycle_phase": LIFECYCLE_ENTRY_NOT_REACHED,
             "validity_status": VALIDITY_ACTIVE,
             "outcome_tracking_status": TRACKING_INCOMPLETE,
+            "immediate_ready_at_persist": lifecycle_immediate == ready_state_for_direction(decision),
         },
         last_tracked_candle_ms=0,
     )
@@ -1018,6 +1051,8 @@ async def create_setup_from_structured(
     _store_original_forecast(row)
     meta["created"] = True
     meta["setup_id"] = row.setup_id
+    meta["immediate_objective_ready"] = lifecycle_immediate == ready_state_for_direction(decision)
+    meta["missing_confirmations"] = eval_result.confirmation_state.get("missing") or []
     return row, meta
 
 

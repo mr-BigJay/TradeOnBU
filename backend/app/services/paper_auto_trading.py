@@ -7,7 +7,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.setup_lifecycle import PENDING_ENTRY, READY_LONG, READY_SHORT
+from app.domain.setup_lifecycle import PENDING_ENTRY, POSITION_OPEN, READY_LONG, READY_SHORT
 from app.domain.time_utils import ensure_utc
 from app.models import AiProposedSetup, SimPosition, SimPositionSettings
 from app.services.ai_setup_memory import validate_proposed_setup_levels
@@ -53,6 +53,8 @@ def setup_eligible_for_auto_entry(
     if setup.paper_fill_recorded:
         return False, "paper_fill_already_recorded"
     lifecycle = (setup.lifecycle_state or "").upper()
+    if lifecycle in (PENDING_ENTRY, POSITION_OPEN):
+        return True, None
     objective_ready = lifecycle in (READY_LONG, READY_SHORT) or bool(
         (setup.last_validation_result or {}).get("ok")
     )
@@ -185,23 +187,23 @@ async def maybe_auto_open_paper_position(
         return meta
 
     from app.domain.paper_execution_policy import HARD_MIN_AUTO_PAPER_NET_RR
-    from app.services.execution_model import ExecutionModel
+    from app.services.execution_model_sim import net_rr_acceptable_for_auto_paper
 
     entry_f = float(setup.entry_price)  # type: ignore[arg-type]
     sl_f = float(setup.stop_loss)  # type: ignore[arg-type]
     tp_f = float(setup.take_profit)  # type: ignore[arg-type]
-    rr = ExecutionModel().calc_rr(
-        setup.direction,
-        entry_f,
-        sl_f,
-        tp_f,
-        "LIMIT",
+    rr_ok, net_rr = await net_rr_acceptable_for_auto_paper(
+        session,
+        direction=setup.direction,
+        entry=entry_f,
+        sl=sl_f,
+        tp=tp_f,
         min_net_rr=HARD_MIN_AUTO_PAPER_NET_RR,
     )
-    if not rr.acceptable:
+    if not rr_ok:
         meta["skipped"] = True
         meta["reason"] = "net_rr_below_min"
-        meta["net_rr"] = rr.net_rr
+        meta["net_rr"] = net_rr
         meta["required_min_net_rr"] = HARD_MIN_AUTO_PAPER_NET_RR
         return meta
 
@@ -291,7 +293,7 @@ async def auto_paper_entry_still_valid(session: AsyncSession, pos: SimPosition) 
     if setup is None:
         return False, "setup_not_found"
     lifecycle = (setup.lifecycle_state or "").upper()
-    require_flags = lifecycle not in (READY_LONG, READY_SHORT)
+    require_flags = lifecycle not in (READY_LONG, READY_SHORT, PENDING_ENTRY, POSITION_OPEN)
     return setup_eligible_for_auto_entry(setup, require_ai_flags=require_flags)
 
 

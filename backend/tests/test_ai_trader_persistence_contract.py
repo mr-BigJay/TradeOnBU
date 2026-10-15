@@ -102,14 +102,29 @@ async def test_production_conditional_json_persists_via_pipeline():
 
 @pytest.mark.asyncio
 async def test_immediate_monitored_json_persists_with_monitoring():
+    from unittest.mock import AsyncMock, patch
+
+    from app.domain.candles import Candle
+    from app.services.market_data import KlineBundle
+
     await init_db()
     data = _production_immediate_long_monitored()
-    async with SessionLocal() as session:
-        row, meta = await create_setup_from_structured(session, run_id=43, symbol="BTCUSDT", structured=data)
-        await session.commit()
+    empty = KlineBundle(
+        closed=[Candle(time_ms=1, open=100, high=100.1, low=99.9, close=100, volume=1)],
+        forming=None,
+        gaps_detected=[],
+        gaps_remaining=[],
+        data_complete=True,
+        interval="5m",
+    )
+    with patch("app.services.immediate_confirmation_verify.MarketDataService") as mcls:
+        mcls.return_value.fetch_kline_bundle = AsyncMock(return_value=empty)
+        async with SessionLocal() as session:
+            row, meta = await create_setup_from_structured(session, run_id=43, symbol="BTCUSDT", structured=data)
+            await session.commit()
         assert meta.get("created") is True
         assert row.monitoring_enabled is True
-        assert row.lifecycle_state == WAIT_LONG
+        assert row.lifecycle_state in (WAIT_LONG, "READY_LONG")
         seq = (row.confirmation_state or {}).get("sequence") or []
         assert seq[0] == "liquidity_sweep"
 

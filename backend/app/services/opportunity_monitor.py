@@ -32,7 +32,6 @@ from app.domain.setup_lifecycle import (
 from app.domain.setup_monitor_boundary import first_eligible_bar_open_ms
 from app.domain.time_utils import ensure_utc
 from app.models import AiProposedSetup, SimPosition
-from app.services.execution_model import ExecutionModel
 from app.services.ict_confirmation_engine import all_required_met, process_bar_sequential
 from app.services.market_data import MarketDataService
 from app.services.opportunity_audit import log_setup_event
@@ -103,24 +102,51 @@ def _zone_bounds(setup: AiProposedSetup) -> tuple[float, float]:
     return entry * 0.999, entry * 1.001
 
 
-def _net_rr_ok(setup: AiProposedSetup) -> tuple[bool, float | None]:
+def _lifecycle_preserves_objective_confirmation(lifecycle: str | None) -> bool:
+    lc = (lifecycle or "").upper()
+    return lc in (READY_LONG, READY_SHORT, PENDING_ENTRY, POSITION_OPEN, POSITION_CLOSED)
+
+
+def _record_market_data_health(
+    setup: AiProposedSetup,
+    *,
+    ok: bool,
+    reason: str,
+    now: datetime,
+    extra: dict[str, Any] | None = None,
+) -> None:
+    notes = dict(setup.objective_notes or {})
+    payload = {"ok": ok, "reason": reason, "at": now.isoformat(), **(extra or {})}
+    notes["market_data_health"] = payload
+    setup.objective_notes = notes
+    if _lifecycle_preserves_objective_confirmation(setup.lifecycle_state):
+        return
+    if not ok:
+        setup.last_rejection_reason = reason
+        setup.last_validation_result = {"ok": False, "reason": reason, **(extra or {})}
+        return
+    if (setup.last_validation_result or {}).get("ok"):
+        setup.last_rejection_reason = None
+
+
+async def _net_rr_ok(session: AsyncSession, setup: AiProposedSetup) -> tuple[bool, float | None]:
     from app.domain.paper_execution_policy import HARD_MIN_AUTO_PAPER_NET_RR
+    from app.services.execution_model_sim import net_rr_acceptable_for_auto_paper
 
     entry = setup.entry_price
     sl = setup.stop_loss
     tp = setup.take_profit
     if entry is None or sl is None or tp is None:
         return False, None
-    model = ExecutionModel()
-    rr = model.calc_rr(
-        setup.direction,
-        float(entry),
-        float(sl),
-        float(tp),
-        "LIMIT",
+    ok, net_rr = await net_rr_acceptable_for_auto_paper(
+        session,
+        direction=setup.direction,
+        entry=float(entry),
+        sl=float(sl),
+        tp=float(tp),
         min_net_rr=HARD_MIN_AUTO_PAPER_NET_RR,
     )
-    return bool(rr.acceptable), rr.net_rr
+    return ok, net_rr
 
 
 def _eligible_closed_bars(
@@ -174,9 +200,13 @@ class OpportunityMonitorService:
         bundle = await self.market.fetch_kline_bundle(symbol, MONITOR_INTERVAL, 120)
         if not bundle.data_complete or not bundle.closed:
             for setup in setups:
-                setup.last_rejection_reason = REASON_MISSING_MARKET_DATA
-                setup.last_validation_result = {"ok": False, "reason": REASON_MISSING_MARKET_DATA}
+                _record_market_data_health(
+                    setup, ok=False, reason=REASON_MISSING_MARKET_DATA, now=now
+                )
             await session.flush()
+            for setup in setups:
+                if setup.lifecycle_state in (PENDING_ENTRY, POSITION_OPEN):
+                    await _sync_position_lifecycle(session, setup)
             return summary
 
         fresh, age_sec, allowed_age = is_market_data_fresh(
@@ -184,19 +214,23 @@ class OpportunityMonitorService:
         )
         if not fresh:
             for setup in setups:
-                setup.last_rejection_reason = REASON_STALE_MARKET_DATA
-                setup.last_validation_result = {
-                    "ok": False,
-                    "reason": REASON_STALE_MARKET_DATA,
-                    "age_since_close_sec": age_sec,
-                    "allowed_age_sec": allowed_age,
-                }
+                _record_market_data_health(
+                    setup,
+                    ok=False,
+                    reason=REASON_STALE_MARKET_DATA,
+                    now=now,
+                    extra={"age_since_close_sec": age_sec, "allowed_age_sec": allowed_age},
+                )
             await session.flush()
+            for setup in setups:
+                if setup.lifecycle_state in (PENDING_ENTRY, POSITION_OPEN):
+                    await _sync_position_lifecycle(session, setup)
             return summary
 
         for setup in setups:
             if lock_owner:
                 await refresh_opportunity_monitor_lock(session, lock_owner)
+            _record_market_data_health(setup, ok=True, reason="market_data_fresh", now=now)
             await _sync_position_lifecycle(session, setup)
             if setup.lifecycle_state in (PENDING_ENTRY, POSITION_OPEN, POSITION_CLOSED):
                 continue
@@ -294,7 +328,7 @@ class OpportunityMonitorService:
                     }
                     continue
 
-                rr_ok, net_rr = _net_rr_ok(setup)
+                rr_ok, net_rr = await _net_rr_ok(session, setup)
                 if not rr_ok:
                     setup.last_rejection_reason = REASON_NET_RR_BELOW_MIN
                     setup.last_validation_result = {"ok": False, "reason": REASON_NET_RR_BELOW_MIN, "net_rr": net_rr}
@@ -306,7 +340,7 @@ class OpportunityMonitorService:
                 summary["promoted"] += 1
 
             if setup.lifecycle_state in (READY_LONG, READY_SHORT):
-                rr_ok, net_rr = _net_rr_ok(setup)
+                rr_ok, net_rr = await _net_rr_ok(session, setup)
                 if not rr_ok:
                     setup.last_rejection_reason = REASON_NET_RR_BELOW_MIN
                     continue
