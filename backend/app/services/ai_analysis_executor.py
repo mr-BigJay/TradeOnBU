@@ -7,6 +7,7 @@ from app.db import SessionLocal
 from app.models import AiAnalysisRun
 from app.services.ai_analysis_scheduler import (
     acquire_analysis_lock,
+    get_or_create_settings,
     release_analysis_lock,
     should_run_scheduled,
 )
@@ -32,6 +33,7 @@ async def execute_ai_analysis_with_lock(*, trigger: str) -> AiRunOutcome:
 
 async def execute_scheduled_if_due() -> AiRunOutcome:
     async with SessionLocal() as session:
+        await get_or_create_settings(session, autocommit_migration=True)
         if not await should_run_scheduled(session):
             return AiRunOutcome(status="skipped", run=None)
     owner = f"ai-{uuid.uuid4().hex}"

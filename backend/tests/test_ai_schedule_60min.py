@@ -14,6 +14,8 @@ from app.services.ai_analysis_scheduler import (
     DEFAULT_AI_INTERVAL_MINUTES,
     MAX_AI_INTERVAL_MINUTES,
     MIN_AI_INTERVAL_MINUTES,
+    _ensure_utc,
+    _reschedule_next_run_after_interval_change,
     get_or_create_settings,
     migrate_ai_schedule_settings,
     record_run_outcome,
@@ -52,7 +54,23 @@ def test_legacy_migration_restores_sixty_from_auto_one_twenty():
     assert cfg.interval_minutes == 60
     assert cfg.interval_migrated_from_60 is False
     assert cfg.next_run_at is not None
-    assert cfg.next_run_at >= nr
+    assert _ensure_utc(cfg.next_run_at) <= nr
+    assert _ensure_utc(cfg.next_run_at) >= last_ok + timedelta(minutes=60)
+
+
+def test_reschedule_shortening_moves_next_run_earlier_with_floor():
+    now = datetime.now(timezone.utc)
+    last_ok = now - timedelta(minutes=30)
+    cfg = AiAnalysisSettings(
+        interval_minutes=60,
+        last_success_at=last_ok,
+        next_run_at=now + timedelta(minutes=90),
+    )
+    _reschedule_next_run_after_interval_change(
+        cfg, now=now, previous_interval_minutes=120
+    )
+    assert _ensure_utc(cfg.next_run_at) >= last_ok + timedelta(minutes=60)
+    assert _ensure_utc(cfg.next_run_at) <= now + timedelta(minutes=31)
 
 
 def test_manual_one_twenty_not_restored_without_migration_flag():

@@ -17,8 +17,11 @@ from app.services.ai_analysis_scheduler import (
     DEFAULT_AI_INTERVAL_MINUTES,
     MAX_AI_INTERVAL_MINUTES,
     MIN_AI_INTERVAL_MINUTES,
-    _reschedule_next_run_after_interval_change,
+    LEGACY_AUTO_MIGRATED_INTERVAL_MINUTES,
+    apply_user_schedule_interval_choice,
+    confirm_legacy_one_twenty_schedule,
     get_or_create_settings,
+    migrate_ai_schedule_settings,
     scheduling_allowed,
 )
 from app.services.ai_analysis_executor import execute_ai_analysis_with_lock
@@ -78,7 +81,7 @@ class ConnectCompleteBody(BaseModel):
 @router.get("/status")
 async def status(session: AsyncSession = Depends(get_db), _=Depends(require_dashboard_access)):
     cred = await get_credential_row(session)
-    cfg = await get_or_create_settings(session)
+    cfg = await get_or_create_settings(session, autocommit_migration=True)
     connected = bool(cred and cred.client_id and cred.access_token_enc)
     plan_ok = bool(cred and has_plan_scope(cred.scopes_json or []))
     sched_ok, sched_reason = await scheduling_allowed(session)
@@ -213,13 +216,21 @@ async def put_settings(body: SettingsBody, session: AsyncSession = Depends(get_d
         raise HTTPException(400, "Connect ChatGPT before enabling scheduling")
     if body.enabled and not body.unattended_consent:
         raise HTTPException(400, "Explicit unattended ChatGPT usage consent is required to enable scheduling")
-    cfg = await get_or_create_settings(session)
+    cfg = await get_or_create_settings(session, apply_legacy_restore=False)
     cfg.enabled = body.enabled
     prev_interval = cfg.interval_minutes
-    cfg.interval_minutes = body.interval_minutes
-    cfg.interval_migrated_from_60 = False
-    if prev_interval != body.interval_minutes:
-        _reschedule_next_run_after_interval_change(cfg)
+    if (
+        body.interval_minutes == LEGACY_AUTO_MIGRATED_INTERVAL_MINUTES
+        and cfg.interval_migrated_from_60
+    ):
+        confirm_legacy_one_twenty_schedule(cfg)
+    elif cfg.interval_migrated_from_60:
+        migrate_ai_schedule_settings(cfg)
+    apply_user_schedule_interval_choice(
+        cfg,
+        previous_interval_minutes=prev_interval,
+        requested_interval_minutes=body.interval_minutes,
+    )
     if body.unattended_consent and not cfg.unattended_consent:
         cfg.unattended_consent = True
         cfg.unattended_consent_at = datetime.now(timezone.utc)

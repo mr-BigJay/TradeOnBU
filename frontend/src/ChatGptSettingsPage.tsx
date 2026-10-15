@@ -321,7 +321,7 @@ export function ChatGptSettingsPage() {
           saveSchedule();
         }}
       >
-        <h3 className="section-title">تحلیل خودکار (هر ۲ ساعت)</h3>
+        <h3 className="section-title">تحلیل خودکار (پیش‌فرض هر ۶۰ دقیقه)</h3>
         {status?.ai_analysis_model && (
           <p className="hint">
             مدل: {status.ai_analysis_model} · reasoning: {(status.ai_reasoning_effort || "max").toUpperCase()}
