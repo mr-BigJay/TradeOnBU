@@ -40,6 +40,31 @@ def test_wrong_order_does_not_complete():
     assert "liquidity_sweep" in progress.missing
 
 
+def test_historical_swings_enable_sweep_on_first_post_creation_bar():
+    """Pre-boundary bars are context only; first eligible bar can confirm sweep without waiting 12 new bars."""
+    sequence = ["liquidity_sweep", "mss", "entry_zone_touch"]
+    boundary = 5_000_000
+    history: list[Candle] = []
+    for i in range(14, 0, -1):
+        history.append(_bar(boundary - i * 300_000, 100, 100.3, 99.0, 100.1))
+    sweep_bar = _bar(boundary, 100, 100.2, 98.6, 99.4)
+    all_bars = history + [sweep_bar]
+    progress = process_bar_sequential(
+        direction="LONG",
+        sequence=sequence,
+        confirmation_state={},
+        bar=sweep_bar,
+        window=[b for b in all_bars if b.time_ms <= sweep_bar.time_ms],
+        zone_lo=99.0,
+        zone_hi=101.0,
+        invalidation_level=93.0,
+        structured={},
+        monitor_from_ms=boundary,
+    )
+    assert "liquidity_sweep" in progress.completed
+    assert progress.confirmation_timestamps["liquidity_sweep"] == boundary
+
+
 def test_pre_creation_bar_ignored():
     sequence = ["entry_zone_touch"]
     boundary = 1_000_000

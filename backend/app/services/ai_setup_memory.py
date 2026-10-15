@@ -719,6 +719,59 @@ def _levels_materially_different(
     return True
 
 
+async def _setup_has_active_execution(session: AsyncSession, setup_id: str) -> bool:
+    from app.models import SimPosition
+
+    row = (
+        await session.execute(
+            select(SimPosition.id)
+            .where(SimPosition.ai_setup_id == setup_id)
+            .where(SimPosition.status.in_(("pending_entry", "open")))
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    return row is not None
+
+
+def _append_conditional_revision(
+    setup: AiProposedSetup,
+    *,
+    source_run_id: int,
+    structured: dict[str, Any],
+    plan: dict[str, Any],
+) -> None:
+    notes = _notes(setup)
+    history = notes.setdefault("revision_history", [])
+    history.append(
+        {
+            "revised_at": _utc().isoformat(),
+            "source_run_id": source_run_id,
+            "kind": "conditional_revision",
+            "prior_levels": {
+                "entry_price": setup.entry_price,
+                "entry_zone_low": setup.entry_zone_low,
+                "entry_zone_high": setup.entry_zone_high,
+                "stop_loss": setup.stop_loss,
+                "take_profit": setup.take_profit,
+                "invalidation_level": setup.invalidation_level,
+                "expires_at": setup.expires_at.isoformat() if setup.expires_at else None,
+            },
+            "new_levels": {
+                "entry_price": plan.get("proposed_entry_mid"),
+                "entry_zone_low": plan.get("entry_zone_low"),
+                "entry_zone_high": plan.get("entry_zone_high"),
+                "stop_loss": plan.get("proposed_stop_loss"),
+                "take_profit": plan.get("proposed_take_profit"),
+                "invalidation_level": plan.get("structural_invalidation_level"),
+                "expires_at": plan.get("expires_at"),
+            },
+            "confirmation_sequence": plan.get("confirmation_sequence"),
+            "thesis_fa": structured.get("trade_reason") or structured.get("structure_summary"),
+        }
+    )
+    _save_notes(setup, notes)
+
+
 async def _find_duplicate_open(
     session: AsyncSession,
     *,
@@ -752,17 +805,18 @@ async def _persist_conditional_setup(
     direction = plan["potential_direction"]
     dup = await _find_duplicate_open(session, symbol=symbol, direction=direction, entry=plan["proposed_entry_mid"])
     if dup:
+        if await _setup_has_active_execution(session, dup.setup_id):
+            meta["skipped"] = True
+            meta["reason"] = "setup_locked_active_position"
+            return None, meta
         _store_original_forecast(dup)
-        dup.structured_snapshot = structured
-        dup.conditional_plan = plan
-        seq = plan["confirmation_sequence"]
-        dup.confirmation_state = {
-            "sequence": list(seq),
-            "required": list(seq),
-            "completed": (dup.confirmation_state or {}).get("completed") or [],
-            "missing": [t for t in seq if t not in ((dup.confirmation_state or {}).get("completed") or [])],
-            "confirmation_timestamps": (dup.confirmation_state or {}).get("confirmation_timestamps") or {},
-        }
+        _append_conditional_revision(dup, source_run_id=run_id, structured=structured, plan=plan)
+        apply_conditional_plan_to_setup_row(
+            dup, plan=plan, run_id=run_id, structured=structured, created_at=dup.created_at
+        )
+        dup.expires_at = datetime.fromisoformat(plan["expires_at"])
+        dup.status = "open"
+        dup.thesis_fa = structured.get("trade_reason") or structured.get("structure_summary") or dup.thesis_fa
         meta["updated"] = True
         meta["setup_id"] = dup.setup_id
         meta["reason"] = "conditional_revision"
@@ -807,6 +861,14 @@ async def create_setup_from_structured(
 ) -> tuple[AiProposedSetup | None, dict[str, Any]]:
     """Returns (row or None, persistence_meta for artifacts)."""
     meta: dict[str, Any] = {"created": False, "updated": False, "skipped": False}
+    from app.services.ai_trader_persistence_contract import validate_structured_for_persistence
+
+    contract_err = validate_structured_for_persistence(structured)
+    if contract_err and _has_conditional_plan(structured):
+        meta["skipped"] = True
+        meta["reason"] = contract_err
+        return None, meta
+
     if _has_conditional_plan(structured):
         return await _persist_conditional_setup(session, run_id=run_id, symbol=symbol, structured=structured)
 

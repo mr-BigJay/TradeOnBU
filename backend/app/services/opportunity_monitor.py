@@ -212,11 +212,12 @@ class OpportunityMonitorService:
             inv_reason: str | None = None
 
             for bar in new_bars:
+                # Pre-creation bars supply swing context; confirmations only on bars >= boundary.
                 window = [
                     c
                     for c in bundle.closed
-                    if boundary <= c.time_ms <= bar.time_ms and now_ms >= candle_close_ms(c, MONITOR_INTERVAL)
-                ][-40:]
+                    if c.time_ms <= bar.time_ms and now_ms >= candle_close_ms(c, MONITOR_INTERVAL)
+                ][-48:]
                 progress = process_bar_sequential(
                     direction=setup.direction,
                     sequence=sequence,

@@ -41,6 +41,7 @@ async def try_acquire_opportunity_monitor_lock(session: AsyncSession, owner: str
     )
     result = await session.execute(stmt)
     await session.flush()
+    await session.commit()
     if result.rowcount != 1:
         state = await get_system_state(session)
         return state.opportunity_monitor_lock_owner == owner and (state.opportunity_monitor_lock_until_ms or 0) > now_ms
@@ -54,3 +55,4 @@ async def release_opportunity_monitor_lock(session: AsyncSession, owner: str) ->
         state.opportunity_monitor_lock_owner = None
         state.opportunity_monitor_lock_until_ms = 0
         await session.flush()
+        await session.commit()
