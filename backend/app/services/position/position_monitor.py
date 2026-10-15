@@ -321,6 +321,7 @@ class SimPositionMonitorService:
                         now_ms=now_ms,
                         five_m_data_verified=five_m_data_verified,
                         one_m_data_complete=bundle.data_complete,
+                        gaps_remaining=list(bundle.gaps_remaining or []),
                     )
                     if outcome.action == "suspend":
                         notes = dict(setup_row.objective_notes or {})

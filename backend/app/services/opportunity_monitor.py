@@ -263,6 +263,7 @@ async def _monitor_pending_structural_invalidation(
             now_ms=now_ms,
             five_m_data_verified=True,
             one_m_data_complete=bundle_1m.data_complete,
+            gaps_remaining=list(bundle_1m.gaps_remaining or []),
         )
         if outcome.action == "suspend":
             notes = dict(setup.objective_notes or {})

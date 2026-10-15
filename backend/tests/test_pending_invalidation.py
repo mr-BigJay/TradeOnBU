@@ -14,6 +14,8 @@ from app.services.market_data import KlineBundle
 from app.services.opportunity_monitor import OpportunityMonitorService
 from app.services.position import wallet_service as wallet
 
+INTERVAL_1M = 60_000
+
 
 @pytest.mark.asyncio
 async def test_pending_cancelled_on_structural_invalidation_with_margin_release():
@@ -79,8 +81,9 @@ async def test_pending_cancelled_on_structural_invalidation_with_margin_release(
     )
     inv_close = bar_open + 300_000
     pre_1m = []
-    t = order_ms + 60_000
-    while t < inv_close:
+    first_1m_open = (order_ms // INTERVAL_1M) * INTERVAL_1M
+    t = first_1m_open
+    while t <= inv_close - INTERVAL_1M:
         pre_1m.append(
             Candle(time_ms=t, open=98.0, high=99.0, low=97.5, close=98.5, volume=1.0)
         )

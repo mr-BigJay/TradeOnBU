@@ -9,6 +9,7 @@ from app.domain.candle_utils import candle_close_ms, interval_ms
 from app.domain.candles import Candle
 from app.domain.market_freshness import is_market_data_fresh
 from app.services.ict_confirmation_engine import _check_invalidation_on_bar
+from app.services.position.monitor_gap_utils import gaps_remaining_block_processing
 
 INTERVAL_5M = "5m"
 INTERVAL_1M = "1m"
@@ -46,32 +47,56 @@ def verify_five_m_for_pending_fills(
     return True, None
 
 
+def _align_1m_open_ms(t_ms: int, step: int) -> int:
+    return (t_ms // step) * step
+
+
 def one_m_history_rules_out_fill_before_invalidation(
     *,
     order_ms: int,
     invalidation_close_ms: int,
     closed_1m: list[Candle],
     one_m_data_complete: bool,
+    gaps_remaining: list[int] | None = None,
 ) -> bool:
     """
-    True when closed 1m history spans order creation through invalidation close
-    densely enough that an unobserved limit fill before invalidation is unlikely.
+    True only when every closed 1m slot from the order candle through the candle
+    that closes at ``invalidation_close_ms`` is present (no interior gaps).
     """
-    if not one_m_data_complete or not closed_1m:
+    if not one_m_data_complete or invalidation_close_ms < order_ms:
         return False
     step = interval_ms(INTERVAL_1M)
-    in_window = [
-        b
-        for b in closed_1m
-        if order_ms <= candle_close_ms(b, INTERVAL_1M) <= invalidation_close_ms
-    ]
-    if not in_window:
+    first_open = _align_1m_open_ms(order_ms, step)
+    last_open = invalidation_close_ms - step
+    if last_open < first_open:
         return False
-    closes = sorted(candle_close_ms(b, INTERVAL_1M) for b in in_window)
-    if closes[0] > order_ms + step * 2:
+
+    by_open: dict[int, Candle] = {}
+    for bar in closed_1m:
+        open_ms = bar.time_ms
+        if open_ms < first_open or open_ms > last_open:
+            continue
+        if open_ms % step != 0:
+            return False
+        if open_ms in by_open:
+            return False
+        by_open[open_ms] = bar
+
+    cursor = first_open - step if first_open >= step else 0
+    if gaps_remaining_block_processing(
+        gaps_remaining or [], cursor, last_open, step
+    ):
         return False
-    if closes[-1] < invalidation_close_ms - step:
-        return False
+
+    open_ms = first_open
+    while open_ms <= last_open:
+        bar = by_open.get(open_ms)
+        if bar is None:
+            return False
+        close_ms = candle_close_ms(bar, INTERVAL_1M)
+        if close_ms < order_ms or close_ms > invalidation_close_ms:
+            return False
+        open_ms += step
     return True
 
 
@@ -158,6 +183,7 @@ def reconcile_pending_ai_limit_order(
     now_ms: int,
     five_m_data_verified: bool,
     one_m_data_complete: bool = True,
+    gaps_remaining: list[int] | None = None,
 ) -> PendingLimitReconciliation:
     """
     Event-time merge of closed 5m invalidations vs 1m limit touches after order creation.
@@ -188,6 +214,7 @@ def reconcile_pending_ai_limit_order(
             invalidation_close_ms=first_time,
             closed_1m=closed_1m,
             one_m_data_complete=one_m_data_complete,
+            gaps_remaining=gaps_remaining,
         ):
             return PendingLimitReconciliation(
                 action="suspend",
