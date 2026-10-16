@@ -217,13 +217,17 @@ def test_manual_failure_does_not_alter_schedule():
 
 @pytest.mark.asyncio
 async def test_new_setup_true_still_dedupes_same_levels(session):
-    base = {
-        "decision": "LONG",
-        "entry_price": 100.0,
-        "stop_loss": 98.0,
-        "take_profit": 105.0,
-        "proposed_setup": {"new_setup": True, "thesis_fa": "a"},
-    }
+    from tests.conftest import with_immediate_monitor_fields
+
+    base = with_immediate_monitor_fields(
+        {
+            "decision": "LONG",
+            "entry_price": 100.0,
+            "stop_loss": 98.0,
+            "take_profit": 105.0,
+            "proposed_setup": {"new_setup": True, "thesis_fa": "a"},
+        }
+    )
     r1, m1 = await create_setup_from_structured(session, run_id=1, symbol="BTCUSDT", structured=base)
     await session.commit()
     assert m1["created"]
@@ -236,6 +240,8 @@ async def test_new_setup_true_still_dedupes_same_levels(session):
 
 @pytest.mark.asyncio
 async def test_continue_setup_rejects_cross_symbol(session):
+    from tests.conftest import with_immediate_monitor_fields
+
     row = AiProposedSetup(
         setup_id="cid",
         run_id=1,
@@ -249,12 +255,14 @@ async def test_continue_setup_rejects_cross_symbol(session):
     )
     session.add(row)
     await session.commit()
-    structured = {
-        "decision": "LONG",
-        "entry_price": 100,
-        "stop_loss": 98,
-        "take_profit": 105,
-        "proposed_setup": {"continue_setup_id": "cid", "thesis_fa": "x"},
-    }
+    structured = with_immediate_monitor_fields(
+        {
+            "decision": "LONG",
+            "entry_price": 100,
+            "stop_loss": 98,
+            "take_profit": 105,
+            "proposed_setup": {"continue_setup_id": "cid", "thesis_fa": "x"},
+        }
+    )
     _, meta = await create_setup_from_structured(session, run_id=2, symbol="ETHUSDT", structured=structured)
     assert meta["reason"] == "continue_setup_mismatch"

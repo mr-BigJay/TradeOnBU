@@ -130,7 +130,18 @@ async def test_worker_refreshes_execution_model_each_cycle(monkeypatch):
         await session.commit()
         await refresh_settings_cache(session)
 
+    # Verify runtime settings propagation independently from unrelated online
+    # market monitors (offline CI must not call Bitunix during this test).
     w = BotWorker()
-    await w.run_cycle()
+    with patch(
+        "app.services.opportunity_monitor.run_opportunity_monitor_tick", AsyncMock(return_value={})
+    ), patch(
+        "app.services.position.position_monitor.SimPositionMonitorService.monitor_session", AsyncMock(return_value=0)
+    ), patch(
+        "app.services.signal_monitor.SignalMonitorService.monitor_open_signals", AsyncMock(return_value={})
+    ), patch(
+        "app.services.notification_outbox.NotificationOutboxService.flush_pending", AsyncMock()
+    ):
+        await w.run_cycle()
     assert w.lifecycle.paper.settings.margin_usdt == 75.0
     assert w.entry.paper.settings.margin_usdt == 75.0

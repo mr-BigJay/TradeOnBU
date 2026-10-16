@@ -35,6 +35,8 @@ def test_instructions_require_conditional_plan_not_only_no_trade():
     assert "conditional setup" in INSTRUCTIONS.lower()
     assert "potential_direction" in INSTRUCTIONS
     assert "confirmation_required" in INSTRUCTIONS
+    assert "confirmation_type" in INSTRUCTIONS
+    assert "structural_invalidation_level" in INSTRUCTIONS
 
 
 def test_instructions_require_intraday_not_scalp():

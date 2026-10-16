@@ -54,8 +54,8 @@ def _sample_setup(**kwargs) -> AiProposedSetup:
         direction="LONG",
         status="open",
         entry_price=100.0,
-        stop_loss=95.0,
-        take_profit=110.0,
+        stop_loss=94.0,
+        take_profit=115.0,
         expires_at=now + timedelta(hours=24),
         paper_fill_recorded=False,
         structured_snapshot=_ict_clear_structured(),
@@ -91,8 +91,8 @@ async def test_auto_open_creates_pending_limit_order():
         assert pos.status == "pending_entry"
         assert pos.order_type == "limit"
         assert pos.limit_entry_price == 100.0
-        assert pos.stop_loss == 95.0
-        assert pos.take_profit == 110.0
+        assert pos.stop_loss == 94.0
+        assert pos.take_profit == 115.0
         assert pos.extra.get("auto_paper") is True
 
 
@@ -107,8 +107,8 @@ async def test_auto_open_stores_ict_entry_audit_snapshot():
 
         structured = _ict_clear_structured(
             entry_price=100.0,
-            stop_loss=95.0,
-            take_profit=110.0,
+            stop_loss=94.0,
+            take_profit=115.0,
         )
         validation = {"ai_decision": "LONG", "acceptable_rr": True}
         meta = await maybe_auto_open_paper_position(
@@ -124,8 +124,8 @@ async def test_auto_open_stores_ict_entry_audit_snapshot():
         snap = meta["ict_entry_snapshot"]
         assert snap["decision"] == "LONG"
         assert snap["entry"] == 100.0
-        assert snap["stop_loss"] == 95.0
-        assert snap["take_profit"] == 110.0
+        assert snap["stop_loss"] == 94.0
+        assert snap["take_profit"] == 115.0
         assert snap["liquidity_event_clear"] is True
         assert snap["poi_reaction_clear"] is True
         assert snap["structural_confirmation_clear"] is True
@@ -266,8 +266,21 @@ async def test_monitor_cancels_expired_auto_pending_before_fill():
             interval="1m",
         )
 
+        bundle_5m = KlineBundle(
+            closed=[bar],
+            forming=None,
+            gaps_detected=[],
+            gaps_remaining=[],
+            data_complete=True,
+            interval="5m",
+        )
+
+        def _fetch(_symbol: str, interval: str, _limit: int):
+            return bundle_5m if interval == "5m" else bundle
+
         mon = SimPositionMonitorService()
-        with patch.object(mon.market, "fetch_kline_bundle", AsyncMock(return_value=bundle)):
-            await mon.monitor_session(session)
+        with patch.object(mon.market, "fetch_kline_bundle", AsyncMock(side_effect=_fetch)):
+            with patch("app.services.opportunity_monitor.is_market_data_fresh", return_value=(True, 5, 600)):
+                await mon.monitor_session(session)
         pos = (await session.execute(select(SimPosition))).scalar_one()
         assert pos.status == "cancelled"

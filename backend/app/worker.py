@@ -65,6 +65,10 @@ class BotWorker:
                 self.outbox = NotificationOutboxService(TelegramNotifier())
                 self.telegram = self.outbox.notifier
 
+                from app.services.opportunity_monitor import run_opportunity_monitor_tick
+
+                # 5m opportunity invalidation before 1m simulated limit fills.
+                await run_opportunity_monitor_tick(session)
                 await self.sim_monitor.monitor_session(session)
 
                 monitor_events = await self.monitor.monitor_open_signals(session, runtime)

@@ -4,6 +4,7 @@ import time
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import or_, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.time_utils import ensure_utc
@@ -16,11 +17,15 @@ def _now_ms() -> int:
 
 async def get_system_state(session: AsyncSession) -> SystemState:
     row = (await session.execute(select(SystemState).where(SystemState.id == 1))).scalar_one_or_none()
-    if row is None:
-        row = SystemState(id=1)
-        session.add(row)
-        await session.commit()
-        await session.refresh(row)
+    if row is not None:
+        return row
+    row = SystemState(id=1)
+    session.add(row)
+    try:
+        await session.flush()
+    except IntegrityError:
+        await session.rollback()
+        row = (await session.execute(select(SystemState).where(SystemState.id == 1))).scalar_one()
     return row
 
 

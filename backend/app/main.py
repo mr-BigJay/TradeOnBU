@@ -23,6 +23,7 @@ from app.routes import settings_gui as settings_gui_routes
 from app.routes import chatgpt_ai as chatgpt_ai_routes
 from app.routes import siwc_public as siwc_public_routes
 from app.routes import position as position_routes
+from app.routes import opportunities as opportunities_routes
 from app.services.settings_runtime import refresh_settings_cache
 from app.models import MarketTrendSnapshot, Signal, SignalEvent, SignalStatus
 from app.schemas import (
@@ -95,6 +96,26 @@ async def lifespan(app: FastAPI):
             max_instances=1,
             coalesce=True,
         )
+
+        async def _opportunity_monitor_tick() -> None:
+            from app.services.opportunity_monitor import run_opportunity_monitor_tick
+
+            async with SessionLocal() as session:
+                try:
+                    await run_opportunity_monitor_tick(session)
+                    await session.commit()
+                except Exception:
+                    logger.exception("Opportunity monitor tick failed")
+
+        opp_seconds = max(30, int(get_settings().opportunity_monitor_interval_seconds))
+        scheduler.add_job(
+            _opportunity_monitor_tick,
+            "interval",
+            seconds=opp_seconds,
+            id="ict_opportunity_monitor",
+            max_instances=1,
+            coalesce=True,
+        )
     yield
     scheduler.shutdown(wait=False)
 
@@ -105,6 +126,7 @@ app.include_router(settings_gui_routes.router)
 app.include_router(chatgpt_ai_routes.router)
 app.include_router(siwc_public_routes.router)
 app.include_router(position_routes.router)
+app.include_router(opportunities_routes.router)
 app.add_middleware(SessionSecurityMiddleware)
 app.add_middleware(
     CORSMiddleware,

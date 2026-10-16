@@ -695,7 +695,9 @@ async def test_equity_unrealized_excludes_entry_fee():
         )
         with patch.object(svc.market, "fetch_ticker", AsyncMock(return_value=(100.0, None))):
             await svc.create_order(db_session, req)
-        mtm = await aggregate_open_mark_to_market(db_session, svc)
+        # The mark is explicit: this test checks equity arithmetic, not Bitunix HTTP.
+        with patch.object(svc.market, "fetch_ticker", AsyncMock(return_value=(101.0, None))):
+            mtm = await aggregate_open_mark_to_market(db_session, svc)
         summary = await wallet.wallet_summary(
             db_session,
             unrealized_gross=mtm["unrealized_gross"],
@@ -708,6 +710,50 @@ async def test_equity_unrealized_excludes_entry_fee():
             abs=1e-4,
         )
         assert mtm["unrealized_net"] == pytest.approx(mtm["unrealized_gross"] - mtm["estimated_exit_fees"], abs=1e-6)
+
+
+@pytest.mark.asyncio
+async def test_quote_outage_does_not_rollback_paper_limit_fill():
+    """An MTM quote failure must not discard a candle-validated paper fill."""
+    from httpx import ConnectError
+
+    await init_db()
+    async with SessionLocal() as db_session:
+        await wallet.append_ledger(db_session, entry_type=wallet.LEDGER_INITIAL, amount_usdt=1000.0)
+        await _ensure_paper_settings(db_session, slippage_bps=0, max_risk_pct_per_position=100)
+        pos = SimPosition(
+            public_id="quote-outage-fill",
+            symbol="BTCUSDT",
+            direction="LONG",
+            status="pending_entry",
+            order_type="limit",
+            margin_usdt=50.0,
+            leverage=10,
+            limit_entry_price=100.0,
+            entry_price=100.0,
+            stop_loss=95.0,
+            take_profit=110.0,
+            monitor_from_ms=0,
+            last_processed_candle_ms=0,
+        )
+        db_session.add(pos)
+        await db_session.commit()
+        candle = Candle(time_ms=60_000, open=100, high=101, low=99, close=100, volume=1)
+        bundle = KlineBundle(
+            closed=[candle], forming=None, gaps_detected=[], gaps_remaining=[],
+            data_complete=True, interval="1m",
+        )
+        mon = SimPositionMonitorService()
+        with patch.object(mon.market, "fetch_kline_bundle", AsyncMock(return_value=bundle)):
+            with patch(
+                "app.services.position.position_monitor.record_equity_snapshot",
+                AsyncMock(side_effect=ConnectError("offline simulated quote")),
+            ):
+                await mon.monitor_session(db_session)
+        await db_session.refresh(pos)
+        assert pos.status == "open"
+        assert pos.fill_price == pytest.approx(100.0)
+        assert pos.extra.get("entry_fill_bar_ms") == candle.time_ms
 
 
 @pytest.mark.asyncio

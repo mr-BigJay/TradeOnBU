@@ -13,7 +13,17 @@ from app.config import get_effective_settings
 from app.db import get_db
 from app.models import AiAnalysisRun, AiAnalysisSettings, SiwcConnectSession
 from app.routes.auth import require_dashboard_access
-from app.services.ai_analysis_scheduler import get_or_create_settings, scheduling_allowed
+from app.services.ai_analysis_scheduler import (
+    DEFAULT_AI_INTERVAL_MINUTES,
+    MAX_AI_INTERVAL_MINUTES,
+    MIN_AI_INTERVAL_MINUTES,
+    LEGACY_AUTO_MIGRATED_INTERVAL_MINUTES,
+    apply_user_schedule_interval_choice,
+    confirm_legacy_one_twenty_schedule,
+    get_or_create_settings,
+    migrate_ai_schedule_settings,
+    scheduling_allowed,
+)
 from app.services.ai_analysis_executor import execute_ai_analysis_with_lock
 from app.services.siwc.connect_flow import consume_connect_session, new_connect_secret
 from app.services.siwc.credentials import disconnect, get_access_token, get_credential_row
@@ -52,7 +62,11 @@ def _telegram_delivery(run: AiAnalysisRun) -> dict:
 class SettingsBody(BaseModel):
     enabled: bool = False
     unattended_consent: bool = False
-    interval_minutes: int = Field(default=120, ge=120, le=360)
+    interval_minutes: int = Field(
+        default=DEFAULT_AI_INTERVAL_MINUTES,
+        ge=MIN_AI_INTERVAL_MINUTES,
+        le=MAX_AI_INTERVAL_MINUTES,
+    )
     preferred_model: str | None = None
 
 
@@ -67,7 +81,7 @@ class ConnectCompleteBody(BaseModel):
 @router.get("/status")
 async def status(session: AsyncSession = Depends(get_db), _=Depends(require_dashboard_access)):
     cred = await get_credential_row(session)
-    cfg = await get_or_create_settings(session)
+    cfg = await get_or_create_settings(session, autocommit_migration=True)
     connected = bool(cred and cred.client_id and cred.access_token_enc)
     plan_ok = bool(cred and has_plan_scope(cred.scopes_json or []))
     sched_ok, sched_reason = await scheduling_allowed(session)
@@ -97,7 +111,9 @@ async def status(session: AsyncSession = Depends(get_db), _=Depends(require_dash
         "paper_only": True,
         "ai_analysis_model": get_effective_settings().ai_analysis_model,
         "ai_reasoning_effort": get_effective_settings().ai_reasoning_effort,
-        "schedule_default_minutes": 120,
+        "schedule_default_minutes": DEFAULT_AI_INTERVAL_MINUTES,
+        "schedule_min_minutes": MIN_AI_INTERVAL_MINUTES,
+        "schedule_max_minutes": MAX_AI_INTERVAL_MINUTES,
     }
 
 
@@ -200,9 +216,21 @@ async def put_settings(body: SettingsBody, session: AsyncSession = Depends(get_d
         raise HTTPException(400, "Connect ChatGPT before enabling scheduling")
     if body.enabled and not body.unattended_consent:
         raise HTTPException(400, "Explicit unattended ChatGPT usage consent is required to enable scheduling")
-    cfg = await get_or_create_settings(session)
+    cfg = await get_or_create_settings(session, apply_legacy_restore=False)
     cfg.enabled = body.enabled
-    cfg.interval_minutes = body.interval_minutes
+    prev_interval = cfg.interval_minutes
+    if (
+        body.interval_minutes == LEGACY_AUTO_MIGRATED_INTERVAL_MINUTES
+        and cfg.interval_migrated_from_60
+    ):
+        confirm_legacy_one_twenty_schedule(cfg)
+    elif cfg.interval_migrated_from_60:
+        migrate_ai_schedule_settings(cfg)
+    apply_user_schedule_interval_choice(
+        cfg,
+        previous_interval_minutes=prev_interval,
+        requested_interval_minutes=body.interval_minutes,
+    )
     if body.unattended_consent and not cfg.unattended_consent:
         cfg.unattended_consent = True
         cfg.unattended_consent_at = datetime.now(timezone.utc)
@@ -239,6 +267,10 @@ async def history(limit: int = 50, session: AsyncSession = Depends(get_db), _=De
             "status": r.status,
             "trigger": r.trigger,
             "decision": r.decision,
+            "raw_decision": r.decision,
+            "final_ai_decision": r.final_ai_decision,
+            "setup_mode": r.setup_mode,
+            "display_decision": (r.final_ai_decision or r.decision),
             "model_slug": r.model_slug,
             "telegram_sent": r.telegram_sent,
             "telegram_delivery": _telegram_delivery(r),
@@ -262,6 +294,10 @@ async def history_detail(run_id: int, session: AsyncSession = Depends(get_db), _
         "id": run.id,
         "status": run.status,
         "decision": run.decision,
+        "raw_decision": run.decision,
+        "final_ai_decision": run.final_ai_decision,
+        "setup_mode": run.setup_mode,
+        "display_decision": run.final_ai_decision or run.decision,
         "report_fa": run.report_fa,
         "structured": structured_for_user_display(run.structured),
         "validation": run.validation,

@@ -77,7 +77,7 @@ export function ChatGptSettingsPage() {
   const [draft, setDraft] = useState<ConnectDraft>(() => loadDraft());
   const [consent, setConsent] = useState(false);
   const [scheduleEnabled, setScheduleEnabled] = useState(false);
-  const [intervalMin, setIntervalMin] = useState(120);
+  const [intervalMin, setIntervalMin] = useState(60);
   const [busy, setBusy] = useState<string | null>(null);
 
   const patchDraft = useCallback((patch: Partial<ConnectDraft>) => {
@@ -89,7 +89,7 @@ export function ChatGptSettingsPage() {
     setStatus(s);
     setConsent(!!s.unattended_consent);
     setScheduleEnabled(!!s.hourly_enabled);
-    setIntervalMin(s.interval_minutes || 120);
+    setIntervalMin(s.interval_minutes || 60);
   }, []);
 
   useEffect(() => {
@@ -321,7 +321,7 @@ export function ChatGptSettingsPage() {
           saveSchedule();
         }}
       >
-        <h3 className="section-title">تحلیل خودکار (هر ۲ ساعت)</h3>
+        <h3 className="section-title">تحلیل خودکار (پیش‌فرض هر ۶۰ دقیقه)</h3>
         {status?.ai_analysis_model && (
           <p className="hint">
             مدل: {status.ai_analysis_model} · reasoning: {(status.ai_reasoning_effort || "max").toUpperCase()}
@@ -341,10 +341,10 @@ export function ChatGptSettingsPage() {
           <span>فعال‌سازی زمان‌بندی</span>
         </label>
         <label>
-          هر چند ساعت؟ (۱۲۰–۳۶۰ دقیقه · پیش‌فرض ۲ ساعت)
+          هر چند دقیقه؟ (۶۰–۳۶۰ · پیش‌فرض ۶۰)
           <input
             type="number"
-            min={120}
+            min={60}
             max={360}
             inputMode="numeric"
             value={intervalMin}

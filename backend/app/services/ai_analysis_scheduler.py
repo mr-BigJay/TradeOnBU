@@ -12,7 +12,10 @@ from app.services.siwc.oauth import has_plan_scope
 from app.services.system_state import get_system_state
 
 FAILURE_BACKOFF_MINUTES = 15
-DEFAULT_AI_INTERVAL_MINUTES = 120
+MIN_AI_INTERVAL_MINUTES = 60
+MAX_AI_INTERVAL_MINUTES = 360
+DEFAULT_AI_INTERVAL_MINUTES = MIN_AI_INTERVAL_MINUTES
+LEGACY_AUTO_MIGRATED_INTERVAL_MINUTES = 120
 
 
 def _utc_now() -> datetime:
@@ -23,19 +26,99 @@ def _ensure_utc(dt: datetime) -> datetime:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
+def _effective_interval_minutes(cfg: AiAnalysisSettings) -> int:
+    raw = cfg.interval_minutes if cfg.interval_minutes is not None else DEFAULT_AI_INTERVAL_MINUTES
+    return min(MAX_AI_INTERVAL_MINUTES, max(MIN_AI_INTERVAL_MINUTES, int(raw)))
+
+
+def _earliest_next_run(cfg: AiAnalysisSettings, interval: int, now: datetime) -> datetime:
+    if cfg.last_success_at:
+        return max(_ensure_utc(cfg.last_success_at) + timedelta(minutes=interval), now)
+    if cfg.last_run_at:
+        return max(_ensure_utc(cfg.last_run_at) + timedelta(minutes=interval), now)
+    return now
+
+
+def _reschedule_next_run_after_interval_change(
+    cfg: AiAnalysisSettings,
+    now: datetime | None = None,
+    *,
+    previous_interval_minutes: int | None = None,
+) -> None:
+    """
+    Recompute next_run_at for a new interval.
+
+    When shortening the interval, snap to the new cadence (never before
+    last_success_at + new interval). When lengthening, do not move next_run
+    earlier than the previous scheduled time.
+    """
+    now = now or _utc_now()
+    interval = _effective_interval_minutes(cfg)
+    floor = _earliest_next_run(cfg, interval, now)
+    current = _ensure_utc(cfg.next_run_at) if cfg.next_run_at else None
+
+    if previous_interval_minutes is not None and previous_interval_minutes > interval:
+        cfg.next_run_at = floor
+        return
+
+    if current and current > now:
+        cfg.next_run_at = max(current, floor)
+    else:
+        cfg.next_run_at = floor
+
+
 def migrate_ai_schedule_settings(cfg: AiAnalysisSettings) -> bool:
-    """One-time 60→120 minute interval migration; does not rewrite next_run_at."""
-    if cfg.interval_migrated_from_60:
+    """
+    One-time restore for rows auto-bumped 60→120 by legacy migration.
+
+    Skips installs where the user explicitly kept 120 (interval_migrated_from_60
+    cleared via settings save) or chose another interval.
+    """
+    if not cfg.interval_migrated_from_60:
         return False
-    if cfg.interval_minutes != 60:
+    if cfg.interval_minutes != LEGACY_AUTO_MIGRATED_INTERVAL_MINUTES:
         return False
+    previous = cfg.interval_minutes
     cfg.interval_minutes = DEFAULT_AI_INTERVAL_MINUTES
-    cfg.interval_migrated_from_60 = True
+    cfg.interval_migrated_from_60 = False
+    _reschedule_next_run_after_interval_change(
+        cfg, previous_interval_minutes=previous
+    )
     return True
 
 
-async def get_or_create_settings(session: AsyncSession) -> AiAnalysisSettings:
+def apply_user_schedule_interval_choice(
+    cfg: AiAnalysisSettings,
+    *,
+    previous_interval_minutes: int,
+    requested_interval_minutes: int,
+) -> None:
+    """
+    Record an explicit user interval choice without touching unrelated fields.
+
+    Clears the legacy migration marker only when the user changes the interval
+    or re-saves 120 while the legacy auto-migrate flag is still set (confirming
+    an intentional 120-minute schedule).
+    """
+    cfg.interval_minutes = requested_interval_minutes
+    if requested_interval_minutes != previous_interval_minutes:
+        cfg.interval_migrated_from_60 = False
+    elif cfg.interval_migrated_from_60 and requested_interval_minutes == LEGACY_AUTO_MIGRATED_INTERVAL_MINUTES:
+        cfg.interval_migrated_from_60 = False
+    if requested_interval_minutes != previous_interval_minutes:
+        _reschedule_next_run_after_interval_change(
+            cfg, previous_interval_minutes=previous_interval_minutes
+        )
+
+
+async def get_or_create_settings(
+    session: AsyncSession,
+    *,
+    autocommit_migration: bool = False,
+    apply_legacy_restore: bool = True,
+) -> AiAnalysisSettings:
     row = (await session.execute(select(AiAnalysisSettings).where(AiAnalysisSettings.id == 1))).scalar_one_or_none()
+    created = False
     if row is None:
         row = AiAnalysisSettings(
             id=1,
@@ -44,14 +127,29 @@ async def get_or_create_settings(session: AsyncSession) -> AiAnalysisSettings:
             interval_minutes=DEFAULT_AI_INTERVAL_MINUTES,
         )
         session.add(row)
+        created = True
         await session.flush()
-    if migrate_ai_schedule_settings(row):
+    migrated = False
+    if apply_legacy_restore and not created:
+        migrated = migrate_ai_schedule_settings(row)
+    if migrated:
         await session.flush()
+        if autocommit_migration:
+            await session.commit()
     return row
 
 
-async def scheduling_allowed(session: AsyncSession) -> tuple[bool, str | None]:
-    cfg = await get_or_create_settings(session)
+def confirm_legacy_one_twenty_schedule(cfg: AiAnalysisSettings) -> None:
+    """User explicitly kept 120 minutes; skip automatic restore to 60."""
+    if cfg.interval_migrated_from_60:
+        cfg.interval_migrated_from_60 = False
+
+
+async def scheduling_allowed(
+    session: AsyncSession,
+    cfg: AiAnalysisSettings | None = None,
+) -> tuple[bool, str | None]:
+    cfg = cfg or await get_or_create_settings(session)
     if not cfg.unattended_consent:
         return False, "unattended_consent_required"
     if not cfg.enabled:
@@ -65,7 +163,7 @@ async def scheduling_allowed(session: AsyncSession) -> tuple[bool, str | None]:
 
 
 def _next_regular_run_at(cfg: AiAnalysisSettings, now: datetime) -> datetime:
-    interval = max(DEFAULT_AI_INTERVAL_MINUTES, cfg.interval_minutes)
+    interval = _effective_interval_minutes(cfg)
     anchor = cfg.last_success_at or cfg.last_run_at or now
     anchor = _ensure_utc(anchor)
     nxt = anchor + timedelta(minutes=interval)
@@ -83,7 +181,7 @@ def record_run_outcome(
 ) -> None:
     now = _utc_now()
     cfg.last_run_at = now
-    interval = max(DEFAULT_AI_INTERVAL_MINUTES, cfg.interval_minutes or DEFAULT_AI_INTERVAL_MINUTES)
+    interval = _effective_interval_minutes(cfg)
     if run_status.startswith("completed"):
         cfg.last_success_at = now
         cfg.last_error = None
@@ -172,10 +270,10 @@ async def is_analysis_lock_held() -> bool:
 
 
 async def should_run_scheduled(session: AsyncSession) -> bool:
-    ok, _ = await scheduling_allowed(session)
+    cfg = await get_or_create_settings(session, autocommit_migration=True)
+    ok, _ = await scheduling_allowed(session, cfg)
     if not ok:
         return False
-    cfg = await get_or_create_settings(session)
     if cfg.next_run_at is None:
         return True
     return _utc_now() >= _ensure_utc(cfg.next_run_at)

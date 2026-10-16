@@ -7,6 +7,8 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.setup_lifecycle import PENDING_ENTRY, POSITION_OPEN, READY_LONG, READY_SHORT
+from app.domain.time_utils import ensure_utc
 from app.models import AiProposedSetup, SimPosition, SimPositionSettings
 from app.services.ai_setup_memory import validate_proposed_setup_levels
 from app.services.position.execution_adapters import OrderRequest
@@ -28,11 +30,17 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def setup_eligible_for_auto_entry(setup: AiProposedSetup, *, now: datetime | None = None) -> tuple[bool, str | None]:
+def setup_eligible_for_auto_entry(
+    setup: AiProposedSetup,
+    *,
+    now: datetime | None = None,
+    require_ai_flags: bool = True,
+) -> tuple[bool, str | None]:
     now = now or _utc_now()
     if setup.status != "open":
         return False, f"setup_status_{setup.status}"
-    if setup.expires_at is not None and setup.expires_at <= now:
+    exp = ensure_utc(setup.expires_at)
+    if exp is not None and exp <= (now if now.tzinfo else now.replace(tzinfo=timezone.utc)):
         return False, "setup_expired"
     entry = setup.entry_price
     sl = setup.stop_loss
@@ -44,9 +52,16 @@ def setup_eligible_for_auto_entry(setup: AiProposedSetup, *, now: datetime | Non
         return False, err
     if setup.paper_fill_recorded:
         return False, "paper_fill_already_recorded"
-    ok_flags, flag_reason = ict_auto_entry_confirmations_clear(setup.structured_snapshot or {})
-    if not ok_flags:
-        return False, flag_reason
+    lifecycle = (setup.lifecycle_state or "").upper()
+    if lifecycle in (PENDING_ENTRY, POSITION_OPEN):
+        return True, None
+    objective_ready = lifecycle in (READY_LONG, READY_SHORT) or bool(
+        (setup.last_validation_result or {}).get("ok")
+    )
+    if require_ai_flags and not objective_ready:
+        ok_flags, flag_reason = ict_auto_entry_confirmations_clear(setup.structured_snapshot or {})
+        if not ok_flags:
+            return False, flag_reason
     return True, None
 
 
@@ -83,15 +98,18 @@ def build_ict_entry_audit_snapshot(
 def trade_decision_allows_auto_paper(
     structured: dict[str, Any],
     validation: dict[str, Any],
+    *,
+    require_ai_flags: bool = True,
 ) -> tuple[bool, str | None]:
     decision = str(structured.get("decision") or validation.get("ai_decision") or "").upper()
     if decision not in ("LONG", "SHORT"):
         return False, "not_trade_decision"
     if validation.get("acceptable_rr") is not True:
         return False, "net_rr_not_acceptable"
-    ok_flags, flag_reason = ict_auto_entry_confirmations_clear(structured)
-    if not ok_flags:
-        return False, flag_reason
+    if require_ai_flags and not validation.get("objective_ready"):
+        ok_flags, flag_reason = ict_auto_entry_confirmations_clear(structured)
+        if not ok_flags:
+            return False, flag_reason
     return True, None
 
 
@@ -123,6 +141,7 @@ async def maybe_auto_open_paper_position(
     structured: dict[str, Any],
     symbol: str,
     commit: bool = True,
+    require_ai_flags: bool = True,
 ) -> dict[str, Any]:
     """
     Create a pending limit paper order from a validated AI setup when auto mode is enabled.
@@ -147,16 +166,55 @@ async def maybe_auto_open_paper_position(
         meta["reason"] = "wallet_not_initialized"
         return meta
 
-    ok_val, val_reason = trade_decision_allows_auto_paper(structured, validation)
+    from app.services.conditional_revision import objective_confirmations_satisfied
+
+    lifecycle_upper = (setup.lifecycle_state or "").upper()
+    if lifecycle_upper in (READY_LONG, READY_SHORT):
+        ok_conf, conf_reason = objective_confirmations_satisfied(setup)
+        if not ok_conf:
+            meta["skipped"] = True
+            meta["reason"] = conf_reason or "missing_confirmations"
+            return meta
+
+    ok_val, val_reason = trade_decision_allows_auto_paper(
+        structured, validation, require_ai_flags=require_ai_flags
+    )
     if not ok_val:
         meta["skipped"] = True
         meta["reason"] = val_reason
         return meta
 
-    ok_setup, setup_reason = setup_eligible_for_auto_entry(setup)
+    lifecycle = (setup.lifecycle_state or "").upper()
+    if validation.get("objective_ready") and lifecycle not in (READY_LONG, READY_SHORT, PENDING_ENTRY):
+        meta["skipped"] = True
+        meta["reason"] = "lifecycle_not_ready"
+        return meta
+
+    ok_setup, setup_reason = setup_eligible_for_auto_entry(setup, require_ai_flags=require_ai_flags)
     if not ok_setup:
         meta["skipped"] = True
         meta["reason"] = setup_reason
+        return meta
+
+    from app.domain.paper_execution_policy import HARD_MIN_AUTO_PAPER_NET_RR
+    from app.services.execution_model_sim import net_rr_acceptable_for_auto_paper
+
+    entry_f = float(setup.entry_price)  # type: ignore[arg-type]
+    sl_f = float(setup.stop_loss)  # type: ignore[arg-type]
+    tp_f = float(setup.take_profit)  # type: ignore[arg-type]
+    rr_ok, net_rr = await net_rr_acceptable_for_auto_paper(
+        session,
+        direction=setup.direction,
+        entry=entry_f,
+        sl=sl_f,
+        tp=tp_f,
+        min_net_rr=HARD_MIN_AUTO_PAPER_NET_RR,
+    )
+    if not rr_ok:
+        meta["skipped"] = True
+        meta["reason"] = "net_rr_below_min"
+        meta["net_rr"] = net_rr
+        meta["required_min_net_rr"] = HARD_MIN_AUTO_PAPER_NET_RR
         return meta
 
     if await _has_position_for_setup(session, setup.setup_id):
@@ -244,7 +302,9 @@ async def auto_paper_entry_still_valid(session: AsyncSession, pos: SimPosition) 
     ).scalar_one_or_none()
     if setup is None:
         return False, "setup_not_found"
-    return setup_eligible_for_auto_entry(setup)
+    lifecycle = (setup.lifecycle_state or "").upper()
+    require_flags = lifecycle not in (READY_LONG, READY_SHORT, PENDING_ENTRY, POSITION_OPEN)
+    return setup_eligible_for_auto_entry(setup, require_ai_flags=require_flags)
 
 
 async def mark_setup_paper_fill(session: AsyncSession, pos: SimPosition) -> None:
@@ -255,3 +315,6 @@ async def mark_setup_paper_fill(session: AsyncSession, pos: SimPosition) -> None
     ).scalar_one_or_none()
     if setup:
         setup.paper_fill_recorded = True
+        from app.domain.setup_lifecycle import POSITION_OPEN
+
+        setup.lifecycle_state = POSITION_OPEN

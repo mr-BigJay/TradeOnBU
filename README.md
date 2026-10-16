@@ -24,6 +24,20 @@ For self-hosted VMs, OpenAI documents completing OAuth locally then transferring
 
 Hourly analysis runs server-side when connected (`store: false`, `stream: true`). Failures are recorded; rule-based reports are **not** substituted as AI. **Paper only.**
 
+## ICT opportunity lifecycle (AI-first)
+
+Architecture (paper only):
+
+1. **ChatGPT** proposes immediate or **conditional WAIT** plans (`setup_mode=conditional`, `final_ai_decision=WAIT`).
+2. **Persistence** stores conditional plans as `AiProposedSetup` rows in `WAIT_LONG` / `WAIT_SHORT` (not dropped when `decision=NO_TRADE`).
+3. **Opportunity monitor** (~60s, public Bitunix candles) evaluates objective ICT confirmations on **closed** bars — not GPT boolean flags alone.
+4. **READY_*** setups pass net R:R ≥ 2 (unchanged) and may create **pending limit** paper orders when `auto_open_paper_positions` is enabled.
+5. Existing **sim position monitor** fills limits and manages TP/SL.
+
+Dashboard: **فرصت‌ها** tab → `GET /api/gui/opportunities/dashboard`.
+
+**VPS verification (no deploy from agent):** after merge, pull on `/opt/tradeonbu`, rebuild containers, confirm migrations apply (new columns on `ai_proposed_setups`, `ict_setup_audit_events` table). SQLite data is preserved; do not run `docker compose down -v`.
+
 ## Phase 3 — One-command install (Ubuntu/Debian)
 
 Production install (interactive — domain, admin username/password only). **Use the bootstrap entry point** so helper scripts are downloaded before install runs:

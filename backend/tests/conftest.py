@@ -19,17 +19,74 @@ from app.main import app
 
 get_settings.cache_clear()
 
-TEST_ENGINE = create_async_engine(os.environ["DATABASE_URL"], echo=False)
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "no_monitor_fetch_delegate: use real fetch_monitor_5m_bundle in test")
+
+
+def with_immediate_monitor_fields(structured: dict) -> dict:
+    """Fields required for immediate LONG/SHORT persistence (production contract)."""
+    return {
+        **structured,
+        "confirmation_type": structured.get("confirmation_type", "sweep_mss_poi"),
+        "structural_invalidation_level": structured.get(
+            "structural_invalidation_level", structured.get("stop_loss", 97.0) - 1.0
+        ),
+    }
+
+
+from app.db import _sqlite_engine_kwargs
+
+TEST_ENGINE = create_async_engine(
+    os.environ["DATABASE_URL"],
+    echo=False,
+    **_sqlite_engine_kwargs(os.environ["DATABASE_URL"]),
+)
 TestSession = async_sessionmaker(TEST_ENGINE, expire_on_commit=False)
 
 
-@pytest_asyncio.fixture(autouse=True)
-async def prepare_db():
-    from app.services.settings_runtime import reset_settings_overlay
+@pytest.fixture(autouse=True)
+def delegate_monitor_kline_fetch(monkeypatch, request):
+    """Keep legacy tests working: monitor tick uses mocked fetch_kline_bundle."""
+    if request.node.get_closest_marker("no_monitor_fetch_delegate"):
+        return
 
+    async def _delegate(market, symbol, setups, *, now_ms):
+        from app.services.monitor_kline_backfill import aggregate_monitor_kline_limit
+
+        limit, per = aggregate_monitor_kline_limit(setups, now_ms=now_ms, interval="5m")
+        cap = min(limit, 200)
+        bundle = await market.fetch_kline_bundle(symbol, "5m", cap)
+        return bundle, {
+            "aggregate_limit": limit,
+            "per_setup": per,
+            "fetch_mode": "recent_window",
+        }
+
+    monkeypatch.setattr(
+        "app.services.opportunity_monitor.fetch_monitor_5m_bundle",
+        _delegate,
+    )
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def prepare_db(request):
+    from app.services.settings_runtime import reset_settings_overlay
+    from tests.db_safety import assert_destructive_db_allowed
+
+    if request.node.get_closest_marker("forward_e2e"):
+        yield
+        return
+
+    assert_destructive_db_allowed(os.environ["DATABASE_URL"])
     reset_settings_overlay()
     get_settings.cache_clear()
     async with TEST_ENGINE.begin() as conn:
+        from sqlalchemy import text
+
+        if conn.dialect.name == "sqlite":
+            await conn.execute(text("PRAGMA journal_mode=WAL"))
+            await conn.execute(text("PRAGMA busy_timeout=30000"))
         await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
     yield

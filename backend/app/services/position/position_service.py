@@ -245,6 +245,17 @@ class SimPositionService:
                     "fill_price": fill,
                 },
             )
+        elif pos.ai_setup_id:
+            from app.domain.setup_lifecycle import POSITION_OPEN
+            from app.models import AiProposedSetup
+
+            setup = (
+                await session.execute(
+                    select(AiProposedSetup).where(AiProposedSetup.setup_id == pos.ai_setup_id)
+                )
+            ).scalar_one_or_none()
+            if setup:
+                setup.lifecycle_state = POSITION_OPEN
 
     async def cancel_pending(
         self, session: AsyncSession, public_id: str, *, commit: bool = True

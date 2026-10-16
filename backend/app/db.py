@@ -12,8 +12,27 @@ class Base(DeclarativeBase):
 
 
 settings = get_settings()
-engine = create_async_engine(settings.database_url, echo=False)
+
+
+def _sqlite_engine_kwargs(database_url: str) -> dict:
+    if not database_url.startswith("sqlite"):
+        return {}
+    return {"connect_args": {"timeout": 30}}
+
+
+engine = create_async_engine(
+    settings.database_url,
+    echo=False,
+    **_sqlite_engine_kwargs(settings.database_url),
+)
 SessionLocal = async_sessionmaker(engine, expire_on_commit=False)
+
+
+async def _configure_sqlite_connection(connection) -> None:
+    if connection.dialect.name != "sqlite":
+        return
+    await connection.execute(text("PRAGMA journal_mode=WAL"))
+    await connection.execute(text("PRAGMA busy_timeout=30000"))
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
@@ -52,7 +71,42 @@ SIGNAL_MIGRATIONS = [
     "ALTER TABLE sim_positions ADD COLUMN quantity_btc FLOAT",
     "ALTER TABLE sim_positions ADD COLUMN execution_state VARCHAR(32) DEFAULT 'normal'",
     "ALTER TABLE sim_position_settings ADD COLUMN auto_open_paper_positions BOOLEAN DEFAULT 0",
+    "ALTER TABLE ai_analysis_runs ADD COLUMN final_ai_decision VARCHAR(16)",
+    "ALTER TABLE ai_analysis_runs ADD COLUMN setup_mode VARCHAR(16)",
+    "ALTER TABLE ai_proposed_setups ADD COLUMN lifecycle_state VARCHAR(32) DEFAULT 'WAIT_LONG'",
+    "ALTER TABLE ai_proposed_setups ADD COLUMN setup_mode VARCHAR(16) DEFAULT 'conditional'",
+    "ALTER TABLE ai_proposed_setups ADD COLUMN final_ai_decision VARCHAR(16)",
+    "ALTER TABLE ai_proposed_setups ADD COLUMN conditional_plan JSON",
+    "ALTER TABLE ai_proposed_setups ADD COLUMN confirmation_state JSON",
+    "ALTER TABLE ai_proposed_setups ADD COLUMN last_monitor_at DATETIME",
+    "ALTER TABLE ai_proposed_setups ADD COLUMN last_rejection_reason VARCHAR(64)",
+    "ALTER TABLE ai_proposed_setups ADD COLUMN last_validation_result JSON",
+    "ALTER TABLE ai_proposed_setups ADD COLUMN monitor_cursor_ms INTEGER DEFAULT 0",
+    "ALTER TABLE system_state ADD COLUMN opportunity_monitor_lock_owner VARCHAR(64)",
+    "ALTER TABLE system_state ADD COLUMN opportunity_monitor_lock_until_ms INTEGER DEFAULT 0",
+    "ALTER TABLE ai_proposed_setups ADD COLUMN monitoring_enabled BOOLEAN DEFAULT 1",
+    "ALTER TABLE ai_proposed_setups ADD COLUMN monitor_from_ms INTEGER DEFAULT 0",
 ]
+
+LEGACY_SETUP_BACKFILL = """
+UPDATE ai_proposed_setups
+SET
+  monitoring_enabled = 0,
+  setup_mode = 'legacy_immediate',
+  lifecycle_state = CASE
+    WHEN status = 'invalidated' THEN 'INVALIDATED'
+    WHEN status = 'expired' THEN 'EXPIRED'
+    WHEN UPPER(direction) = 'SHORT' THEN 'READY_SHORT'
+    ELSE 'READY_LONG'
+  END
+WHERE final_ai_decision IS NULL
+  AND (monitor_from_ms IS NULL OR monitor_from_ms = 0)
+  AND (setup_mode IS NULL OR setup_mode = 'conditional')
+"""
+# Legacy rows predate the objective monitor and have no AI decision or
+# monitoring start. Modern WAIT setups must never be relabelled READY or
+# disabled by a migration on application restart. Rewriting the mode makes
+# legacy backfill idempotent across restarts.
 
 
 async def migrate_db() -> None:
@@ -62,11 +116,16 @@ async def migrate_db() -> None:
                 await conn.execute(text(stmt))
             except Exception:
                 pass
+        try:
+            await conn.execute(text(LEGACY_SETUP_BACKFILL))
+        except Exception:
+            pass
 
 
 async def init_db() -> None:
     from app import models  # noqa: F401
 
     async with engine.begin() as conn:
+        await _configure_sqlite_connection(conn)
         await conn.run_sync(Base.metadata.create_all)
     await migrate_db()

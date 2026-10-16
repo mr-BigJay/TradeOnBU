@@ -32,16 +32,20 @@ def test_legacy_scan_disabled_in_ai_first_mode():
 async def test_worker_skips_rule_scan_but_can_monitor(session):
     worker = BotWorker()
     entry_scan = AsyncMock(return_value=None)
-    worker.monitor.monitor_open_signals = AsyncMock(return_value={})
-    worker.outbox.flush_pending = AsyncMock()
+    # This test checks scan/monitor scheduling, not HTTP or price-based fills.
     with patch("app.worker.try_acquire_worker_lock", AsyncMock(return_value=True)):
         with patch("app.worker.release_worker_lock", AsyncMock()):
-            with patch("app.worker.TrendEngine") as te_cls:
-                te_cls.return_value.analyze = AsyncMock()
-                te_cls.return_value.persist = AsyncMock()
-                with patch("app.worker.EntryDetectionService") as ed_cls:
-                    ed_cls.return_value.scan = entry_scan
-                    await worker.run_cycle()
+            with patch("app.services.opportunity_monitor.run_opportunity_monitor_tick", AsyncMock(return_value={})):
+                with patch("app.services.position.position_monitor.SimPositionMonitorService.monitor_session", AsyncMock(return_value=0)):
+                    with patch("app.services.signal_monitor.SignalMonitorService.monitor_open_signals", AsyncMock(return_value={})) as monitor:
+                        with patch("app.services.notification_outbox.NotificationOutboxService.flush_pending", AsyncMock()):
+                            with patch("app.worker.TrendEngine") as te_cls:
+                                te_cls.return_value.analyze = AsyncMock()
+                                te_cls.return_value.persist = AsyncMock()
+                                with patch("app.worker.EntryDetectionService") as ed_cls:
+                                    ed_cls.return_value.scan = entry_scan
+                                    await worker.run_cycle()
+    monitor.assert_awaited()
     entry_scan.assert_not_called()
     te_cls.return_value.analyze.assert_not_called()
 
@@ -246,24 +250,30 @@ async def test_missing_candles_marks_unknown(session):
 
 @pytest.mark.asyncio
 async def test_duplicate_setup_suppressed(session):
-    structured = {
-        "decision": "LONG",
-        "entry_price": 100.0,
-        "stop_loss": 98.0,
-        "take_profit": 105.0,
-        "proposed_setup": {"new_setup": True, "thesis_fa": "اول"},
-    }
+    from tests.conftest import with_immediate_monitor_fields
+
+    structured = with_immediate_monitor_fields(
+        {
+            "decision": "LONG",
+            "entry_price": 100.0,
+            "stop_loss": 98.0,
+            "take_profit": 105.0,
+            "proposed_setup": {"new_setup": True, "thesis_fa": "اول"},
+        }
+    )
     row1, meta1 = await create_setup_from_structured(session, run_id=1, symbol="BTCUSDT", structured=structured)
     await session.commit()
     assert meta1["created"] is True
 
-    structured2 = {
-        "decision": "LONG",
-        "entry_price": 100.05,
-        "stop_loss": 98.0,
-        "take_profit": 105.0,
-        "proposed_setup": {"new_setup": False, "thesis_fa": "تکرار"},
-    }
+    structured2 = with_immediate_monitor_fields(
+        {
+            "decision": "LONG",
+            "entry_price": 100.05,
+            "stop_loss": 98.0,
+            "take_profit": 105.0,
+            "proposed_setup": {"new_setup": False, "thesis_fa": "تکرار"},
+        }
+    )
     row2, meta2 = await create_setup_from_structured(session, run_id=2, symbol="BTCUSDT", structured=structured2)
     assert meta2.get("reason") == "deduped_revision_appended"
     assert row2.setup_id == row1.setup_id
@@ -271,32 +281,35 @@ async def test_duplicate_setup_suppressed(session):
 
 @pytest.mark.asyncio
 async def test_invalid_levels_not_persisted(session):
-    bad = {
-        "decision": "LONG",
-        "entry_price": 100.0,
-        "stop_loss": 101.0,
-        "take_profit": 105.0,
-        "proposed_setup": {"new_setup": True},
-    }
+    from tests.conftest import with_immediate_monitor_fields
+
+    bad = with_immediate_monitor_fields(
+        {
+            "decision": "LONG",
+            "entry_price": 100.0,
+            "stop_loss": 101.0,
+            "take_profit": 105.0,
+            "proposed_setup": {"new_setup": True},
+        }
+    )
     row, meta = await create_setup_from_structured(session, run_id=1, symbol="BTCUSDT", structured=bad)
     assert row is None
     assert meta["reason"] == "long_levels_not_ordered_sl_entry_tp"
     assert validate_proposed_setup_levels("LONG", 100, 101, 105)[0] is False
 
 
-def test_schedule_migration_one_time_only():
+def test_schedule_migration_restores_legacy_auto_one_twenty_once():
     nr = datetime.now(timezone.utc) + timedelta(minutes=25)
     cfg = AiAnalysisSettings(
         enabled=True,
         unattended_consent=True,
-        interval_minutes=60,
+        interval_minutes=120,
         next_run_at=nr,
-        interval_migrated_from_60=False,
+        interval_migrated_from_60=True,
     )
     assert migrate_ai_schedule_settings(cfg) is True
-    assert cfg.interval_minutes == 120
-    assert cfg.interval_migrated_from_60 is True
-    assert cfg.next_run_at == nr
+    assert cfg.interval_minutes == 60
+    assert cfg.interval_migrated_from_60 is False
     assert migrate_ai_schedule_settings(cfg) is False
 
 
@@ -307,7 +320,7 @@ async def test_failure_retry_single_backoff_not_hourly_loop(session):
         enabled=True,
         unattended_consent=True,
         interval_minutes=120,
-        interval_migrated_from_60=True,
+        interval_migrated_from_60=False,
     )
     session.add(cfg)
     await session.commit()

@@ -10,8 +10,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.candle_utils import candle_close_ms, interval_ms
 from app.domain.candles import Candle
+from app.domain.setup_lifecycle import (
+    SETUP_MODE_CONDITIONAL,
+    SETUP_MODE_IMMEDIATE,
+    ready_state_for_direction,
+    wait_state_for_direction,
+)
 from app.models import AiAnalysisRun, AiProposedSetup
+from app.services.conditional_setup import apply_conditional_plan_to_setup_row, parse_conditional_plan
+from app.services.conditional_revision import apply_conditional_revision_to_setup_row
 from app.services.market_data import KlineBundle, MarketDataService
+from app.services.ai_trader_report import _has_conditional_plan
 
 LIFECYCLE_ENTRY_NOT_REACHED = "entry_not_reached"
 LIFECYCLE_ENTRY_TOUCHED = "entry_touched"
@@ -711,6 +720,59 @@ def _levels_materially_different(
     return True
 
 
+async def _setup_has_active_execution(session: AsyncSession, setup_id: str) -> bool:
+    from app.models import SimPosition
+
+    row = (
+        await session.execute(
+            select(SimPosition.id)
+            .where(SimPosition.ai_setup_id == setup_id)
+            .where(SimPosition.status.in_(("pending_entry", "open")))
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    return row is not None
+
+
+def _append_conditional_revision(
+    setup: AiProposedSetup,
+    *,
+    source_run_id: int,
+    structured: dict[str, Any],
+    plan: dict[str, Any],
+) -> None:
+    notes = _notes(setup)
+    history = notes.setdefault("revision_history", [])
+    history.append(
+        {
+            "revised_at": _utc().isoformat(),
+            "source_run_id": source_run_id,
+            "kind": "conditional_revision",
+            "prior_levels": {
+                "entry_price": setup.entry_price,
+                "entry_zone_low": setup.entry_zone_low,
+                "entry_zone_high": setup.entry_zone_high,
+                "stop_loss": setup.stop_loss,
+                "take_profit": setup.take_profit,
+                "invalidation_level": setup.invalidation_level,
+                "expires_at": setup.expires_at.isoformat() if setup.expires_at else None,
+            },
+            "new_levels": {
+                "entry_price": plan.get("proposed_entry_mid"),
+                "entry_zone_low": plan.get("entry_zone_low"),
+                "entry_zone_high": plan.get("entry_zone_high"),
+                "stop_loss": plan.get("proposed_stop_loss"),
+                "take_profit": plan.get("proposed_take_profit"),
+                "invalidation_level": plan.get("structural_invalidation_level"),
+                "expires_at": plan.get("expires_at"),
+            },
+            "confirmation_sequence": plan.get("confirmation_sequence"),
+            "thesis_fa": structured.get("trade_reason") or structured.get("structure_summary"),
+        }
+    )
+    _save_notes(setup, notes)
+
+
 async def _find_duplicate_open(
     session: AsyncSession,
     *,
@@ -727,6 +789,74 @@ async def _find_duplicate_open(
     return None
 
 
+async def _persist_conditional_setup(
+    session: AsyncSession,
+    *,
+    run_id: int,
+    symbol: str,
+    structured: dict[str, Any],
+) -> tuple[AiProposedSetup | None, dict[str, Any]]:
+    meta: dict[str, Any] = {"created": False, "updated": False, "skipped": False}
+    plan, err = parse_conditional_plan(structured)
+    if not plan:
+        meta["skipped"] = True
+        meta["reason"] = err or "conditional_parse_failed"
+        return None, meta
+
+    direction = plan["potential_direction"]
+    dup = await _find_duplicate_open(session, symbol=symbol, direction=direction, entry=plan["proposed_entry_mid"])
+    if dup:
+        if await _setup_has_active_execution(session, dup.setup_id):
+            meta["skipped"] = True
+            meta["reason"] = "setup_locked_active_position"
+            return None, meta
+        _store_original_forecast(dup)
+        impact = apply_conditional_revision_to_setup_row(
+            dup,
+            plan=plan,
+            run_id=run_id,
+            structured=structured,
+            revision_at=datetime.now(timezone.utc),
+        )
+        meta["revision_impact"] = impact.value
+        dup.expires_at = datetime.fromisoformat(plan["expires_at"])
+        dup.status = "open"
+        dup.thesis_fa = structured.get("trade_reason") or structured.get("structure_summary") or dup.thesis_fa
+        meta["updated"] = True
+        meta["setup_id"] = dup.setup_id
+        meta["reason"] = "conditional_revision"
+        await session.flush()
+        return dup, meta
+
+    expires_at = datetime.fromisoformat(plan["expires_at"])
+    row = AiProposedSetup(
+        setup_id=str(uuid.uuid4()),
+        run_id=run_id,
+        symbol=symbol,
+        direction=direction,
+        status="open",
+        thesis_fa=structured.get("trade_reason") or structured.get("structure_summary"),
+        expires_at=expires_at,
+        structured_snapshot=structured,
+        objective_notes={
+            "disclaimer": "Conditional ICT plan — objective monitor confirms before paper execution.",
+            "lifecycle_phase": LIFECYCLE_ENTRY_NOT_REACHED,
+            "validity_status": VALIDITY_ACTIVE,
+            "outcome_tracking_status": TRACKING_INCOMPLETE,
+        },
+        last_tracked_candle_ms=0,
+        monitor_cursor_ms=0,
+    )
+    apply_conditional_plan_to_setup_row(row, plan=plan, run_id=run_id, structured=structured)
+    session.add(row)
+    await session.flush()
+    _store_original_forecast(row)
+    meta["created"] = True
+    meta["setup_id"] = row.setup_id
+    meta["reason"] = "conditional_created"
+    return row, meta
+
+
 async def create_setup_from_structured(
     session: AsyncSession,
     *,
@@ -736,7 +866,22 @@ async def create_setup_from_structured(
 ) -> tuple[AiProposedSetup | None, dict[str, Any]]:
     """Returns (row or None, persistence_meta for artifacts)."""
     meta: dict[str, Any] = {"created": False, "updated": False, "skipped": False}
+    from app.services.ai_trader_persistence_contract import validate_structured_for_persistence
+
+    contract_err = validate_structured_for_persistence(structured)
+    if contract_err and _has_conditional_plan(structured):
+        meta["skipped"] = True
+        meta["reason"] = contract_err
+        return None, meta
+
+    if _has_conditional_plan(structured):
+        return await _persist_conditional_setup(session, run_id=run_id, symbol=symbol, structured=structured)
+
     decision = str(structured.get("decision", "NO_TRADE")).upper()
+    if decision in ("LONG", "SHORT") and contract_err:
+        meta["skipped"] = True
+        meta["reason"] = contract_err
+        return None, meta
     if decision not in ("LONG", "SHORT"):
         meta["skipped"] = True
         meta["reason"] = "not_trade_decision"
@@ -809,6 +954,68 @@ async def create_setup_from_structured(
         meta["reason"] = "duplicate_open_requires_distinct_new_setup"
         return None, meta
 
+    from app.services.conditional_setup import resolve_immediate_confirmation_sequence
+    from app.domain.setup_monitor_boundary import first_eligible_bar_open_ms
+
+    inv_level = _parse_float(
+        proposed.get("invalidation_level")
+        or structured.get("structural_invalidation_level")
+        or structured.get("invalidation_level")
+    )
+    sequence, seq_err = resolve_immediate_confirmation_sequence(structured)
+    if not sequence or inv_level is None:
+        meta["skipped"] = True
+        meta["reason"] = seq_err or "immediate_missing_monitor_requirements"
+        return None, meta
+
+    monitoring_enabled = True
+
+    zone_lo = _parse_float(proposed.get("entry_zone_low") or structured.get("entry_zone_low"))
+    zone_hi = _parse_float(proposed.get("entry_zone_high") or structured.get("entry_zone_high"))
+    if zone_lo is None or zone_hi is None:
+        zone_lo = entry * 0.999
+        zone_hi = entry * 1.001
+
+    created = _utc()
+    boundary = first_eligible_bar_open_ms(created, "5m")
+
+    from app.domain.paper_execution_policy import HARD_MIN_AUTO_PAPER_NET_RR
+    from app.domain.setup_lifecycle import REASON_NET_RR_BELOW_MIN, ready_state_for_direction, wait_state_for_direction
+    from app.services.execution_model_sim import net_rr_acceptable_for_auto_paper
+    from app.services.immediate_confirmation_verify import evaluate_immediate_objective_confirmations
+
+    eval_result = await evaluate_immediate_objective_confirmations(
+        symbol=symbol,
+        direction=decision,
+        sequence=sequence,
+        zone_lo=zone_lo,
+        zone_hi=zone_hi,
+        invalidation_level=inv_level,
+        structured=structured,
+        persist_at=created,
+    )
+    lifecycle_immediate = eval_result.lifecycle_state
+    last_validation = dict(eval_result.last_validation_result)
+    if eval_result.ready:
+        rr_ok, net_rr = await net_rr_acceptable_for_auto_paper(
+            session,
+            direction=decision,
+            entry=entry,
+            sl=sl,
+            tp=tp,
+            min_net_rr=HARD_MIN_AUTO_PAPER_NET_RR,
+        )
+        if not rr_ok:
+            lifecycle_immediate = wait_state_for_direction(decision)
+            last_validation = {
+                "ok": False,
+                "reason": REASON_NET_RR_BELOW_MIN,
+                "net_rr": net_rr,
+                "source": "immediate_objective_verify_at_persist",
+            }
+        else:
+            last_validation["net_rr"] = net_rr
+
     row = AiProposedSetup(
         setup_id=str(uuid.uuid4()),
         run_id=run_id,
@@ -817,19 +1024,30 @@ async def create_setup_from_structured(
         status="open",
         thesis_fa=proposed.get("thesis_fa") or structured.get("thesis_fa") or structured.get("structure_summary"),
         entry_price=entry,
-        entry_zone_low=_parse_float(proposed.get("entry_zone_low") or structured.get("entry_zone_low")),
-        entry_zone_high=_parse_float(proposed.get("entry_zone_high") or structured.get("entry_zone_high")),
+        entry_zone_low=zone_lo,
+        entry_zone_high=zone_hi,
         stop_loss=sl,
         take_profit=tp,
         invalidation=proposed.get("invalidation") or structured.get("invalidation"),
-        invalidation_level=_parse_float(proposed.get("invalidation_level") or structured.get("invalidation_level")),
+        invalidation_level=inv_level,
         expires_at=_utc() + timedelta(hours=expires_hours),
         structured_snapshot=structured,
+        setup_mode=SETUP_MODE_IMMEDIATE,
+        final_ai_decision=decision,
+        lifecycle_state=lifecycle_immediate,
+        monitoring_enabled=monitoring_enabled,
+        monitor_from_ms=boundary if monitoring_enabled else 0,
+        monitor_cursor_ms=max(boundary - 1, eval_result.monitor_cursor_ms) if monitoring_enabled else 0,
+        confirmation_state=eval_result.confirmation_state,
+        conditional_plan={"confirmation_sequence": sequence, "confirmation_type": structured.get("confirmation_type")},
+        last_validation_result=last_validation,
         objective_notes={
-            "disclaimer": "Touches are objective price observations, not paper fills.",
+            "disclaimer": "Immediate ICT plan — objective replay on closed 5m bars at persist (no backdated fills).",
+            "execution_path": "immediate_objective",
             "lifecycle_phase": LIFECYCLE_ENTRY_NOT_REACHED,
             "validity_status": VALIDITY_ACTIVE,
             "outcome_tracking_status": TRACKING_INCOMPLETE,
+            "immediate_ready_at_persist": lifecycle_immediate == ready_state_for_direction(decision),
         },
         last_tracked_candle_ms=0,
     )
@@ -838,6 +1056,8 @@ async def create_setup_from_structured(
     _store_original_forecast(row)
     meta["created"] = True
     meta["setup_id"] = row.setup_id
+    meta["immediate_objective_ready"] = lifecycle_immediate == ready_state_for_direction(decision)
+    meta["missing_confirmations"] = eval_result.confirmation_state.get("missing") or []
     return row, meta
 
 

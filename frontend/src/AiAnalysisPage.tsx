@@ -20,6 +20,10 @@ type HistoryRow = {
   id: number;
   status: string;
   decision?: string;
+  raw_decision?: string;
+  final_ai_decision?: string;
+  display_decision?: string;
+  setup_mode?: string;
   report_preview?: string;
   created_at: string;
   created_at_tehran?: string;
@@ -33,6 +37,10 @@ type HistoryDetail = {
   has_chart?: boolean;
   chart_url?: string | null;
   decision?: string;
+  raw_decision?: string;
+  final_ai_decision?: string;
+  display_decision?: string;
+  setup_mode?: string;
   structured?: Record<string, unknown>;
   inference?: {
     requested_model?: string;
@@ -136,7 +144,7 @@ export function AiAnalysisPage({ onOpenPaperPosition }: Props) {
         <p className="meta-line">
           آخرین اجرا: {displayTehranTime(status.last_run_at_tehran, status.last_run_at)}
           {status.next_run_at &&
-            ` · بعدی (هر ${status.interval_minutes || 120} دقیقه): ${displayTehranTime(
+            ` · بعدی (هر ${status.interval_minutes || 60} دقیقه): ${displayTehranTime(
               status.next_run_at_tehran,
               status.next_run_at,
             )}`}
@@ -152,7 +160,12 @@ export function AiAnalysisPage({ onOpenPaperPosition }: Props) {
             <li key={r.id}>
               <button type="button" className="history-card" onClick={() => openDetail(r.id)}>
                 <div className="history-card-top">
-                  <span className={decisionBadge(r.decision)}>{r.decision || "—"}</span>
+                  <span className={decisionBadge(r.display_decision || r.final_ai_decision || r.decision)}>
+                    {r.display_decision || r.final_ai_decision || r.decision || "—"}
+                  </span>
+                  {r.raw_decision && r.raw_decision !== (r.display_decision || r.final_ai_decision) && (
+                    <span className="hint"> (raw: {r.raw_decision})</span>
+                  )}
                   <span className="history-icons">
                     {r.has_chart && <span className="chart-dot" title="نمودار">📈</span>}
                     {r.telegram_sent && <span className="tg-dot" title="ارسال به تلگرام">✓</span>}
@@ -171,7 +184,7 @@ export function AiAnalysisPage({ onOpenPaperPosition }: Props) {
           <div className="sheet" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
             <div className="sheet-handle" />
             <div className="sheet-head">
-              <h3>گزارش {detail.decision || ""}</h3>
+              <h3>گزارش {detail.display_decision || detail.final_ai_decision || detail.decision || ""}</h3>
               <button type="button" className="ghost-btn" onClick={() => setDetail(null)}>
                 بستن
               </button>

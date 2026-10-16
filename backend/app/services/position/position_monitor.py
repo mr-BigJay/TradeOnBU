@@ -1,11 +1,21 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import logging
+
+import httpx
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.candles import Candle
+from app.config import get_effective_settings
+from app.domain.execution_order_policy import (
+    bar_hits_limit,
+    reconcile_pending_ai_limit_order,
+    verify_five_m_for_pending_fills,
+)
+from app.domain.time_utils import ensure_utc
 from app.models import SimPosition
 from app.services.market_data import KlineBundle, MarketDataService
 from app.services.position.equity_service import record_equity_snapshot
@@ -25,6 +35,8 @@ from app.services.position.monitor_policies import (
 )
 from app.services.position.position_service import SimPositionService
 from app.services.position.settings_service import get_or_create_settings
+
+logger = logging.getLogger(__name__)
 
 MAX_RECOVERY_MINUTES = 24 * 60
 
@@ -226,6 +238,18 @@ class SimPositionMonitorService:
         limit = self._kline_limit_for_positions(positions)
         bundle = await self.market.fetch_kline_bundle(symbol, "1m", limit)
         closed = bundle.closed
+        from app.services.opportunity_monitor import _utc_now
+
+        now_ms = int(_utc_now().timestamp() * 1000)
+        settings_effective = get_effective_settings()
+        needs_5m = any(p.status == "pending_entry" and p.ai_setup_id for p in positions)
+        closed_5m: list[Candle] = []
+        five_m_data_verified = False
+        five_m_verify_reason: str | None = None
+        bundle_5m: KlineBundle | None = None
+        if needs_5m:
+            bundle_5m = await self.market.fetch_kline_bundle(symbol, "5m", 120)
+            closed_5m = list(bundle_5m.closed) if bundle_5m.closed else []
 
         processed = 0
 
@@ -241,6 +265,94 @@ class SimPositionMonitorService:
 
             if not self._try_clear_suspension(pos, bundle, closed):
                 continue
+
+            force_fill_bar_ms: int | None = None
+            if (
+                pos.status == "pending_entry"
+                and pos.ai_setup_id
+                and pos.order_type == "limit"
+                and pos.limit_entry_price
+            ):
+                from app.models import AiProposedSetup
+                from app.services.paper_auto_trading import auto_paper_entry_still_valid
+
+                setup_row = (
+                    await session.execute(
+                        select(AiProposedSetup).where(AiProposedSetup.setup_id == pos.ai_setup_id)
+                    )
+                ).scalar_one_or_none()
+                if setup_row:
+                    order_ms = pos.monitor_from_ms or 0
+                    if order_ms <= 0 and pos.created_at:
+                        created = ensure_utc(pos.created_at)
+                        if created:
+                            order_ms = int(created.timestamp() * 1000)
+                    if bundle_5m is not None:
+                        five_m_data_verified, five_m_verify_reason = verify_five_m_for_pending_fills(
+                            data_complete=bundle_5m.data_complete,
+                            closed_5m=closed_5m,
+                            now_ms=now_ms,
+                            configured_stale_seconds=settings_effective.market_data_stale_seconds,
+                            order_ms=order_ms,
+                            monitor_cursor_ms=setup_row.monitor_cursor_ms,
+                        )
+                    if not five_m_data_verified:
+                        still_ok, block_reason = await auto_paper_entry_still_valid(session, pos)
+                        if not still_ok:
+                            await self.positions.cancel_pending(session, pos.public_id, commit=False)
+                            pos.extra = {**pos.extra, "auto_paper_cancel_reason": block_reason}
+                            for bar in eligible:
+                                pos.last_processed_candle_ms = bar.time_ms
+                                processed += 1
+                            continue
+                        notes = dict(setup_row.objective_notes or {})
+                        notes["pending_fill_suspended"] = True
+                        notes["pending_fill_block_reason"] = (
+                            five_m_verify_reason or "missing_or_incomplete_5m_data"
+                        )
+                        setup_row.objective_notes = notes
+                        for bar in eligible:
+                            pos.last_processed_candle_ms = bar.time_ms
+                            processed += 1
+                        continue
+                    outcome = reconcile_pending_ai_limit_order(
+                        order_ms=order_ms,
+                        direction=setup_row.direction,
+                        invalidation_level=setup_row.invalidation_level,
+                        monitor_cursor_ms=setup_row.monitor_cursor_ms,
+                        limit_price=float(pos.limit_entry_price or 0),
+                        closed_1m=eligible,
+                        closed_5m=closed_5m,
+                        now_ms=now_ms,
+                        five_m_data_verified=five_m_data_verified,
+                        one_m_data_complete=bundle.data_complete,
+                        gaps_remaining=list(bundle.gaps_remaining or []),
+                    )
+                    if outcome.action == "suspend":
+                        notes = dict(setup_row.objective_notes or {})
+                        notes["pending_fill_suspended"] = True
+                        notes["pending_fill_block_reason"] = outcome.reason
+                        setup_row.objective_notes = notes
+                        for bar in eligible:
+                            pos.last_processed_candle_ms = bar.time_ms
+                            processed += 1
+                        continue
+                    if outcome.action == "cancel":
+                        await self.positions.cancel_pending(session, pos.public_id, commit=False)
+                        pos.extra = {
+                            **pos.extra,
+                            "auto_paper_cancel_reason": outcome.reason or "structural_invalidation",
+                        }
+                        from app.domain.setup_lifecycle import INVALIDATED
+
+                        setup_row.status = "invalidated"
+                        setup_row.lifecycle_state = INVALIDATED
+                        for bar in eligible:
+                            pos.last_processed_candle_ms = bar.time_ms
+                            processed += 1
+                        continue
+                    if outcome.action == "fill" and outcome.fill_bar_1m is not None:
+                        force_fill_bar_ms = outcome.fill_bar_1m.time_ms
 
             prev_ms = cursor
             for bar in eligible:
@@ -265,7 +377,31 @@ class SimPositionMonitorService:
                 entry_filled_this_bar = False
 
                 if pos.status == "pending_entry" and pos.order_type == "limit" and pos.limit_entry_price:
+                    from app.models import AiProposedSetup
                     from app.services.paper_auto_trading import auto_paper_entry_still_valid
+
+                    if pos.ai_setup_id:
+                        setup_row = (
+                            await session.execute(
+                                select(AiProposedSetup).where(AiProposedSetup.setup_id == pos.ai_setup_id)
+                            )
+                        ).scalar_one_or_none()
+                        if setup_row and (setup_row.objective_notes or {}).get("pending_fill_suspended"):
+                            prev_ms = bar.time_ms
+                            pos.last_processed_candle_ms = bar.time_ms
+                            processed += 1
+                            continue
+                        if setup_row and not five_m_data_verified:
+                            notes = dict(setup_row.objective_notes or {})
+                            notes["pending_fill_suspended"] = True
+                            notes["pending_fill_block_reason"] = (
+                                five_m_verify_reason or "missing_or_incomplete_5m_data"
+                            )
+                            setup_row.objective_notes = notes
+                            prev_ms = bar.time_ms
+                            pos.last_processed_candle_ms = bar.time_ms
+                            processed += 1
+                            continue
 
                     still_ok, block_reason = await auto_paper_entry_still_valid(session, pos)
                     if not still_ok:
@@ -276,7 +412,20 @@ class SimPositionMonitorService:
                         processed += 1
                         continue
                     limit_px = pos.limit_entry_price
-                    if _bar_hits_limit(bar, limit_px):
+                    fill_this_bar = _bar_hits_limit(bar, limit_px)
+                    if force_fill_bar_ms is not None and bar.time_ms == force_fill_bar_ms:
+                        if not fill_this_bar:
+                            notes = dict(setup_row.objective_notes or {}) if setup_row else {}
+                            notes["pending_fill_suspended"] = True
+                            notes["pending_fill_block_reason"] = "ambiguous_fill_vs_5m_timing"
+                            if setup_row:
+                                setup_row.objective_notes = notes
+                            prev_ms = bar.time_ms
+                            pos.last_processed_candle_ms = bar.time_ms
+                            processed += 1
+                            continue
+                        fill_this_bar = True
+                    if fill_this_bar:
                         ok_fill, _ = await auto_paper_entry_still_valid(session, pos)
                         if not ok_fill:
                             await self.positions.cancel_pending(session, pos.public_id, commit=False)
@@ -323,7 +472,13 @@ class SimPositionMonitorService:
                 prev_ms = bar.time_ms
                 pos.last_processed_candle_ms = bar.time_ms
 
-        await record_equity_snapshot(session, self.positions)
+        try:
+            await record_equity_snapshot(session, self.positions)
+        except (httpx.RequestError, httpx.HTTPStatusError) as exc:
+            # MTM is observational; a quote outage must not roll back a validated
+            # candle-based paper fill, cancel, or stop/take-profit transition.
+            # Do not fabricate equity using an invented market price.
+            logger.warning("Skipping paper equity snapshot: market quote unavailable (%s)", exc)
         if processed or positions:
             await session.commit()
         return processed

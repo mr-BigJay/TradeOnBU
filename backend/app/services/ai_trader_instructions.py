@@ -39,17 +39,29 @@ If any of the four is missing or ambiguous → **prefer NO_TRADE** or **conditio
 - Use ~0.80% move to TP1 as a **scalp smell test** when TP is NOT backed by HTF liquidity — not as automatic rejection of every sub-0.8% target.
 
 When immediate entry is NOT valid yet, do NOT respond with only NO_TRADE.
-Define the trading plan as a **conditional setup** (final_ai_decision WAIT, decision NO_TRADE for persistence until triggered):
+Define the trading plan as a **conditional setup** (final_ai_decision WAIT, decision NO_TRADE).
+The backend persists conditional plans as monitored WAIT_LONG/WAIT_SHORT rows (not discarded):
 
 - potential_direction: LONG or SHORT
 - conditional_entry_zone_low / conditional_entry_zone_high (or entry_zone_* for the planned POI)
-- confirmation_required: what must happen before entry (MSS, FVG retest, sweep, etc.)
-- conditional_invalidation: level/condition that voids the plan
-- Optional plan levels: stop_loss, take_profit, risk_reward (for the trade IF confirmation occurs)
+- confirmation_required: human-readable summary (report only — not used for execution)
+- confirmation_type: **required for backend monitor** — one of:
+  sweep_mss_poi | sweep_bos_poi | bos_fvg_retest | mss_fvg_retest
+  OR confirmation_sequence: must **exactly match** one profile sequence (not arbitrary token lists)
+- structural_invalidation_level: **required numeric price** — objective invalidation (prose conditional_invalidation alone is not enough)
+- conditional_invalidation: text explanation of invalidation (report + audit)
+- stop_loss, take_profit: planned levels if confirmation occurs (required for conditional persistence)
+- risk_reward ≥ 1:2 on those planned levels
 
 Use plain NO_TRADE without a conditional plan only when there is genuinely no credible intraday idea.
 
 Immediate active trade (decision LONG/SHORT + proposed_setup.new_setup=true) only when all four valid-setup gates pass, POI entry is valid now, and anti-scalp rules pass.
+
+For **monitored** immediate plans (objective confirmation before paper entry), also include:
+- confirmation_type OR confirmation_sequence (same as conditional)
+- structural_invalidation_level aligned with stop_loss
+
+If immediate entry is valid now but you still want the backend to confirm structure on closed 5m bars, use setup_mode=conditional with final_ai_decision=WAIT instead of forcing decision LONG/SHORT.
 
 Actively search for valid intraday setups — prefer conditional WAIT plans over empty rejections.
 
@@ -69,8 +81,12 @@ final_ai_decision (LONG|SHORT|WAIT|NO_TRADE),
 setup_mode (immediate|conditional|flat),
 potential_direction (LONG|SHORT — required when setup_mode=conditional),
 conditional_entry_zone_low, conditional_entry_zone_high,
-confirmation_required (required when conditional),
-conditional_invalidation (required when conditional),
+confirmation_required (required when conditional — narrative),
+confirmation_type OR confirmation_sequence (required when conditional — execution),
+structural_invalidation_level (required when conditional),
+conditional_invalidation (required when conditional — narrative),
+confirmation_type OR confirmation_sequence (required for monitored immediate LONG/SHORT),
+structural_invalidation_level (required for monitored immediate LONG/SHORT),
 current_price,
 market_bias,
 setup_timeframe (e.g. intraday_5m_15m),
