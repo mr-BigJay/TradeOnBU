@@ -23,6 +23,22 @@ def entry_type_for_paper_order(order_type: str) -> str:
     return "STOP" if (order_type or "").lower() == "market" else "LIMIT"
 
 
+def net_rr_for_entry(
+    sim: SimPositionSettings,
+    *,
+    direction: str,
+    entry: float,
+    sl: float,
+    tp: float,
+    order_type: str,
+    min_net_rr: float,
+) -> tuple[bool, float]:
+    model = execution_model_from_sim_settings(sim)
+    et = entry_type_for_paper_order(order_type)
+    rr = model.calc_rr(direction, entry, sl, tp, et, min_net_rr=min_net_rr)
+    return bool(rr.acceptable), float(rr.net_rr)
+
+
 async def net_rr_acceptable_for_auto_paper(
     session,
     *,
@@ -36,7 +52,12 @@ async def net_rr_acceptable_for_auto_paper(
     from app.services.position.settings_service import get_or_create_settings
 
     sim = await get_or_create_settings(session)
-    model = execution_model_from_sim_settings(sim)
-    et = entry_type_for_paper_order(order_type)
-    rr = model.calc_rr(direction, entry, sl, tp, et, min_net_rr=min_net_rr)
-    return bool(rr.acceptable), float(rr.net_rr)
+    return net_rr_for_entry(
+        sim,
+        direction=direction,
+        entry=entry,
+        sl=sl,
+        tp=tp,
+        order_type=order_type,
+        min_net_rr=min_net_rr,
+    )

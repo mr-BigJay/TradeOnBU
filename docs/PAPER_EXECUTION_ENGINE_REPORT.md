@@ -12,6 +12,16 @@ Most AI hourly runs produce **WAIT/READY scenarios**; a smaller fraction becomes
 | Pending → fill | **Always limit** while price stays away from POI; setup expiry; structural invalidation |
 | Concurrent caps | Multiple simultaneous pending limits (legacy `max_simultaneous_positions=3`) |
 
+## Dual filters (Fill + Win)
+
+Independent gates before any auto paper order (`paper_opportunity_filters.py`):
+
+- **Fill:** heuristic distance/order-type score; when `sample_size ≥ 20`, enforced `fill_rate ≥ 0.70` from history buckets.
+- **Win:** when objective ICT confirmations are complete and net R:R ≥ 2; when calibrated, `win_rate ≥ 0.60` from filled trades.
+- **Uncalibrated:** no fabricated probabilities — `GET /api/gui/opportunities/selection-calibration` reports status.
+
+Each attempt stores `selection_audit` on the setup (reason, order type, heuristic scores, calibrated rates if any).
+
 ## Engine changes (this PR)
 
 1. **Entry mode** — `paper_entry_mode.choose_paper_entry_mode`: market paper when confirmed and live price is at/near POI; limit for retest; **no chase** beyond `LIMIT_ENTRY_MAX_DISTANCE_BPS`.

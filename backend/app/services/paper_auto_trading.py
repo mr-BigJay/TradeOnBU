@@ -265,23 +265,6 @@ async def maybe_auto_open_paper_position(
         meta["reason"] = "position_already_active_for_setup"
         return meta
 
-    from app.services.paper_execution_budget import (
-        rollback_allocate_auto_paper_budget,
-        try_allocate_auto_paper_budget,
-    )
-
-    budget_ok, budget_reason, budget_meta = await try_allocate_auto_paper_budget(session)
-    meta["budget"] = budget_meta
-    if not budget_ok:
-        meta["skipped"] = True
-        meta["reason"] = budget_reason
-        return meta
-    if await _active_position_count(session) >= runtime.max_simultaneous_positions:
-        meta["skipped"] = True
-        meta["reason"] = "max_simultaneous_positions"
-        await rollback_allocate_auto_paper_budget(session)
-        return meta
-
     entry = float(setup.entry_price)  # type: ignore[arg-type]
     sl = float(setup.stop_loss)  # type: ignore[arg-type]
     tp = float(setup.take_profit)  # type: ignore[arg-type]
@@ -318,7 +301,43 @@ async def maybe_auto_open_paper_position(
         meta["net_rr"] = net_rr_mode
         meta["execution_entry"] = rr_entry
         meta["order_type"] = order_type
-        await rollback_allocate_auto_paper_budget(session)
+        return meta
+
+    from app.services.paper_opportunity_filters import evaluate_dual_trade_filters, persist_selection_audit
+
+    conf_complete = lifecycle_upper in (READY_LONG, READY_SHORT, PENDING_ENTRY)
+    filters_ok, filter_reason, selection_audit = await evaluate_dual_trade_filters(
+        session,
+        setup,
+        structured=structured,
+        order_type=order_type,
+        mode_diag=mode_diag,
+        net_rr=float(net_rr_mode),
+        live_price=live_price,
+        confirmations_complete=conf_complete,
+    )
+    meta["selection_audit"] = selection_audit
+    persist_selection_audit(setup, selection_audit)
+    if not filters_ok:
+        meta["skipped"] = True
+        meta["reason"] = filter_reason
+        return meta
+
+    from app.services.paper_execution_budget import (
+        rollback_allocate_auto_paper_budget,
+        try_allocate_auto_paper_budget,
+    )
+
+    if await _active_position_count(session) >= runtime.max_simultaneous_positions:
+        meta["skipped"] = True
+        meta["reason"] = "max_simultaneous_positions"
+        return meta
+
+    budget_ok, budget_reason, budget_meta = await try_allocate_auto_paper_budget(session)
+    meta["budget"] = budget_meta
+    if not budget_ok:
+        meta["skipped"] = True
+        meta["reason"] = budget_reason
         return meta
 
     ict_snapshot = build_ict_entry_audit_snapshot(structured=structured, setup=setup, validation=validation)
@@ -329,6 +348,8 @@ async def maybe_auto_open_paper_position(
         "ict_entry_snapshot": ict_snapshot,
         "planned_entry": entry,
         "live_price_at_order": live_price,
+        "distance_bps_at_order": mode_diag.get("distance_bps"),
+        "selection_audit": selection_audit,
     }
 
     svc = SimPositionService(market=market or MarketDataService())
@@ -343,13 +364,22 @@ async def maybe_auto_open_paper_position(
         take_profit=tp,
         ai_setup_id=setup.setup_id,
         order_extra=order_extra,
+        min_net_rr=HARD_MIN_AUTO_PAPER_NET_RR,
     )
     try:
         result = await svc.create_order(session, req, commit=False)
     except PositionServiceError as exc:
         meta["skipped"] = True
-        meta["reason"] = "order_rejected"
-        meta["detail"] = str(exc)
+        detail = str(exc)
+        meta["detail"] = detail
+        if detail.startswith("net_rr_below_min:"):
+            meta["reason"] = "net_rr_below_min_at_execution_price"
+            try:
+                meta["net_rr"] = float(detail.split(":", 1)[1])
+            except ValueError:
+                pass
+        else:
+            meta["reason"] = "order_rejected"
         await rollback_allocate_auto_paper_budget(session)
         return meta
 
@@ -361,22 +391,7 @@ async def maybe_auto_open_paper_position(
         return meta
 
     pos = await svc.get_position_by_public_id(session, result.position_id)
-    if pos and pos.status == "open" and pos.fill_price is not None:
-        fill_ok, fill_net_rr = await _verify_fill_net_rr(
-            session,
-            direction=direction,
-            fill_price=float(pos.fill_price),
-            sl=sl,
-            tp=tp,
-            order_type=order_type,
-        )
-        meta["net_rr_at_fill"] = fill_net_rr
-        if not fill_ok:
-            await svc.manual_close(session, pos.public_id)
-            meta["skipped"] = True
-            meta["reason"] = "net_rr_below_min_at_fill"
-            meta["net_rr"] = fill_net_rr
-            return meta
+    if pos and pos.status == "open":
         await mark_setup_paper_fill(session, pos)
 
     meta["created"] = True

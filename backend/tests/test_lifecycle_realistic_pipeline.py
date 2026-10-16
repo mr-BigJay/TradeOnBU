@@ -89,7 +89,7 @@ async def test_realistic_conditional_pipeline_monitor_and_sim_fill():
     async with SessionLocal() as session:
         mon = OpportunityMonitorService()
         with patch.object(mon.market, "fetch_kline_bundle", AsyncMock(return_value=bundle_5m)):
-            with patch.object(mon.market, "fetch_ticker", AsyncMock(return_value=(101.0, now_ms))):
+            with patch.object(mon.market, "fetch_ticker", AsyncMock(return_value=(100.25, now_ms))):
                 with patch("app.services.opportunity_monitor._utc_now", return_value=now_dt):
                     summary = await mon.monitor_setups(session, symbol="BTCUSDT")
         await session.commit()

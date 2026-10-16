@@ -103,7 +103,7 @@ async def test_full_wait_ready_pending_open_e2e():
     async with SessionLocal() as session:
         mon = OpportunityMonitorService()
         with patch.object(mon.market, "fetch_kline_bundle", AsyncMock(return_value=bundle)):
-            with patch.object(mon.market, "fetch_ticker", AsyncMock(return_value=(101.0, now_ms))):
+            with patch.object(mon.market, "fetch_ticker", AsyncMock(return_value=(100.25, now_ms))):
                 with patch("app.services.opportunity_monitor._utc_now") as mock_now:
                     mock_now.return_value = datetime.fromtimestamp(now_ms / 1000, tz=timezone.utc)
                     with patch("app.services.opportunity_monitor.is_market_data_fresh", return_value=(True, 10, 600)):
@@ -242,8 +242,12 @@ async def test_parallel_monitor_ticks_single_order():
                 "app.services.opportunity_monitor.MarketDataService.fetch_kline_bundle",
                 AsyncMock(return_value=bundle),
             ):
-                with patch("app.services.opportunity_monitor._utc_now", return_value=now_dt):
-                    result = await run_opportunity_monitor_tick(session)
+                with patch(
+                    "app.services.opportunity_monitor.MarketDataService.fetch_ticker",
+                    AsyncMock(return_value=(100.25, now_ms)),
+                ):
+                    with patch("app.services.opportunity_monitor._utc_now", return_value=now_dt):
+                        result = await run_opportunity_monitor_tick(session)
             await session.commit()
             return result
 
@@ -392,7 +396,7 @@ async def test_e2e_wait_ict_confirmed_ready_pending():
             [(98, 102, 100), (99.5, 100.5, 100.2), (99.2, 100.8, 100.1), (99.0, 100.5, 100.0)],
         )
         with patch.object(mon.market, "fetch_kline_bundle", AsyncMock(return_value=bundle2)):
-            with patch.object(mon.market, "fetch_ticker", AsyncMock(return_value=(101.0, now_ms_2))):
+            with patch.object(mon.market, "fetch_ticker", AsyncMock(return_value=(100.25, now_ms_2))):
                 with patch("app.services.opportunity_monitor._utc_now") as mock_now2:
                     mock_now2.return_value = datetime.fromtimestamp(now_ms_2 / 1000, tz=timezone.utc)
                     with patch("app.services.opportunity_monitor.is_market_data_fresh", return_value=(True, 10, 600)):

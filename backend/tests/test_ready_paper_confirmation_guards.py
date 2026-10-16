@@ -199,7 +199,7 @@ async def test_valid_ready_still_creates_paper_order():
         )
         mon = OpportunityMonitorService()
         with patch.object(mon.market, "fetch_kline_bundle", AsyncMock(return_value=bundle)):
-            with patch.object(mon.market, "fetch_ticker", AsyncMock(return_value=(101.0, now_ms))):
+            with patch.object(mon.market, "fetch_ticker", AsyncMock(return_value=(100.25, now_ms))):
                 with patch("app.services.opportunity_monitor._utc_now", return_value=now_dt):
                     with patch("app.services.opportunity_monitor.is_market_data_fresh", return_value=(True, 10, 600)):
                         with patch("app.services.opportunity_monitor._net_rr_ok", AsyncMock(return_value=(True, 2.2))):

@@ -52,6 +52,8 @@ _REJECTION_FA: dict[str, str] = {
     "entry_too_far_from_live": "فاصله قیمت از POI برای ورود منطقی نیست (بدون تعقیب)",
     "max_concurrent_auto_paper": "فقط یک سفارش/پوزیشن خودکار هم‌زمان مجاز است",
     "daily_auto_paper_cap_tehran": "سقف دو سفارش خودکار در روز (تهران) پر شده",
+    "low_fill_probability": "احتمال Fill واقع‌بینانه کافی نیست (فیلتر ورود)",
+    "low_win_probability": "کیفیت/احتمال موفقیت پس از Fill کافی نیست (فیلتر Win)",
     "ict_confirmed_blocked_by_net_rr": DISPLAY_ICT_CONFIRMED_BLOCKED_RR,
     "auto_paper_disabled": "ورود خودکار Paper غیرفعال است",
     "wallet_not_initialized": "موجودی Paper اولیه تنظیم نشده",
@@ -179,6 +181,53 @@ async def execution_metrics(
     if period not in ("today", "7d", "30d"):
         raise HTTPException(status_code=400, detail="invalid period")
     return await build_execution_metrics(session, period=period)
+
+
+@router.get("/selection-calibration")
+async def selection_calibration(
+    session: AsyncSession = Depends(get_db),
+    _=Depends(require_dashboard_access),
+):
+    """Calibration status for dual fill/win filters (no fabricated rates)."""
+    from app.domain.paper_execution_policy import (
+        MIN_CALIBRATION_SAMPLES,
+        TARGET_FILL_RATE,
+        TARGET_WIN_RATE,
+    )
+    from app.services.paper_opportunity_calibration import calibrated_rates_for_bucket
+
+    samples: list[dict] = []
+    for direction, order_type, bps in (
+        ("LONG", "market", 10.0),
+        ("LONG", "limit", 40.0),
+        ("SHORT", "market", 10.0),
+        ("SHORT", "limit", 40.0),
+    ):
+        cal = await calibrated_rates_for_bucket(
+            session, direction=direction, order_type=order_type, distance_bps=bps
+        )
+        samples.append(
+            {
+                "bucket": cal.bucket,
+                "status": cal.status,
+                "sample_size": cal.sample_size,
+                "fill_rate": cal.fill_rate,
+                "win_rate": cal.win_rate,
+            }
+        )
+    any_calibrated = any(s["status"] == "calibrated" for s in samples)
+    return {
+        "calibration_mode": "calibrated" if any_calibrated else "uncalibrated",
+        "min_samples_required": MIN_CALIBRATION_SAMPLES,
+        "targets": {"fill_rate": TARGET_FILL_RATE, "win_rate": TARGET_WIN_RATE},
+        "buckets": samples,
+        "note_fa": (
+            "در حالت uncalibrated فقط heuristic و ICT/R:R سخت‌گیرانه اعمال می‌شود؛ "
+            "احتمال ساختگی گزارش نمی‌شود."
+            if not any_calibrated
+            else "نرخ‌های bucket از تاریخچه Paper پر شده است."
+        ),
+    }
 
 
 @router.get("/entry-policy-compare")
