@@ -55,7 +55,11 @@ from app.services.monitor_kline_backfill import (
     detect_skipped_closed_bars,
     first_discontinuity_open_ms,
 )
-from app.services.monitor_kline_fetch import fetch_monitor_5m_bundle
+from app.services.monitor_kline_fetch import (
+    fetch_monitor_5m_bundle,
+    setup_history_covers_cursor,
+)
+from app.services.monitor_kline_backfill import live_monitor_fetch_plan
 from app.services.opportunity_audit import log_setup_event
 from app.services.opportunity_timeline import append_timeline_event
 from app.services.opportunity_monitor_lock import (
@@ -533,7 +537,7 @@ class OpportunityMonitorService:
         summary["backfill_meta"] = fetch_meta.get("per_setup") or []
         summary["fetch_meta"] = fetch_meta
 
-        if not bundle.data_complete or not bundle.closed:
+        if not bundle.closed:
             for setup in setups:
                 _record_market_data_health(
                     setup, ok=False, reason=REASON_MISSING_MARKET_DATA, now=now
@@ -591,15 +595,26 @@ class OpportunityMonitorService:
                 continue
 
             boundary = _monitor_boundary_ms(setup)
+            cursor_eff = _monitor_cursor_effective(setup, boundary)
+            fetch_plan = live_monitor_fetch_plan(
+                setup_id=setup.setup_id,
+                boundary_ms=boundary,
+                cursor_ms=cursor_eff,
+                now_ms=now_ms,
+            )
+            covers, cover_reason = setup_history_covers_cursor(
+                plan=fetch_plan,
+                closed_bars=bundle.closed,
+                now_ms=now_ms,
+            )
             skipped_opens = detect_skipped_closed_bars(
                 closed_bars=bundle.closed,
-                cursor_ms=_monitor_cursor_effective(setup, boundary),
+                cursor_ms=cursor_eff,
                 boundary_ms=boundary,
                 now_ms=now_ms,
                 interval=MONITOR_INTERVAL,
             )
-            cursor_eff = _monitor_cursor_effective(setup, boundary)
-            gap_suspend = bool(skipped_opens)
+            gap_suspend = bool(skipped_opens) or not covers
             if skipped_opens:
                 append_timeline_event(
                     setup,
@@ -647,7 +662,11 @@ class OpportunityMonitorService:
                     ok=False,
                     reason=REASON_MISSING_MARKET_DATA,
                     now=now,
-                    extra={"skipped": skipped_opens[:20], "data_complete": bundle.data_complete},
+                    extra={
+                        "skipped": skipped_opens[:20],
+                        "cover_reason": cover_reason,
+                        "exceeds_ceiling": fetch_plan.exceeds_pagination_ceiling,
+                    },
                 )
                 setup.last_monitor_at = now
                 if setup.lifecycle_state in (READY_LONG, READY_SHORT):

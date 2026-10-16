@@ -2,11 +2,33 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from app.domain.candle_utils import interval_ms
 
 DEFAULT_MONITOR_KLINE_LIMIT = 120
 MAX_MONITOR_KLINE_LIMIT = 500
 MIN_MONITOR_KLINE_LIMIT = 120
+STRUCTURAL_CONTEXT_BARS = 48
+CLOSE_BUFFER_BARS = 15
+
+# Paginated historical recovery (Bitunix 200 bars/request × up to 12 pages in market_data).
+MONITOR_PAGINATED_MAX_BARS = 2400
+
+
+@dataclass
+class MonitorFetchPlan:
+    setup_id: str
+    boundary_ms: int
+    cursor_ms: int
+    lag_bars: int
+    bars_needed: int
+    from_ms: int
+    mode: str  # recent_window | extended_window | paginated
+    needs_pagination: bool
+    exceeds_pagination_ceiling: bool
+    max_bars: int
+    single_request_limit: int
 
 
 def next_closed_bar_open_ms(*, cursor_ms: int, boundary_ms: int, interval: str = "5m") -> int:
@@ -17,6 +39,89 @@ def next_closed_bar_open_ms(*, cursor_ms: int, boundary_ms: int, interval: str =
     return ((cursor_ms // step) + 1) * step
 
 
+def live_monitor_fetch_plan(
+    *,
+    setup_id: str,
+    boundary_ms: int,
+    cursor_ms: int,
+    now_ms: int,
+    interval: str = "5m",
+) -> MonitorFetchPlan:
+    """
+    Live monitor history: anchor on cursor + structural context, not full setup lifetime.
+    """
+    step = interval_ms(interval)
+    context_ms = STRUCTURAL_CONTEXT_BARS * step
+    effective_cursor = cursor_ms if cursor_ms >= 0 else boundary_ms - step
+    lag_bars = max(0, (now_ms - effective_cursor) // step)
+    bars_needed = lag_bars + STRUCTURAL_CONTEXT_BARS + CLOSE_BUFFER_BARS
+    from_ms = max(0, min(boundary_ms, effective_cursor) - context_ms)
+
+    exceeds = bars_needed > MONITOR_PAGINATED_MAX_BARS
+    capped_needed = min(bars_needed, MONITOR_PAGINATED_MAX_BARS)
+
+    if bars_needed <= DEFAULT_MONITOR_KLINE_LIMIT:
+        mode = "recent_window"
+        needs_pagination = False
+        single_limit = max(MIN_MONITOR_KLINE_LIMIT, bars_needed)
+        max_bars = single_limit
+    elif bars_needed <= MAX_MONITOR_KLINE_LIMIT:
+        mode = "extended_window"
+        needs_pagination = False
+        single_limit = capped_needed
+        max_bars = single_limit
+    else:
+        mode = "paginated"
+        needs_pagination = True
+        single_limit = MAX_MONITOR_KLINE_LIMIT
+        max_bars = capped_needed
+
+    return MonitorFetchPlan(
+        setup_id=setup_id,
+        boundary_ms=boundary_ms,
+        cursor_ms=effective_cursor,
+        lag_bars=lag_bars,
+        bars_needed=bars_needed,
+        from_ms=from_ms,
+        mode=mode,
+        needs_pagination=needs_pagination,
+        exceeds_pagination_ceiling=exceeds,
+        max_bars=max_bars,
+        single_request_limit=min(MAX_MONITOR_KLINE_LIMIT, max(DEFAULT_MONITOR_KLINE_LIMIT, bars_needed)),
+    )
+
+
+def replay_fetch_plan(
+    *,
+    setup_id: str,
+    boundary_ms: int,
+    now_ms: int,
+    interval: str = "5m",
+) -> MonitorFetchPlan:
+    """Independent replay: full history from monitor boundary (audit path)."""
+    step = interval_ms(interval)
+    context_ms = STRUCTURAL_CONTEXT_BARS * step
+    span_bars = max(0, (now_ms - boundary_ms) // step + CLOSE_BUFFER_BARS)
+    bars_needed = span_bars + STRUCTURAL_CONTEXT_BARS
+    from_ms = max(0, boundary_ms - context_ms)
+    exceeds = bars_needed > MONITOR_PAGINATED_MAX_BARS
+    capped = min(bars_needed, MONITOR_PAGINATED_MAX_BARS)
+    mode = "paginated" if bars_needed > MAX_MONITOR_KLINE_LIMIT else "extended_window"
+    return MonitorFetchPlan(
+        setup_id=setup_id,
+        boundary_ms=boundary_ms,
+        cursor_ms=boundary_ms - step,
+        lag_bars=span_bars,
+        bars_needed=bars_needed,
+        from_ms=from_ms,
+        mode=mode if bars_needed > DEFAULT_MONITOR_KLINE_LIMIT else "recent_window",
+        needs_pagination=bars_needed > MAX_MONITOR_KLINE_LIMIT,
+        exceeds_pagination_ceiling=exceeds,
+        max_bars=capped,
+        single_request_limit=min(MAX_MONITOR_KLINE_LIMIT, max(DEFAULT_MONITOR_KLINE_LIMIT, capped)),
+    )
+
+
 def monitor_kline_limit_for_setups(
     *,
     monitor_cursor_ms: int,
@@ -24,37 +129,32 @@ def monitor_kline_limit_for_setups(
     now_ms: int,
     interval: str = "5m",
 ) -> tuple[int, dict]:
-    """
-    Return (limit, meta) for fetch_kline_bundle so no eligible closed bar is silently skipped.
-    """
-    step = interval_ms(interval)
+    """Legacy aggregate limit (single-window fetch cap 500)."""
+    plan = live_monitor_fetch_plan(
+        setup_id="",
+        boundary_ms=monitor_from_ms,
+        cursor_ms=monitor_cursor_ms,
+        now_ms=now_ms,
+        interval=interval,
+    )
     meta: dict = {
         "default_limit": DEFAULT_MONITOR_KLINE_LIMIT,
         "cursor_ms": monitor_cursor_ms,
         "boundary_ms": monitor_from_ms,
         "now_ms": now_ms,
+        "lag_bars_estimate": plan.lag_bars,
+        "bars_needed": plan.bars_needed,
+        "chosen_limit": plan.single_request_limit,
+        "backfill": plan.bars_needed > DEFAULT_MONITOR_KLINE_LIMIT,
+        "mode": plan.mode,
     }
     if monitor_cursor_ms < 0:
         return DEFAULT_MONITOR_KLINE_LIMIT, {**meta, "reason": "cursor_uninitialized"}
-
-    lag_bars = max(0, (now_ms - monitor_cursor_ms) // step)
-    # Bars from boundary to now (inclusive buffer for close detection)
-    span_from_boundary = max(0, (now_ms - monitor_from_ms) // step + 5)
-    needed = max(MIN_MONITOR_KLINE_LIMIT, lag_bars + 15, span_from_boundary)
-    limit = min(MAX_MONITOR_KLINE_LIMIT, needed)
-    meta.update(
-        {
-            "lag_bars_estimate": lag_bars,
-            "span_from_boundary": span_from_boundary,
-            "chosen_limit": limit,
-            "backfill": limit > DEFAULT_MONITOR_KLINE_LIMIT,
-        }
-    )
-    return limit, meta
+    return plan.single_request_limit, meta
 
 
 def aggregate_monitor_kline_limit(setups: list, *, now_ms: int, interval: str = "5m") -> tuple[int, list[dict]]:
-    """Worst-case limit across active setups."""
+    """Worst-case single-request limit across active setups (≤500)."""
     if not setups:
         return DEFAULT_MONITOR_KLINE_LIMIT, []
     per_setup: list[dict] = []
@@ -92,7 +192,6 @@ def detect_skipped_closed_bars(
     if not eligible:
         return []
     present = {b.time_ms for b in eligible}
-    # Only infer gaps within data we actually fetched — not for bars beyond the bundle.
     upper = max(present)
 
     expected: list[int] = []

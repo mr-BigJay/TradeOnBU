@@ -17,7 +17,7 @@ from app.services.confirmation_replay import (
     replay_confirmations_on_5m_bars,
 )
 from app.services.market_data import MarketDataService
-from app.services.monitor_kline_fetch import MONITOR_INTERVAL, fetch_monitor_5m_bundle
+from app.services.monitor_kline_fetch import MONITOR_INTERVAL, fetch_replay_5m_bundle
 from app.services.opportunity_miss_report import build_miss_audit_report
 from app.services.opportunity_monitor import _monitor_boundary_ms, _zone_bounds
 
@@ -40,7 +40,7 @@ async def replay_open_setups(
             )
         ).scalars()
     )
-    bundle_5m, fetch_meta = await fetch_monitor_5m_bundle(market, symbol, setups, now_ms=now_ms)
+    bundle_5m, fetch_meta = await fetch_replay_5m_bundle(market, symbol, setups, now_ms=now_ms)
     bundle_1m = await market.fetch_historical_closed(
         symbol,
         "1m",
