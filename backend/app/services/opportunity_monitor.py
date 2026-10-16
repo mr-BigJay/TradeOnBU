@@ -51,7 +51,12 @@ from app.services.ict_confirmation_engine import (
 )
 from app.services.position.position_service import SimPositionService
 from app.services.market_data import MarketDataService
+from app.services.monitor_kline_backfill import (
+    aggregate_monitor_kline_limit,
+    detect_skipped_closed_bars,
+)
 from app.services.opportunity_audit import log_setup_event
+from app.services.opportunity_timeline import append_timeline_event
 from app.services.opportunity_monitor_lock import (
     new_monitor_owner,
     refresh_opportunity_monitor_lock,
@@ -339,6 +344,8 @@ async def _attempt_ready_paper_order(
         setup.last_rejection_reason = REASON_SETUP_EXPIRED
         return False
 
+    append_timeline_event(setup, "paper_order_attempt", lifecycle=setup.lifecycle_state, at_ms=int(now.timestamp() * 1000))
+
     conf_ok, reject_reason = objective_confirmations_satisfied(setup)
     if not conf_ok:
         setup.lifecycle_state = wait_state_for_direction(setup.direction)
@@ -412,6 +419,7 @@ async def _attempt_ready_paper_order(
                 "net_rr": net_rr,
                 "order_created_at": now.isoformat(),
             }
+            append_timeline_event(setup, "paper_order_created", net_rr=net_rr, at_ms=int(now.timestamp() * 1000))
             await log_setup_event(
                 session, setup_id=setup.setup_id, event_type="order_created", payload=auto
             )
@@ -518,7 +526,11 @@ class OpportunityMonitorService:
         setups = list(result.scalars().all())
         summary: dict[str, Any] = {"checked": len(setups), "promoted": 0, "invalidated": 0, "expired": 0, "orders": 0}
 
-        bundle = await self.market.fetch_kline_bundle(symbol, MONITOR_INTERVAL, 120)
+        kline_limit, backfill_meta = aggregate_monitor_kline_limit(setups, now_ms=now_ms, interval=MONITOR_INTERVAL)
+        summary["kline_limit"] = kline_limit
+        summary["backfill_meta"] = backfill_meta
+
+        bundle = await self.market.fetch_kline_bundle(symbol, MONITOR_INTERVAL, kline_limit)
         if not bundle.data_complete or not bundle.closed:
             for setup in setups:
                 _record_market_data_health(
@@ -577,6 +589,28 @@ class OpportunityMonitorService:
                 continue
 
             boundary = _monitor_boundary_ms(setup)
+            skipped_opens = detect_skipped_closed_bars(
+                closed_bars=bundle.closed,
+                cursor_ms=_monitor_cursor_effective(setup, boundary),
+                boundary_ms=boundary,
+                now_ms=now_ms,
+                interval=MONITOR_INTERVAL,
+            )
+            if skipped_opens:
+                append_timeline_event(
+                    setup,
+                    "monitor_gap_detected",
+                    skipped_bar_opens_ms=skipped_opens[:20],
+                    kline_limit=kline_limit,
+                )
+                await log_setup_event(
+                    session,
+                    setup_id=setup.setup_id,
+                    event_type="monitor_gap_detected",
+                    reason_code="engine_delay",
+                    payload={"skipped": skipped_opens[:20], "kline_limit": kline_limit},
+                )
+
             new_bars = _eligible_closed_bars(setup, bundle.closed, now_ms)
             if not new_bars:
                 setup.last_monitor_at = now
@@ -686,6 +720,7 @@ class OpportunityMonitorService:
                 setup.lifecycle_state = ready_state_for_direction(setup.direction)
                 setup.last_rejection_reason = None
                 setup.last_validation_result = {"ok": True, "net_rr": net_rr, "promoted_at": now.isoformat()}
+                append_timeline_event(setup, "promoted_ready", net_rr=net_rr, at_ms=now_ms)
                 await log_setup_event(session, setup_id=setup.setup_id, event_type="promoted_ready", payload={"net_rr": net_rr})
                 summary["promoted"] += 1
 

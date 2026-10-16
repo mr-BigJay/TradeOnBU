@@ -181,3 +181,32 @@ async def dashboard(session: AsyncSession = Depends(get_db), _=Depends(require_d
         ],
         "stats": stats,
     }
+
+
+@router.get("/miss-audit")
+async def miss_audit_report(
+    session: AsyncSession = Depends(get_db),
+    _=Depends(require_dashboard_access),
+    symbol: str = "BTCUSDT",
+    include_replay: bool = True,
+):
+    """Opportunity miss audit: timelines, outcome buckets, optional live vs replay diff."""
+    from app.services.opportunity_miss_report import build_miss_audit_report
+    from app.services.opportunity_miss_runner import replay_open_setups
+
+    replay_by_setup: dict = {}
+    replay_meta: dict = {}
+    if include_replay:
+        replay_out = await replay_open_setups(session, symbol=symbol)
+        replay_meta = {
+            "kline_5m_limit": replay_out.get("kline_5m_limit"),
+            "data_complete_5m": replay_out.get("data_complete_5m"),
+            "gaps_remaining_5m": replay_out.get("gaps_remaining_5m"),
+        }
+        for row in replay_out.get("replay_diffs") or []:
+            sid = row.get("setup_id")
+            if sid:
+                replay_by_setup[sid] = row
+
+    report = await build_miss_audit_report(session, symbol=symbol, limit=200, replay_by_setup=replay_by_setup)
+    return {"replay_meta": replay_meta, **report}
