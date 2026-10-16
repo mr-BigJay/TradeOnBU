@@ -45,6 +45,7 @@ type HistoryDetail = {
   inference?: {
     requested_model?: string;
     requested_reasoning_effort?: string;
+    confirmed_reasoning_effort?: string;
     response_model?: string;
   };
 };

@@ -67,7 +67,7 @@ async def forward_session() -> AsyncSession:
 
 @pytest.fixture(autouse=True)
 def forbid_live_market_http(monkeypatch):
-    """Fail fast if production MarketDataService HTTP is invoked (VPS --network none parity)."""
+    """Forward E2E uses ScriptedMarket only — block accidental MarketDataService HTTP."""
     from app.services.market_data import MarketDataService
 
     async def _forbidden(self, *args, **kwargs):

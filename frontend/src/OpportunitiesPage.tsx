@@ -130,13 +130,16 @@ export function OpportunitiesPage() {
   const [tab, setTab] = useState<OppTab>("wait");
   const [paperSegment, setPaperSegment] = useState<PaperSegment>("pending");
   const pageByKey = useRef<Record<string, number>>({});
+  const listRequestRef = useRef(0);
+  const tabRef = useRef(tab);
+  const paperRef = useRef(paperSegment);
+  tabRef.current = tab;
+  paperRef.current = paperSegment;
   const [list, setList] = useState<ListResponse | null>(null);
   const [summary, setSummary] = useState<SummaryResponse["counts"] | null>(null);
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(false);
   const [detail, setDetail] = useState<OppItem | null>(null);
-
-  const currentPage = pageByKey.current[pageKey(tab, paperSegment)] ?? 1;
 
   const setPageForCurrent = useCallback(
     (p: number) => {
@@ -146,24 +149,32 @@ export function OpportunitiesPage() {
   );
 
   const loadSummary = useCallback(async () => {
-    const d = await apiFetch<SummaryResponse>("/api/gui/opportunities/summary");
+    const d = (await apiFetch("/api/gui/opportunities/summary")) as SummaryResponse;
     setSummary(d.counts);
   }, []);
 
   const loadList = useCallback(async () => {
-    const pk = pageKey(tab, paperSegment);
+    const requestTab = tab;
+    const requestPaper = paperSegment;
+    const pk = pageKey(requestTab, requestPaper);
     const page = pageByKey.current[pk] ?? 1;
-    const qs = new URLSearchParams({ tab, page: String(page), page_size: "20" });
-    if (tab === "paper") qs.set("paper_status", paperSegment);
+    const qs = new URLSearchParams({ tab: requestTab, page: String(page), page_size: "20" });
+    if (requestTab === "paper") qs.set("paper_status", requestPaper);
+    const token = ++listRequestRef.current;
     setLoading(true);
     try {
-      const d = await apiFetch<ListResponse>(`/api/gui/opportunities/items?${qs}`);
+      const d = (await apiFetch(`/api/gui/opportunities/items?${qs}`)) as ListResponse;
+      if (token !== listRequestRef.current) return;
+      if (requestTab !== tabRef.current) return;
+      if (requestTab === "paper" && requestPaper !== paperRef.current) return;
       if (d.page !== page) {
         pageByKey.current[pk] = d.page;
       }
       setList(d);
     } finally {
-      setLoading(false);
+      if (token === listRequestRef.current) {
+        setLoading(false);
+      }
     }
   }, [tab, paperSegment]);
 
@@ -189,6 +200,7 @@ export function OpportunitiesPage() {
   }, [loadSummary, loadList]);
 
   function selectTab(next: OppTab) {
+    listRequestRef.current += 1;
     setTab(next);
     if (pageByKey.current[pageKey(next, paperSegment)] == null) {
       pageByKey.current[pageKey(next, paperSegment)] = 1;
@@ -196,6 +208,7 @@ export function OpportunitiesPage() {
   }
 
   function selectPaperSegment(seg: PaperSegment) {
+    listRequestRef.current += 1;
     setPaperSegment(seg);
     pageByKey.current[pageKey("paper", seg)] = 1;
   }

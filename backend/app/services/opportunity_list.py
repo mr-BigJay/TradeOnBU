@@ -109,8 +109,11 @@ async def count_setups_for_tab(session: AsyncSession, tab: str) -> int:
         )
     elif tab == TAB_OTHER:
         q = select(func.count()).select_from(AiProposedSetup).where(
-            AiProposedSetup.lifecycle_state.notin_(_COVERED_FOR_OTHER),
             AiProposedSetup.status == "open",
+            or_(
+                AiProposedSetup.lifecycle_state.is_(None),
+                AiProposedSetup.lifecycle_state.notin_(_COVERED_FOR_OTHER),
+            ),
         )
     else:
         return 0
@@ -192,8 +195,11 @@ async def _list_setups(
         )
     elif tab == TAB_OTHER:
         base = select(AiProposedSetup).where(
-            AiProposedSetup.lifecycle_state.notin_(_COVERED_FOR_OTHER),
             AiProposedSetup.status == "open",
+            or_(
+                AiProposedSetup.lifecycle_state.is_(None),
+                AiProposedSetup.lifecycle_state.notin_(_COVERED_FOR_OTHER),
+            ),
         )
     else:
         meta = _paginate(0, page, page_size)

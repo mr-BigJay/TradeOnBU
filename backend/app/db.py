@@ -92,17 +92,21 @@ LEGACY_SETUP_BACKFILL = """
 UPDATE ai_proposed_setups
 SET
   monitoring_enabled = 0,
-  setup_mode = COALESCE(setup_mode, 'legacy_immediate'),
+  setup_mode = 'legacy_immediate',
   lifecycle_state = CASE
     WHEN status = 'invalidated' THEN 'INVALIDATED'
     WHEN status = 'expired' THEN 'EXPIRED'
     WHEN UPPER(direction) = 'SHORT' THEN 'READY_SHORT'
     ELSE 'READY_LONG'
   END
-WHERE monitoring_enabled IS NULL
-   OR (monitor_from_ms = 0 AND final_ai_decision IS NULL AND setup_mode = 'conditional')
-   OR lifecycle_state = 'WAIT_LONG' AND final_ai_decision IS NULL
+WHERE final_ai_decision IS NULL
+  AND (monitor_from_ms IS NULL OR monitor_from_ms = 0)
+  AND (setup_mode IS NULL OR setup_mode = 'conditional')
 """
+# Legacy rows predate the objective monitor and have no AI decision or
+# monitoring start. Modern WAIT setups must never be relabelled READY or
+# disabled by a migration on application restart. Rewriting the mode makes
+# legacy backfill idempotent across restarts.
 
 
 async def migrate_db() -> None:
