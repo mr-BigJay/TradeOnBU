@@ -32,16 +32,20 @@ def test_legacy_scan_disabled_in_ai_first_mode():
 async def test_worker_skips_rule_scan_but_can_monitor(session):
     worker = BotWorker()
     entry_scan = AsyncMock(return_value=None)
-    worker.monitor.monitor_open_signals = AsyncMock(return_value={})
-    worker.outbox.flush_pending = AsyncMock()
+    # This test checks scan/monitor scheduling, not HTTP or price-based fills.
     with patch("app.worker.try_acquire_worker_lock", AsyncMock(return_value=True)):
         with patch("app.worker.release_worker_lock", AsyncMock()):
-            with patch("app.worker.TrendEngine") as te_cls:
-                te_cls.return_value.analyze = AsyncMock()
-                te_cls.return_value.persist = AsyncMock()
-                with patch("app.worker.EntryDetectionService") as ed_cls:
-                    ed_cls.return_value.scan = entry_scan
-                    await worker.run_cycle()
+            with patch("app.services.opportunity_monitor.run_opportunity_monitor_tick", AsyncMock(return_value={})):
+                with patch("app.services.position.position_monitor.SimPositionMonitorService.monitor_session", AsyncMock(return_value=0)):
+                    with patch("app.services.signal_monitor.SignalMonitorService.monitor_open_signals", AsyncMock(return_value={})) as monitor:
+                        with patch("app.services.notification_outbox.NotificationOutboxService.flush_pending", AsyncMock()):
+                            with patch("app.worker.TrendEngine") as te_cls:
+                                te_cls.return_value.analyze = AsyncMock()
+                                te_cls.return_value.persist = AsyncMock()
+                                with patch("app.worker.EntryDetectionService") as ed_cls:
+                                    ed_cls.return_value.scan = entry_scan
+                                    await worker.run_cycle()
+    monitor.assert_awaited()
     entry_scan.assert_not_called()
     te_cls.return_value.analyze.assert_not_called()
 
