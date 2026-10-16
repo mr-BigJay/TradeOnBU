@@ -190,6 +190,14 @@ class ScriptedMarket:
     async def fetch_kline_bundle(self, symbol: str, interval: str, limit: int) -> KlineBundle:
         return self.bundle(interval, limit=limit)
 
+    async def fetch_ticker(self, symbol: str) -> tuple[float, int | None]:
+        """Deterministic mark price for equity snapshots; never use the network."""
+        candles = self.closed_1m or self.closed_5m
+        if not candles:
+            raise AssertionError("ScriptedMarket.fetch_ticker needs scripted closed candles")
+        last = candles[-1]
+        return float(last.close), int(last.time_ms)
+
     async def fetch_historical_closed(
         self,
         symbol: str,
@@ -259,8 +267,7 @@ async def run_position_monitor(
 ) -> int:
     import datetime as real_datetime
 
-    sim = SimPositionMonitorService()
-    sim.market = market  # type: ignore[assignment]
+    sim = SimPositionMonitorService(market=market)  # type: ignore[arg-type]
     now_dt = ms_to_dt(now_ms)
     with patch("app.services.opportunity_monitor._utc_now", return_value=now_dt):
         with patch("app.services.opportunity_monitor.is_market_data_fresh", return_value=(True, 5, 600)):
