@@ -695,7 +695,7 @@ async def test_equity_unrealized_excludes_entry_fee():
         )
         with patch.object(svc.market, "fetch_ticker", AsyncMock(return_value=(100.0, None))):
             await svc.create_order(db_session, req)
-        mtm = await aggregate_open_mark_to_market(db_session, svc)
+            mtm = await aggregate_open_mark_to_market(db_session, svc)
         summary = await wallet.wallet_summary(
             db_session,
             unrealized_gross=mtm["unrealized_gross"],

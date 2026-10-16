@@ -21,9 +21,11 @@ from app.services.settings_store import set_plain, set_secret
 from app.worker import BotWorker
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
+from tests.repo_paths import repo_root, require_repo_file
+
 
 def test_install_check_ports_never_fails_under_set_e():
-    root = __import__("pathlib").Path(__file__).resolve().parents[2]
+    root = repo_root()
     proc = subprocess.run(
         ["bash", "-c", f'set -euo pipefail; source "{root}/scripts/install_lib.sh"; source "{root}/scripts/install.sh" 2>/dev/null || true'],
         capture_output=True,
@@ -64,23 +66,26 @@ echo OK''',
 
 
 def test_install_scripts_syntax_and_lib():
-    root = __import__("pathlib").Path(__file__).resolve().parents[2]
-    assert subprocess.run(["bash", "-n", str(root / "scripts/install.sh")], check=False).returncode == 0
-    assert subprocess.run(["bash", "-n", str(root / "scripts/bootstrap-install.sh")], check=False).returncode == 0
+    root = repo_root()
+    install_sh = require_repo_file("scripts/install.sh")
+    bootstrap = require_repo_file("scripts/bootstrap-install.sh")
+    install_lib = require_repo_file("scripts/install_lib.sh")
+    assert subprocess.run(["bash", "-n", str(install_sh)], check=False).returncode == 0
+    assert subprocess.run(["bash", "-n", str(bootstrap)], check=False).returncode == 0
     proc = subprocess.run(
-        ["bash", "-c", f'source "{root}/scripts/install_lib.sh" && validate_domain trade.example.com'],
+        ["bash", "-c", f'source "{install_lib}" && validate_domain trade.example.com'],
         capture_output=True,
     )
     assert proc.returncode == 0
 
 
 def test_install_lib_required_when_missing():
-    root = __import__("pathlib").Path(__file__).resolve().parents[2]
+    install_sh = require_repo_file("scripts/install.sh")
     proc = subprocess.run(
         [
             "bash",
             "-c",
-            f'cp "{root}/scripts/install.sh" /tmp/tradeonbu-install-isolated.sh && '
+            f'cp "{install_sh}" /tmp/tradeonbu-install-isolated.sh && '
             "export TRADEONBU_INSTALL_LIB=/nonexistent/lib.sh && bash /tmp/tradeonbu-install-isolated.sh",
         ],
         capture_output=True,
