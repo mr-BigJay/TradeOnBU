@@ -338,6 +338,7 @@ async def _attempt_ready_paper_order(
     *,
     now: datetime,
     summary: dict[str, Any],
+    live_price: float | None = None,
 ) -> bool:
     """Create paper order while READY; transition to PENDING_ENTRY only on success (atomic savepoint)."""
     from app.services.conditional_revision import objective_confirmations_satisfied
@@ -405,6 +406,7 @@ async def _attempt_ready_paper_order(
                 symbol=setup.symbol,
                 commit=False,
                 require_ai_flags=False,
+                live_price=live_price,
             )
             if not auto.get("created"):
                 setup.lifecycle_state = ready_state_for_direction(direction)
@@ -530,6 +532,12 @@ class OpportunityMonitorService:
         )
         setups = list(result.scalars().all())
         summary: dict[str, Any] = {"checked": len(setups), "promoted": 0, "invalidated": 0, "expired": 0, "orders": 0}
+
+        try:
+            live_price, _ = await self.market.fetch_ticker(symbol)
+        except Exception:
+            live_price = None
+        summary["live_price"] = live_price
 
         bundle, fetch_meta = await fetch_monitor_5m_bundle(self.market, symbol, setups, now_ms=now_ms)
         kline_limit = fetch_meta.get("aggregate_limit", 120)
@@ -710,7 +718,9 @@ class OpportunityMonitorService:
                         session, setup, bundle, now_ms, now, summary
                     ):
                         continue
-                    await _attempt_ready_paper_order(session, setup, now=now, summary=summary)
+                    await _attempt_ready_paper_order(
+                        session, setup, now=now, summary=summary, live_price=live_price
+                    )
                 continue
 
             zone_lo, zone_hi = _zone_bounds(setup)
@@ -810,7 +820,12 @@ class OpportunityMonitorService:
 
                 setup.lifecycle_state = ready_state_for_direction(setup.direction)
                 setup.last_rejection_reason = None
-                setup.last_validation_result = {"ok": True, "net_rr": net_rr, "promoted_at": now.isoformat()}
+                setup.last_validation_result = {
+                    "ok": True,
+                    "net_rr": net_rr,
+                    "promoted_at": now.isoformat(),
+                    "live_price_at_ready": live_price,
+                }
                 append_timeline_event(setup, "promoted_ready", net_rr=net_rr, at_ms=now_ms)
                 await log_setup_event(session, setup_id=setup.setup_id, event_type="promoted_ready", payload={"net_rr": net_rr})
                 summary["promoted"] += 1
@@ -824,7 +839,12 @@ class OpportunityMonitorService:
                 if rr_ok:
                     setup.lifecycle_state = ready_state_for_direction(setup.direction)
                     setup.last_rejection_reason = None
-                    setup.last_validation_result = {"ok": True, "net_rr": net_rr, "promoted_at": now.isoformat()}
+                    setup.last_validation_result = {
+                        "ok": True,
+                        "net_rr": net_rr,
+                        "promoted_at": now.isoformat(),
+                        "live_price_at_ready": live_price,
+                    }
                     summary["promoted"] += 1
                 else:
                     setup.last_rejection_reason = REASON_ICT_CONFIRMED_BLOCKED_RR
@@ -878,7 +898,9 @@ class OpportunityMonitorService:
                     session, setup, bundle, now_ms, now, summary
                 ):
                     continue
-                await _attempt_ready_paper_order(session, setup, now=now, summary=summary)
+                await _attempt_ready_paper_order(
+                    session, setup, now=now, summary=summary, live_price=live_price
+                )
 
         await session.flush()
         return summary

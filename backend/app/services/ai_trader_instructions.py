@@ -63,7 +63,14 @@ For **monitored** immediate plans (objective confirmation before paper entry), a
 
 If immediate entry is valid now but you still want the backend to confirm structure on closed 5m bars, use setup_mode=conditional with final_ai_decision=WAIT instead of forcing decision LONG/SHORT.
 
-Actively search for valid intraday setups — prefer conditional WAIT plans over empty rejections.
+## Hourly analysis discipline (quality over quantity)
+
+- **NO_TRADE is a valid and preferred outcome** when structure is unclear, HTF bias conflicts, or POI is not actionable.
+- Do **NOT** force `proposed_setup.new_setup=true` every hour. Re-use `continue_setup_id` for the same thesis until invalidation, expiry, or a **meaningful** 4H/1H structure change.
+- Do **NOT** publish a near-duplicate setup (same direction + same POI band) without `distinct_new_setup=true` and a one-line thesis change in `thesis_fa`.
+- Zero trades on quiet days is expected; the backend caps automatic paper entries to **at most two per Tehran day**.
+
+Actively search for valid intraday setups — prefer conditional WAIT or honest NO_TRADE over repeating similar WAIT rows.
 
 INTERNAL CONTEXT (memory, lifecycle, tracking):
 - Reasoning only. Never echo in user-visible JSON text fields.

@@ -142,9 +142,10 @@ async def maybe_auto_open_paper_position(
     symbol: str,
     commit: bool = True,
     require_ai_flags: bool = True,
+    live_price: float | None = None,
 ) -> dict[str, Any]:
     """
-    Create a pending limit paper order from a validated AI setup when auto mode is enabled.
+    Create a paper entry (limit or market) from a validated AI setup when auto mode is enabled.
     Live trading is never used.
     """
     meta: dict[str, Any] = {"attempted": True, "created": False, "skipped": False}
@@ -222,6 +223,15 @@ async def maybe_auto_open_paper_position(
         meta["reason"] = "position_already_active_for_setup"
         return meta
 
+    from app.services.paper_execution_budget import auto_paper_budget_allows_new_entry
+
+    budget_ok, budget_reason, budget_meta = await auto_paper_budget_allows_new_entry(session)
+    meta["budget"] = budget_meta
+    if not budget_ok:
+        meta["skipped"] = True
+        meta["reason"] = budget_reason
+        return meta
+
     if await _active_position_count(session) >= runtime.max_simultaneous_positions:
         meta["skipped"] = True
         meta["reason"] = "max_simultaneous_positions"
@@ -232,14 +242,46 @@ async def maybe_auto_open_paper_position(
     tp = float(setup.take_profit)  # type: ignore[arg-type]
     direction = (setup.direction or "").upper()
 
+    from app.services.paper_entry_mode import choose_paper_entry_mode
+
+    order_type, skip_entry, mode_diag = choose_paper_entry_mode(
+        direction=direction,
+        entry=entry,
+        live_price=live_price,
+        setup_mode=setup.setup_mode,
+    )
+    meta["entry_mode"] = mode_diag
+    if skip_entry:
+        meta["skipped"] = True
+        meta["reason"] = skip_entry
+        return meta
+
+    rr_entry = float(live_price) if order_type == "market" and live_price is not None else entry
+    rr_ok_mode, net_rr_mode = await net_rr_acceptable_for_auto_paper(
+        session,
+        direction=direction,
+        entry=rr_entry,
+        sl=sl,
+        tp=tp,
+        min_net_rr=HARD_MIN_AUTO_PAPER_NET_RR,
+        order_type=order_type,
+    )
+    if not rr_ok_mode:
+        meta["skipped"] = True
+        meta["reason"] = "net_rr_below_min_at_execution_price"
+        meta["net_rr"] = net_rr_mode
+        meta["execution_entry"] = rr_entry
+        meta["order_type"] = order_type
+        return meta
+
     svc = SimPositionService()
     req = OrderRequest(
         symbol=symbol,
         direction=direction,
         margin_usdt=settings.default_margin_usdt,
         leverage=settings.default_leverage,
-        order_type="limit",
-        entry_price=entry,
+        order_type=order_type,
+        entry_price=entry if order_type == "limit" else None,
         stop_loss=sl,
         take_profit=tp,
         ai_setup_id=setup.setup_id,
@@ -273,6 +315,8 @@ async def maybe_auto_open_paper_position(
     meta["created"] = True
     meta["position_id"] = result.position_id
     meta["setup_id"] = setup.setup_id
+    meta["order_type"] = order_type
+    meta["net_rr_at_execution"] = net_rr_mode
     meta["ict_entry_snapshot"] = ict_snapshot
     logger.info(
         "PAPER AUTO ENTRY CREATED",

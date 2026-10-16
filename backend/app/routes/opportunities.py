@@ -48,6 +48,10 @@ _PERSIAN_STATUS: dict[str, str] = {
 _REJECTION_FA: dict[str, str] = {
     "missing_confirmations": "در انتظار تأییدهای ICT (MSS، sweep، POI و …)",
     "net_rr_below_min": "نسبت ریسک به بازده خالص کافی نیست (حداقل ۱:۲)",
+    "net_rr_below_min_at_execution_price": "R:R خالص در قیمت اجرای واقعی زیر حد مجاز",
+    "entry_too_far_from_live": "فاصله قیمت از POI برای ورود منطقی نیست (بدون تعقیب)",
+    "max_concurrent_auto_paper": "فقط یک سفارش/پوزیشن خودکار هم‌زمان مجاز است",
+    "daily_auto_paper_cap_tehran": "سقف دو سفارش خودکار در روز (تهران) پر شده",
     "ict_confirmed_blocked_by_net_rr": DISPLAY_ICT_CONFIRMED_BLOCKED_RR,
     "auto_paper_disabled": "ورود خودکار Paper غیرفعال است",
     "wallet_not_initialized": "موجودی Paper اولیه تنظیم نشده",
@@ -148,7 +152,45 @@ def _serialize_no_trade_run(row: AiAnalysisRun) -> dict:
 async def opportunities_summary(session: AsyncSession = Depends(get_db), _=Depends(require_dashboard_access)):
     """Real counts for dashboard summary cards (server-side, not limited to 200 rows)."""
     counts = await opp_list.fetch_summary_counts(session)
-    return {"counts": counts}
+    from app.services.paper_execution_metrics import build_execution_metrics
+
+    exec_kpi = await build_execution_metrics(session, period="30d")
+    return {
+        "counts": counts,
+        "execution_kpi": {
+            "executed_auto_paper": exec_kpi.get("executed_auto_paper"),
+            "monitoring": {
+                "ready_or_beyond_candidates": exec_kpi.get("monitoring", {}).get("ready_or_beyond_candidates"),
+                "skip_reason_counts": exec_kpi.get("monitoring", {}).get("skip_reason_counts"),
+            },
+            "data_quality_note": exec_kpi.get("data_quality_note"),
+        },
+    }
+
+
+@router.get("/execution-metrics")
+async def execution_metrics(
+    session: AsyncSession = Depends(get_db),
+    _=Depends(require_dashboard_access),
+    period: str = Query("30d", description="today|7d|30d"),
+):
+    from app.services.paper_execution_metrics import build_execution_metrics
+
+    if period not in ("today", "7d", "30d"):
+        raise HTTPException(status_code=400, detail="invalid period")
+    return await build_execution_metrics(session, period=period)
+
+
+@router.get("/execution-backtest")
+async def execution_backtest_compare(
+    session: AsyncSession = Depends(get_db),
+    _=Depends(require_dashboard_access),
+    symbol: str = "BTCUSDT",
+    limit: int = Query(300, ge=10, le=2000),
+):
+    from app.services.paper_execution_backtest import compare_entry_policies_on_history
+
+    return await compare_entry_policies_on_history(session, symbol=symbol, limit=limit)
 
 
 @router.get("/items")

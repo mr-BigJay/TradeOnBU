@@ -71,6 +71,21 @@ type ListResponse = {
   live_price?: number;
 };
 
+type ExecutionKpi = {
+  executed_auto_paper?: {
+    filled?: number;
+    orders_created?: number;
+    candidate_to_fill_rate?: number | null;
+    win_rate_closed?: number | null;
+    profit_factor_closed?: number | null;
+    tehran_today_auto_orders?: number;
+  };
+  monitoring?: {
+    ready_or_beyond_candidates?: number;
+  };
+  data_quality_note?: string | null;
+};
+
 type SummaryResponse = {
   counts: {
     wait: number;
@@ -79,6 +94,7 @@ type SummaryResponse = {
     expired: number;
     invalidated?: number;
   };
+  execution_kpi?: ExecutionKpi;
 };
 
 const TABS: { id: OppTab; label: string }[] = [
@@ -137,6 +153,7 @@ export function OpportunitiesPage() {
   paperRef.current = paperSegment;
   const [list, setList] = useState<ListResponse | null>(null);
   const [summary, setSummary] = useState<SummaryResponse["counts"] | null>(null);
+  const [executionKpi, setExecutionKpi] = useState<ExecutionKpi | null>(null);
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(false);
   const [detail, setDetail] = useState<OppItem | null>(null);
@@ -149,8 +166,9 @@ export function OpportunitiesPage() {
   );
 
   const loadSummary = useCallback(async () => {
-    const d = (await apiFetch("/api/gui/opportunities/summary")) as SummaryResponse;
-    setSummary(d.counts);
+    const s = (await apiFetch("/api/gui/opportunities/summary")) as SummaryResponse;
+    setSummary(s.counts);
+    setExecutionKpi(s.execution_kpi ?? null);
   }, []);
 
   const loadList = useCallback(async () => {
@@ -233,10 +251,50 @@ export function OpportunitiesPage() {
         )}
       </header>
 
+      {executionKpi?.executed_auto_paper && (
+        <section className="opp-exec-kpi" aria-label="Paper execution KPIs">
+          <h2 className="opp-exec-kpi-title">اجرای Paper (۳۰ روز)</h2>
+          <p className="hint opp-exec-kpi-hint">
+            معیار اصلی: پوزیشن‌های واقعاً Fill شده — نه تعداد WAIT/READY
+          </p>
+          <div className="opp-summary-grid opp-exec-kpi-grid">
+            <div className="opp-summary-card">
+              <span className="opp-summary-label">Fill خودکار</span>
+              <span className="opp-summary-value num-ltr">{executionKpi.executed_auto_paper.filled ?? 0}</span>
+            </div>
+            <div className="opp-summary-card">
+              <span className="opp-summary-label">نرخ کاندید→Fill</span>
+              <span className="opp-summary-value num-ltr">
+                {executionKpi.executed_auto_paper.candidate_to_fill_rate != null
+                  ? `${(executionKpi.executed_auto_paper.candidate_to_fill_rate * 100).toFixed(0)}%`
+                  : "—"}
+              </span>
+            </div>
+            <div className="opp-summary-card">
+              <span className="opp-summary-label">Win rate (بسته)</span>
+              <span className="opp-summary-value num-ltr">
+                {executionKpi.executed_auto_paper.win_rate_closed != null
+                  ? `${(executionKpi.executed_auto_paper.win_rate_closed * 100).toFixed(0)}%`
+                  : "—"}
+              </span>
+            </div>
+            <div className="opp-summary-card">
+              <span className="opp-summary-label">سفارش خودکار امروز (تهران)</span>
+              <span className="opp-summary-value num-ltr">
+                {executionKpi.executed_auto_paper.tehran_today_auto_orders ?? 0} / 2
+              </span>
+            </div>
+          </div>
+          {executionKpi.data_quality_note && (
+            <p className="hint opp-exec-kpi-note">{executionKpi.data_quality_note}</p>
+          )}
+        </section>
+      )}
+
       {summary && (
         <div className="opp-summary-grid">
           <div className="opp-summary-card">
-            <span className="opp-summary-label">در انتظار</span>
+            <span className="opp-summary-label">مانیتور (WAIT)</span>
             <span className="opp-summary-value num-ltr">{summary.wait}</span>
           </div>
           <div className="opp-summary-card opp-summary-ready">

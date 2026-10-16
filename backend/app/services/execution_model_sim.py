@@ -18,6 +18,11 @@ def execution_model_from_sim_settings(sim: SimPositionSettings) -> ExecutionMode
     return ExecutionModel(base)
 
 
+def entry_type_for_paper_order(order_type: str) -> str:
+    """LIMIT → maker-style open fill; market → taker (adverse slippage on entry)."""
+    return "STOP" if (order_type or "").lower() == "market" else "LIMIT"
+
+
 async def net_rr_acceptable_for_auto_paper(
     session,
     *,
@@ -26,10 +31,12 @@ async def net_rr_acceptable_for_auto_paper(
     sl: float,
     tp: float,
     min_net_rr: float,
+    order_type: str = "limit",
 ) -> tuple[bool, float]:
     from app.services.position.settings_service import get_or_create_settings
 
     sim = await get_or_create_settings(session)
     model = execution_model_from_sim_settings(sim)
-    rr = model.calc_rr(direction, entry, sl, tp, "LIMIT", min_net_rr=min_net_rr)
+    et = entry_type_for_paper_order(order_type)
+    rr = model.calc_rr(direction, entry, sl, tp, et, min_net_rr=min_net_rr)
     return bool(rr.acceptable), float(rr.net_rr)

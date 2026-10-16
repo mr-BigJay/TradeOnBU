@@ -806,6 +806,28 @@ label {
   color: var(--muted);
 }
 
+.opp-exec-kpi {
+  margin: 1rem 0;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+.opp-exec-kpi-title {
+  font-size: 1rem;
+  margin: 0 0 0.25rem;
+}
+.opp-exec-kpi-hint {
+  margin: 0 0 0.75rem;
+}
+.opp-exec-kpi-note {
+  margin-top: 0.5rem;
+  font-size: 0.85rem;
+}
+.opp-exec-kpi-grid {
+  margin-bottom: 0;
+}
+
 .opp-summary-grid {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
