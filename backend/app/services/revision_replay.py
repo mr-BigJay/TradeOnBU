@@ -145,9 +145,14 @@ def assess_revision_replay_trust(
     if not rev_hist:
         return REPLAY_STATUS_OK, notes, None, None
 
+    ordered_hist = sorted(
+        rev_hist,
+        key=lambda e: (_parse_revision_at_ms(e) if _parse_revision_at_ms(e) is not None else 2**62, str(e.get("at") or "")),
+    )
     seed_candidates: list[tuple[int, dict[str, Any]]] = []
+    chain_seq_after: list[str] | None = None
 
-    for entry in rev_hist:
+    for entry in ordered_hist:
         kind = str(entry.get("kind") or "")
         seq_before = _seq_list(entry.get("sequence_before"))
         seq_after = _seq_list(entry.get("sequence_after") or entry.get("confirmation_sequence"))
@@ -155,12 +160,22 @@ def assess_revision_replay_trust(
         prior_levels = entry.get("prior_levels") if isinstance(entry.get("prior_levels"), dict) else {}
         new_levels = entry.get("new_levels") if isinstance(entry.get("new_levels"), dict) else {}
 
-        if kind == "conditional_revision" and seq_after and not seq_before:
+        if kind == "conditional_revision" and seq_after and not seq_before and not snapshot:
             notes.append("legacy_revision_missing_sequence_before")
             return REPLAY_STATUS_SEQUENCE_LIMITED, notes, None, None
 
-        if kind == "conditional_revision" and seq_after and seq_after != seq:
-            notes.append("legacy_revision_sequence_differs_from_live_state")
+        if (
+            kind == "conditional_revision"
+            and seq_after
+            and seq_after != seq
+            and not snapshot
+            and not seq_before
+        ):
+            notes.append("legacy_revision_sequence_differs_without_snapshot")
+            return REPLAY_STATUS_SEQUENCE_LIMITED, notes, None, None
+
+        if chain_seq_after is not None and seq_before and seq_before != chain_seq_after:
+            notes.append("revision_chain_sequence_discontinuity")
             return REPLAY_STATUS_SEQUENCE_LIMITED, notes, None, None
 
         if prior_levels and new_levels and _levels_changed(prior_levels, new_levels) and not snapshot:
@@ -185,6 +200,10 @@ def assess_revision_replay_trust(
             return REPLAY_STATUS_SEQUENCE_LIMITED, notes, None, None
 
         seed_candidates.append((at_ms, sanitize_conf_snapshot(snapshot)))
+        if seq_after:
+            chain_seq_after = seq_after
+        else:
+            chain_seq_after = _sequence_from_conf(sanitize_conf_snapshot(snapshot))
 
     if not seed_candidates:
         return REPLAY_STATUS_OK, notes, None, None

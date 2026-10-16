@@ -144,7 +144,21 @@ def replay_confirmations_on_5m_bars(
         }
         if last.invalidated:
             break
-    return last or ConfirmationProgress(sequence=list(sequence))
+    if last is not None:
+        return last
+    timestamps = dict(state.get("confirmation_timestamps") or {})
+    evidence = dict(state.get("confirmation_evidence") or {})
+    completed = [t for t in sequence if t in timestamps]
+    missing = [t for t in sequence if t not in timestamps]
+    last_bar = max(timestamps.values()) if timestamps else max(effective_from - 1, monitor_from_ms - 1)
+    return ConfirmationProgress(
+        sequence=list(sequence),
+        completed=completed,
+        missing=missing,
+        confirmation_timestamps=timestamps,
+        confirmation_evidence=evidence,
+        last_bar_ms=int(last_bar),
+    )
 
 
 def _tokens_true_on_bar(
