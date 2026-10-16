@@ -124,19 +124,25 @@ def _replay_trusted(replay_diff: dict[str, Any] | None) -> bool:
     return replay_diff.get("replay_status", REPLAY_STATUS_OK) == REPLAY_STATUS_OK
 
 
-def classify_setup_outcome(setup: AiProposedSetup, *, timeline: dict[str, Any], replay_diff: dict[str, Any] | None) -> str:
+def derive_replay_status(replay_diff: dict[str, Any] | None) -> str:
+    """Replay audit axis (independent of trading / execution outcome)."""
+    if not replay_diff:
+        return REPLAY_STATUS_OK
+    return str(replay_diff.get("replay_status") or REPLAY_STATUS_OK)
+
+
+def classify_execution_outcome(
+    setup: AiProposedSetup,
+    *,
+    timeline: dict[str, Any],
+    replay_diff: dict[str, Any] | None,
+) -> str:
+    """Why the setup did or did not become an order — never overridden by replay availability."""
     lc = (setup.lifecycle_state or "").upper()
     reason = setup.last_rejection_reason or ""
     notes = setup.objective_notes or {}
     health = notes.get("market_data_health") or {}
     pos_hint = timeline.get("paper_orders") or []
-
-    if replay_diff:
-        rs = replay_diff.get("replay_status")
-        if rs == REPLAY_STATUS_INSUFFICIENT_HISTORY:
-            return OUTCOME_INSUFFICIENT_REPLAY_HISTORY
-        if rs == REPLAY_STATUS_SEQUENCE_LIMITED:
-            return OUTCOME_REPLAY_SEQUENCE_LIMITED
 
     if _had_real_fill(pos_hint) or lc in (POSITION_OPEN, POSITION_CLOSED):
         if lc == PENDING_ENTRY and not _had_real_fill(pos_hint):
@@ -185,6 +191,24 @@ def classify_setup_outcome(setup: AiProposedSetup, *, timeline: dict[str, Any], 
     return OUTCOME_INTENTIONAL_WAIT
 
 
+def classify_setup_outcome(
+    setup: AiProposedSetup,
+    *,
+    timeline: dict[str, Any],
+    replay_diff: dict[str, Any] | None,
+) -> str:
+    """Backward-compatible alias for ``classify_execution_outcome``."""
+    return classify_execution_outcome(setup, timeline=timeline, replay_diff=replay_diff)
+
+
+def _replay_unavailable_for_row(*, replay_status: str, execution_outcome: str) -> bool:
+    if replay_status in (REPLAY_STATUS_INSUFFICIENT_HISTORY, REPLAY_STATUS_SEQUENCE_LIMITED):
+        return True
+    if execution_outcome == OUTCOME_AMBIGUOUS_CHRONOLOGY:
+        return True
+    return False
+
+
 async def build_miss_audit_report(
     session: AsyncSession,
     *,
@@ -208,8 +232,6 @@ async def build_miss_audit_report(
         OUTCOME_LIMIT_NOT_FILLED,
         OUTCOME_POTENTIAL_MISSED,
         OUTCOME_AMBIGUOUS_CHRONOLOGY,
-        OUTCOME_INSUFFICIENT_REPLAY_HISTORY,
-        OUTCOME_REPLAY_SEQUENCE_LIMITED,
         OUTCOME_INTENTIONAL_WAIT,
         OUTCOME_TERMINAL_OTHER,
     )
@@ -220,27 +242,45 @@ async def build_miss_audit_report(
     for setup in setups:
         timeline = await build_setup_timeline(session, setup)
         replay_diff = replay_by_setup.get(setup.setup_id)
-        outcome = classify_setup_outcome(setup, timeline=timeline, replay_diff=replay_diff)
+        execution_outcome = classify_execution_outcome(setup, timeline=timeline, replay_diff=replay_diff)
+        replay_status = derive_replay_status(replay_diff)
         entry = {
             "setup_id": setup.setup_id,
-            "outcome": outcome,
+            "execution_outcome": execution_outcome,
+            "replay_status": replay_status,
+            "outcome": execution_outcome,
             "lifecycle_state": setup.lifecycle_state,
             "rejection_reason": setup.last_rejection_reason,
             "timeline": timeline,
             "replay_diff": replay_diff,
             "chronology_advisories": chronology_advisories(replay_diff),
         }
-        buckets.setdefault(outcome, []).append(entry)
+        buckets.setdefault(execution_outcome, []).append(entry)
         rows.append(entry)
 
     summary = {k: len(v) for k, v in buckets.items()}
+    summary["by_execution_outcome"] = dict(summary)
     summary["total_setups"] = len(rows)
-    summary["potential_missed_count"] = summary.get(OUTCOME_POTENTIAL_MISSED, 0)
-    summary["insufficient_replay_history_count"] = summary.get(OUTCOME_INSUFFICIENT_REPLAY_HISTORY, 0)
-    summary["replay_unavailable_count"] = (
-        summary.get(OUTCOME_INSUFFICIENT_REPLAY_HISTORY, 0)
-        + summary.get(OUTCOME_REPLAY_SEQUENCE_LIMITED, 0)
-        + summary.get(OUTCOME_AMBIGUOUS_CHRONOLOGY, 0)
+    summary["by_replay_status"] = {}
+    for row in rows:
+        rs = row["replay_status"]
+        summary["by_replay_status"][rs] = summary["by_replay_status"].get(rs, 0) + 1
+    summary["potential_missed_count"] = sum(
+        1
+        for row in rows
+        if row["execution_outcome"] == OUTCOME_POTENTIAL_MISSED and _replay_trusted(row.get("replay_diff"))
+    )
+    summary["insufficient_replay_history_count"] = summary["by_replay_status"].get(
+        REPLAY_STATUS_INSUFFICIENT_HISTORY, 0
+    )
+    summary["replay_sequence_limited_count"] = summary["by_replay_status"].get(REPLAY_STATUS_SEQUENCE_LIMITED, 0)
+    summary["replay_unavailable_count"] = sum(
+        1
+        for row in rows
+        if _replay_unavailable_for_row(
+            replay_status=row["replay_status"],
+            execution_outcome=row["execution_outcome"],
+        )
     )
     summary["intentional_safety_blocks"] = (
         summary.get(OUTCOME_NET_RR_BELOW_MIN, 0)

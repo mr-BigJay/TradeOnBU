@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from app.domain.opportunity_miss_reasons import (
     OUTCOME_CONFIRMATION_INCOMPLETE,
-    OUTCOME_REPLAY_SEQUENCE_LIMITED,
     REPLAY_STATUS_OK,
     REPLAY_STATUS_SEQUENCE_LIMITED,
 )
 from app.domain.setup_lifecycle import REASON_MISSING_CONFIRMATIONS, WAIT_LONG
-from app.services.opportunity_miss_report import classify_setup_outcome
+from app.services.opportunity_miss_report import (
+    classify_execution_outcome,
+    derive_replay_status,
+)
 from app.services.revision_replay import assess_revision_replay_trust
 
 
@@ -41,25 +43,26 @@ def test_staging_setup_legacy_revision_limits_replay():
     assert seed is None
     assert rev_notes
 
-    outcome = classify_setup_outcome(
-        type(
-            "Setup",
-            (),
-            {
-                "lifecycle_state": WAIT_LONG,
-                "last_rejection_reason": REASON_MISSING_CONFIRMATIONS,
-                "objective_notes": notes,
-                "last_validation_result": {},
-            },
-        )(),
-        timeline={"paper_orders": []},
-        replay_diff={
-            "replay_status": status,
-            "replay_trusted": False,
-            "missing_in_live": ["liquidity_sweep"],
+    setup = type(
+        "Setup",
+        (),
+        {
+            "lifecycle_state": WAIT_LONG,
+            "last_rejection_reason": REASON_MISSING_CONFIRMATIONS,
+            "objective_notes": notes,
+            "last_validation_result": {},
         },
+    )()
+    replay_diff = {
+        "replay_status": status,
+        "replay_trusted": False,
+        "missing_in_live": ["liquidity_sweep"],
+    }
+    assert (
+        classify_execution_outcome(setup, timeline={"paper_orders": []}, replay_diff=replay_diff)
+        == OUTCOME_CONFIRMATION_INCOMPLETE
     )
-    assert outcome == OUTCOME_REPLAY_SEQUENCE_LIMITED
+    assert derive_replay_status(replay_diff) == REPLAY_STATUS_SEQUENCE_LIMITED
 
 
 def test_unified_revision_with_snapshot_allows_seeded_replay():
@@ -116,6 +119,6 @@ def test_live_replay_match_chronology_is_advisory_not_primary_bucket():
         ],
     }
     assert (
-        classify_setup_outcome(setup, timeline={"paper_orders": []}, replay_diff=replay_diff)
+        classify_execution_outcome(setup, timeline={"paper_orders": []}, replay_diff=replay_diff)
         == OUTCOME_CONFIRMATION_INCOMPLETE
     )

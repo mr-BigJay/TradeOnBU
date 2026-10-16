@@ -8,8 +8,8 @@ import pytest
 
 from app.domain.candles import Candle
 from app.domain.opportunity_miss_reasons import (
+    OUTCOME_CONFIRMATION_INCOMPLETE,
     OUTCOME_ENGINE_DELAY,
-    OUTCOME_INSUFFICIENT_REPLAY_HISTORY,
     OUTCOME_INTENTIONAL_WAIT,
     OUTCOME_ORDER_CREATED,
     OUTCOME_POTENTIAL_MISSED,
@@ -74,7 +74,7 @@ def test_classify_potential_missed_requires_trusted_replay():
     untrusted = {"missing_in_live": ["mss"], "replay_status": REPLAY_STATUS_INSUFFICIENT_HISTORY}
     assert (
         classify_setup_outcome(setup, timeline={"paper_orders": []}, replay_diff=untrusted)
-        == OUTCOME_INSUFFICIENT_REPLAY_HISTORY
+        == OUTCOME_CONFIRMATION_INCOMPLETE
     )
     trusted = {
         "missing_in_live": ["mss"],
