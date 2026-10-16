@@ -7,7 +7,8 @@ S="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 test -d "$S/backend/tests"
 test -f "$S/docker-compose.yml"
 test -d "$S/scripts"
-docker image inspect tradeonbu-tradeonbu:latest >/dev/null
+IMAGE="${PR19_TEST_IMAGE:-tradeonbu-tradeonbu:latest}"
+docker image inspect "$IMAGE" >/dev/null
 
 T="$(mktemp -d /tmp/tradeonbu-pr19-regression.XXXXXXXX)"
 echo "=== PR19 OFFLINE REGRESSION ==="
@@ -35,7 +36,7 @@ docker run --rm \
   -v "$S/docker-compose.yml:/app/docker-compose.yml:ro" \
   -v "$T:/app/backend/data:rw" \
   -w /app/backend \
-  tradeonbu-tradeonbu:latest \
+  "$IMAGE" \
   python -m pytest tests/ \
   -q --tb=short --disable-warnings -p no:cacheprovider \
   > "$T/test.log" 2>&1
