@@ -29,6 +29,7 @@ from tests.test_ai_trader_persistence_contract import _production_conditional_wa
 from app.services.system_state import get_system_state
 from app.services.paper_auto_trading import maybe_auto_open_paper_position
 from app.services.position import wallet_service as wallet
+from tests.helpers.paper_live import fresh_ticker
 from tests.test_paper_auto_trading import _ict_clear_structured, _sample_setup, _wallet_and_settings
 
 
@@ -122,6 +123,7 @@ async def test_market_auto_open_sets_position_open_and_paper_fill():
                 commit=True,
                 require_ai_flags=False,
                 live_price=100.02,
+                ticker_time_ms=fresh_ticker(100.02)[1],
                 market=_M(),  # type: ignore[arg-type]
             )
         assert meta.get("created") is True
@@ -143,13 +145,16 @@ async def test_duplicate_order_blocked_for_same_setup():
     await init_db()
     async with SessionLocal() as session:
         await _wallet_and_settings(session, auto=True)
-        setup = _sample_setup()
+        from tests.helpers.ready_setup import ready_long_setup
+
+        setup = ready_long_setup(setup_id="setup-auto-1")
         session.add(setup)
         await session.flush()
-        validation = {"ai_decision": "LONG", "acceptable_rr": True}
+        validation = {"ai_decision": "LONG", "acceptable_rr": True, "objective_ready": True}
         structured = _ict_clear_structured()
+        lp, ts = fresh_ticker(100.25)
         m = AsyncMock()
-        m.fetch_ticker = AsyncMock(return_value=(100.0, 1))
+        m.fetch_ticker = AsyncMock(return_value=(lp, ts))
         meta1 = await maybe_auto_open_paper_position(
             session,
             run_id=1,
@@ -158,7 +163,8 @@ async def test_duplicate_order_blocked_for_same_setup():
             structured=structured,
             symbol="BTCUSDT",
             commit=False,
-            live_price=100.25,
+            live_price=lp,
+            ticker_time_ms=ts,
             market=m,
         )
         assert meta1["created"]
@@ -170,7 +176,8 @@ async def test_duplicate_order_blocked_for_same_setup():
             structured=structured,
             symbol="BTCUSDT",
             commit=False,
-            live_price=100.25,
+            live_price=lp,
+            ticker_time_ms=ts,
             market=m,
         )
         assert meta2["skipped"]
@@ -253,7 +260,8 @@ async def test_market_order_rejected_when_execution_price_breaks_net_rr_no_ledge
                 symbol="BTCUSDT",
                 commit=False,
                 require_ai_flags=False,
-                live_price=100.02,
+                live_price=101.0,
+                ticker_time_ms=fresh_ticker(101.0)[1],
                 market=_M(),  # type: ignore[arg-type]
             )
         await session.rollback()

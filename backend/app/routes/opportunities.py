@@ -54,6 +54,9 @@ _REJECTION_FA: dict[str, str] = {
     "daily_auto_paper_cap_tehran": "سقف دو سفارش خودکار در روز (تهران) پر شده",
     "low_fill_probability": "احتمال Fill واقع‌بینانه کافی نیست (فیلتر ورود)",
     "low_win_probability": "کیفیت/احتمال موفقیت پس از Fill کافی نیست (فیلتر Win)",
+    "live_price_unavailable": "قیمت زنده معتبر نیست — سفارش ثبت نشد",
+    "live_price_stale": "قیمت زنده منقضی شده — سفارش ثبت نشد",
+    "live_price_unreliable_no_timestamp": "زمان‌مهر ticker نامعتبر — سفارش ثبت نشد",
     "ict_confirmed_blocked_by_net_rr": DISPLAY_ICT_CONFIRMED_BLOCKED_RR,
     "auto_paper_disabled": "ورود خودکار Paper غیرفعال است",
     "wallet_not_initialized": "موجودی Paper اولیه تنظیم نشده",
@@ -190,11 +193,15 @@ async def selection_calibration(
 ):
     """Calibration status for dual fill/win filters (no fabricated rates)."""
     from app.domain.paper_execution_policy import (
-        MIN_CALIBRATION_SAMPLES,
+        MIN_CALIBRATION_CLOSED_SAMPLES,
+        MIN_CALIBRATION_ORDER_SAMPLES,
         TARGET_FILL_RATE,
         TARGET_WIN_RATE,
     )
-    from app.services.paper_opportunity_calibration import calibrated_rates_for_bucket
+    from app.services.paper_opportunity_calibration import (
+        fill_calibration_for_bucket,
+        win_calibration_for_bucket,
+    )
 
     samples: list[dict] = []
     for direction, order_type, bps in (
@@ -203,30 +210,50 @@ async def selection_calibration(
         ("SHORT", "market", 10.0),
         ("SHORT", "limit", 40.0),
     ):
-        cal = await calibrated_rates_for_bucket(
+        fill_cal = await fill_calibration_for_bucket(
+            session, direction=direction, order_type=order_type, distance_bps=bps
+        )
+        win_cal = await win_calibration_for_bucket(
             session, direction=direction, order_type=order_type, distance_bps=bps
         )
         samples.append(
             {
-                "bucket": cal.bucket,
-                "status": cal.status,
-                "sample_size": cal.sample_size,
-                "fill_rate": cal.fill_rate,
-                "win_rate": cal.win_rate,
+                "bucket": fill_cal.bucket,
+                "fill": {
+                    "status": fill_cal.status,
+                    "orders_sample": fill_cal.orders_sample,
+                    "filled_count": fill_cal.filled_count,
+                    "rate": fill_cal.fill_rate,
+                    "ci_low": fill_cal.ci_low,
+                    "ci_high": fill_cal.ci_high,
+                    "walk_forward_oos_rate": fill_cal.walk_forward_oos_rate,
+                    "walk_forward_oos_n": fill_cal.walk_forward_oos_n,
+                    "target": fill_cal.target,
+                },
+                "win": {
+                    "status": win_cal.status,
+                    "filled_sample": win_cal.filled_sample,
+                    "closed_sample": win_cal.closed_sample,
+                    "win_count": win_cal.win_count,
+                    "rate": win_cal.win_rate,
+                    "ci_low": win_cal.ci_low,
+                    "ci_high": win_cal.ci_high,
+                    "walk_forward_oos_rate": win_cal.walk_forward_oos_rate,
+                    "walk_forward_oos_n": win_cal.walk_forward_oos_n,
+                    "target": win_cal.target,
+                },
             }
         )
-    any_calibrated = any(s["status"] == "calibrated" for s in samples)
+    any_fill_cal = any(s["fill"]["status"] == "calibrated" for s in samples)
+    any_win_cal = any(s["win"]["status"] == "calibrated" for s in samples)
     return {
-        "calibration_mode": "calibrated" if any_calibrated else "uncalibrated",
-        "min_samples_required": MIN_CALIBRATION_SAMPLES,
+        "fill_calibration_mode": "calibrated" if any_fill_cal else "uncalibrated",
+        "win_calibration_mode": "calibrated" if any_win_cal else "uncalibrated",
+        "min_order_samples": MIN_CALIBRATION_ORDER_SAMPLES,
+        "min_closed_samples": MIN_CALIBRATION_CLOSED_SAMPLES,
         "targets": {"fill_rate": TARGET_FILL_RATE, "win_rate": TARGET_WIN_RATE},
         "buckets": samples,
-        "note_fa": (
-            "در حالت uncalibrated فقط heuristic و ICT/R:R سخت‌گیرانه اعمال می‌شود؛ "
-            "احتمال ساختگی گزارش نمی‌شود."
-            if not any_calibrated
-            else "نرخ‌های bucket از تاریخچه Paper پر شده است."
-        ),
+        "display_note_fa": "شاخص‌های structural feasibility/quality احتمال واقعی نیستند.",
     }
 
 

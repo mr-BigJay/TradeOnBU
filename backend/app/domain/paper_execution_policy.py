@@ -18,7 +18,13 @@ MARKET_ENTRY_MAX_EXECUTION_PENALTY_BPS: float = 35.0
 # Performance targets (require calibrated historical samples before enforcing as hard gates).
 TARGET_FILL_RATE: float = 0.70
 TARGET_WIN_RATE: float = 0.60
-MIN_CALIBRATION_SAMPLES: int = 20
+MIN_CALIBRATION_ORDER_SAMPLES: int = 20
+MIN_CALIBRATION_CLOSED_SAMPLES: int = 15
+# Legacy alias
+MIN_CALIBRATION_SAMPLES: int = MIN_CALIBRATION_ORDER_SAMPLES
+
+# Live ticker must be at most this many seconds old for auto paper entry.
+MAX_LIVE_TICKER_AGE_SECONDS: float = 45.0
 
 # Uncalibrated: limit retest beyond this distance (bps) is treated as low fill probability.
 LIMIT_LOW_FILL_DISTANCE_BPS: float = 65.0

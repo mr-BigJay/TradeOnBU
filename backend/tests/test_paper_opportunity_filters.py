@@ -76,4 +76,4 @@ async def test_dual_filter_rejects_low_fill_far_limit():
         )
         assert ok is False
         assert reason == "low_fill_probability"
-        assert audit["calibration_status"] == "uncalibrated"
+        assert audit["fill_calibration_status"] == "uncalibrated"

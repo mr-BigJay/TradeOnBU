@@ -1,4 +1,4 @@
-"""Dual independent filters: fill probability + win probability (calibrated when data allows)."""
+"""Dual independent filters: fill feasibility + win quality (calibrated when data allows)."""
 
 from __future__ import annotations
 
@@ -14,10 +14,13 @@ from app.domain.paper_execution_policy import (
     TARGET_WIN_RATE,
 )
 from app.models import AiProposedSetup
-from app.services.paper_opportunity_calibration import calibrated_rates_for_bucket
+from app.services.paper_opportunity_calibration import (
+    fill_calibration_for_bucket,
+    win_calibration_for_bucket,
+)
 
 
-def _hours_to_expiry(setup: AiProposedSetup, now: datetime) -> float | None:
+def hours_to_expiry(setup: AiProposedSetup, now: datetime) -> float | None:
     exp = setup.expires_at
     if exp is None:
         return None
@@ -26,14 +29,14 @@ def _hours_to_expiry(setup: AiProposedSetup, now: datetime) -> float | None:
     return max(0.0, (exp - now).total_seconds() / 3600.0)
 
 
-def heuristic_fill_score(
+def structural_fill_feasibility(
     *,
     order_type: str,
     distance_bps: float | None,
     mode_reason: str | None,
     hours_left: float | None,
 ) -> float:
-    """Structural fill feasibility score in [0,1] — not a calibrated market probability."""
+    """Structural fill feasibility index in [0,1] — not a calibrated fill probability."""
     if distance_bps is None:
         return 0.72 if order_type == "limit" else 0.5
     dist = float(distance_bps)
@@ -58,13 +61,13 @@ def heuristic_fill_score(
     return 0.38
 
 
-def heuristic_win_score(
+def structural_ict_quality(
     *,
     structured: dict[str, Any],
     net_rr: float,
     confirmations_complete: bool,
 ) -> float:
-    """ICT + R:R quality proxy in [0,1] — not calibrated win rate."""
+    """ICT + R:R quality index in [0,1] — not a calibrated win rate."""
     score = 0.0
     for key in (
         "liquidity_event_clear",
@@ -83,6 +86,11 @@ def heuristic_win_score(
     return min(1.0, score)
 
 
+# Back-compat aliases for tests
+heuristic_fill_score = structural_fill_feasibility
+heuristic_win_score = structural_ict_quality
+
+
 async def evaluate_dual_trade_filters(
     session: AsyncSession,
     setup: AiProposedSetup,
@@ -97,43 +105,48 @@ async def evaluate_dual_trade_filters(
 ) -> tuple[bool, str | None, dict[str, Any]]:
     """
     Both filters must pass. Returns (ok, reject_reason, selection_audit).
-    Never claims calibrated probability when sample size is insufficient.
+    Never presents structural indices as calibrated probabilities.
     """
     now = now or datetime.now(timezone.utc)
     distance_bps = mode_diag.get("distance_bps")
     mode_reason = mode_diag.get("mode_reason")
-    hours_left = _hours_to_expiry(setup, now)
+    hours_left = hours_to_expiry(setup, now)
 
-    fill_heur = heuristic_fill_score(
+    fill_index = structural_fill_feasibility(
         order_type=order_type,
         distance_bps=float(distance_bps) if distance_bps is not None else None,
         mode_reason=str(mode_reason) if mode_reason else None,
         hours_left=hours_left,
     )
-    win_heur = heuristic_win_score(
+    ict_index = structural_ict_quality(
         structured=structured,
         net_rr=net_rr,
         confirmations_complete=confirmations_complete,
     )
 
-    cal = await calibrated_rates_for_bucket(
+    fill_cal = await fill_calibration_for_bucket(
+        session,
+        direction=setup.direction or "LONG",
+        order_type=order_type,
+        distance_bps=float(distance_bps) if distance_bps is not None else None,
+    )
+    win_cal = await win_calibration_for_bucket(
         session,
         direction=setup.direction or "LONG",
         order_type=order_type,
         distance_bps=float(distance_bps) if distance_bps is not None else None,
     )
 
-    calibration_status: Literal["calibrated", "uncalibrated"] = cal.status
     fill_pass = False
     win_pass = False
     fill_reason = ""
     win_reason = ""
 
-    if cal.status == "calibrated" and cal.fill_rate is not None:
-        fill_pass = cal.fill_rate >= TARGET_FILL_RATE
-        fill_reason = f"calibrated_fill_rate={cal.fill_rate:.2f} target={TARGET_FILL_RATE}"
+    if fill_cal.status == "calibrated" and fill_cal.fill_rate is not None:
+        fill_pass = fill_cal.fill_rate >= TARGET_FILL_RATE
+        fill_reason = "calibrated_fill_rate_meets_target"
     else:
-        fill_pass = fill_heur >= 0.68 and not (
+        fill_pass = fill_index >= 0.68 and not (
             order_type == "limit"
             and distance_bps is not None
             and float(distance_bps) > LIMIT_LOW_FILL_DISTANCE_BPS
@@ -145,12 +158,15 @@ async def evaluate_dual_trade_filters(
             and distance_bps is not None
             and float(distance_bps) <= LIMIT_LOW_FILL_DISTANCE_BPS
         ):
-            fill_pass = fill_heur >= 0.62
-        fill_reason = f"uncalibrated_heuristic_fill={fill_heur:.2f}"
+            fill_pass = fill_index >= 0.62
+        fill_reason = "uncalibrated_structural_fill_feasibility"
 
-    if cal.status == "calibrated" and cal.win_rate is not None:
-        win_pass = cal.win_rate >= TARGET_WIN_RATE
-        win_reason = f"calibrated_win_rate={cal.win_rate:.2f} target={TARGET_WIN_RATE}"
+    if win_cal.status == "calibrated" and win_cal.win_rate is not None:
+        win_pass = win_cal.win_rate >= TARGET_WIN_RATE
+        win_reason = "calibrated_win_rate_meets_target"
+    elif win_cal.status == "insufficient_closed_samples":
+        win_pass = confirmations_complete and net_rr >= HARD_MIN_AUTO_PAPER_NET_RR
+        win_reason = "insufficient_closed_samples_objective_ict_only"
     else:
         flags_ok = all(
             structured.get(k) is True
@@ -165,26 +181,45 @@ async def evaluate_dual_trade_filters(
             win_pass = True
             win_reason = "uncalibrated_objective_ict_confirmed_net_rr"
         else:
-            win_pass = win_heur >= 0.75 and flags_ok and net_rr >= HARD_MIN_AUTO_PAPER_NET_RR
-            win_reason = f"uncalibrated_heuristic_win={win_heur:.2f}"
+            win_pass = ict_index >= 0.75 and flags_ok and net_rr >= HARD_MIN_AUTO_PAPER_NET_RR
+            win_reason = "uncalibrated_structural_ict_quality"
 
     audit: dict[str, Any] = {
-        "calibration_status": calibration_status,
-        "calibration_bucket": cal.bucket,
-        "calibration_sample_size": cal.sample_size,
+        "fill_calibration_status": fill_cal.status,
+        "win_calibration_status": win_cal.status,
+        "calibration_bucket": fill_cal.bucket,
         "fill_filter": {
             "pass": fill_pass,
             "reason": fill_reason,
-            "heuristic_score": round(fill_heur, 3),
-            "calibrated_rate": cal.fill_rate,
-            "target_rate": TARGET_FILL_RATE,
+            "structural_feasibility_index": round(fill_index * 100, 1),
+            "structural_index_disclaimer": "not a probability",
+            "calibrated": {
+                "orders_sample": fill_cal.orders_sample,
+                "filled_count": fill_cal.filled_count,
+                "rate": fill_cal.fill_rate,
+                "ci_low": fill_cal.ci_low,
+                "ci_high": fill_cal.ci_high,
+                "target": fill_cal.target,
+                "walk_forward_oos_rate": fill_cal.walk_forward_oos_rate,
+                "walk_forward_oos_n": fill_cal.walk_forward_oos_n,
+            },
         },
         "win_filter": {
             "pass": win_pass,
             "reason": win_reason,
-            "heuristic_score": round(win_heur, 3),
-            "calibrated_rate": cal.win_rate,
-            "target_rate": TARGET_WIN_RATE,
+            "structural_quality_index": round(ict_index * 100, 1),
+            "structural_index_disclaimer": "not a probability",
+            "calibrated": {
+                "filled_sample": win_cal.filled_sample,
+                "closed_sample": win_cal.closed_sample,
+                "win_count": win_cal.win_count,
+                "rate": win_cal.win_rate,
+                "ci_low": win_cal.ci_low,
+                "ci_high": win_cal.ci_high,
+                "target": win_cal.target,
+                "walk_forward_oos_rate": win_cal.walk_forward_oos_rate,
+                "walk_forward_oos_n": win_cal.walk_forward_oos_n,
+            },
         },
         "order_type": order_type,
         "distance_bps": distance_bps,
@@ -203,7 +238,8 @@ async def evaluate_dual_trade_filters(
             order_type=order_type,
             fill_pass=fill_pass,
             win_pass=win_pass,
-            calibration_status=calibration_status,
+            fill_cal_status=fill_cal.status,
+            win_cal_status=win_cal.status,
             net_rr=net_rr,
         ),
     }
@@ -220,13 +256,15 @@ def _rationale_fa(
     order_type: str,
     fill_pass: bool,
     win_pass: bool,
-    calibration_status: str,
+    fill_cal_status: str,
+    win_cal_status: str,
     net_rr: float,
 ) -> str:
     parts = [
         f"ورود {order_type.upper()}",
         f"R:R خالص {net_rr:.2f}",
-        f"کالیبراسیون: {calibration_status}",
+        f"Fill cal: {fill_cal_status}",
+        f"Win cal: {win_cal_status}",
     ]
     if fill_pass and win_pass:
         parts.append("عبور از هر دو فیلتر Fill و Win")

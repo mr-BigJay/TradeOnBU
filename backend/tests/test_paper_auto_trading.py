@@ -16,6 +16,8 @@ from app.services.paper_auto_trading import (
 )
 from app.services.position import wallet_service as wallet
 from app.services.position.position_monitor import SimPositionMonitorService
+from tests.helpers.paper_live import fresh_ticker
+from tests.helpers.ready_setup import ready_long_setup
 
 
 async def _wallet_and_settings(db_session, *, auto: bool = True) -> SimPositionSettings:
@@ -69,12 +71,13 @@ async def test_auto_open_creates_pending_limit_order():
     await init_db()
     async with SessionLocal() as session:
         await _wallet_and_settings(session, auto=True)
-        setup = _sample_setup()
+        setup = ready_long_setup(setup_id="setup-auto-1")
         session.add(setup)
         await session.flush()
 
-        validation = {"ai_decision": "LONG", "acceptable_rr": True}
+        validation = {"ai_decision": "LONG", "acceptable_rr": True, "objective_ready": True}
         structured = _ict_clear_structured()
+        lp, ts = fresh_ticker(100.25)
         meta = await maybe_auto_open_paper_position(
             session,
             run_id=99,
@@ -83,6 +86,8 @@ async def test_auto_open_creates_pending_limit_order():
             structured=structured,
             symbol="BTCUSDT",
             commit=True,
+            live_price=lp,
+            ticker_time_ms=ts,
         )
         assert meta["created"] is True
         pos = (
@@ -101,7 +106,7 @@ async def test_auto_open_stores_ict_entry_audit_snapshot():
     await init_db()
     async with SessionLocal() as session:
         await _wallet_and_settings(session, auto=True)
-        setup = _sample_setup()
+        setup = ready_long_setup(setup_id="setup-auto-1")
         session.add(setup)
         await session.flush()
 
@@ -110,7 +115,8 @@ async def test_auto_open_stores_ict_entry_audit_snapshot():
             stop_loss=94.0,
             take_profit=115.0,
         )
-        validation = {"ai_decision": "LONG", "acceptable_rr": True}
+        validation = {"ai_decision": "LONG", "acceptable_rr": True, "objective_ready": True}
+        lp, ts = fresh_ticker(100.25)
         meta = await maybe_auto_open_paper_position(
             session,
             run_id=42,
@@ -119,6 +125,8 @@ async def test_auto_open_stores_ict_entry_audit_snapshot():
             structured=structured,
             symbol="BTCUSDT",
             commit=True,
+            live_price=lp,
+            ticker_time_ms=ts,
         )
         assert meta["created"] is True
         snap = meta["ict_entry_snapshot"]
