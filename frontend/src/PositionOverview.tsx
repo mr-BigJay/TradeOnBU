@@ -64,7 +64,7 @@ export function PositionPerformancePreview({
             <StatTile label="حداکثر افت سرمایه">
               <MoneyValue value={report.max_drawdown_pct} unit="%" tone="loss" />
             </StatTile>
-            <StatTile label="کارمزد کل">
+            <StatTile label="کارمزد کل حساب" footnote="ممکن است شامل خارج از بازه باشد">
               <MoneyValue value={report.fees} />
             </StatTile>
           </div>
