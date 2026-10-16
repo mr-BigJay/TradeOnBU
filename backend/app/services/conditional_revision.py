@@ -320,6 +320,71 @@ _PRESERVE_LIFECYCLE = frozenset(
 )
 
 
+def _levels_dict_from_row(row: Any) -> dict[str, Any]:
+    return {
+        "entry_price": row.entry_price,
+        "entry_zone_low": row.entry_zone_low,
+        "entry_zone_high": row.entry_zone_high,
+        "stop_loss": row.stop_loss,
+        "take_profit": row.take_profit,
+        "invalidation_level": row.invalidation_level,
+        "expires_at": row.expires_at.isoformat() if row.expires_at else None,
+    }
+
+
+def _levels_dict_from_plan(plan: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "entry_price": plan.get("proposed_entry_mid"),
+        "entry_zone_low": plan.get("entry_zone_low"),
+        "entry_zone_high": plan.get("entry_zone_high"),
+        "stop_loss": plan.get("proposed_stop_loss"),
+        "take_profit": plan.get("proposed_take_profit"),
+        "invalidation_level": plan.get("structural_invalidation_level"),
+        "expires_at": plan.get("expires_at"),
+    }
+
+
+def append_unified_revision_history(
+    notes: dict[str, Any],
+    *,
+    run_id: int,
+    impact: RevisionImpact,
+    revision_at: datetime,
+    sequence_before: list[str],
+    sequence_after: list[str],
+    prior_levels: dict[str, Any],
+    new_levels: dict[str, Any],
+    confirmation_snapshot_before: dict[str, Any],
+    confirmation_snapshot_after_merge: dict[str, Any],
+    monitor_from_ms: int | None,
+    monitor_cursor_ms: int | None,
+    thesis_fa: str | None = None,
+) -> None:
+    from app.services.revision_replay import sanitize_conf_snapshot
+
+    rev_hist = notes.setdefault("revision_history", [])
+    rev_hist.append(
+        {
+            "at": revision_at.isoformat(),
+            "revised_at": revision_at.isoformat(),
+            "run_id": run_id,
+            "source_run_id": run_id,
+            "kind": "conditional_revision",
+            "impact": impact.value,
+            "sequence_before": list(sequence_before),
+            "sequence_after": list(sequence_after),
+            "confirmation_sequence": list(sequence_after),
+            "prior_levels": prior_levels,
+            "new_levels": new_levels,
+            "confirmation_snapshot_before": sanitize_conf_snapshot(confirmation_snapshot_before),
+            "confirmation_snapshot_after_merge": sanitize_conf_snapshot(confirmation_snapshot_after_merge),
+            "monitor_from_ms": monitor_from_ms,
+            "monitor_cursor_ms": monitor_cursor_ms,
+            "thesis_fa": thesis_fa,
+        }
+    )
+
+
 def apply_conditional_revision_to_setup_row(
     row: Any,
     *,
@@ -334,7 +399,10 @@ def apply_conditional_revision_to_setup_row(
     old_monitor_from = row.monitor_from_ms
     old_monitor_cursor = row.monitor_cursor_ms
     old_conf = dict(row.confirmation_state or {})
+    sequence_before = _old_sequence_from_state(old_conf)
+    prior_levels = _levels_dict_from_row(row)
     revision_time = revision_at or datetime.now(timezone.utc)
+    snapshot_before = dict(old_conf)
 
     if impact == RevisionImpact.STRUCTURAL:
         apply_conditional_plan_to_setup_row(
@@ -354,9 +422,20 @@ def apply_conditional_revision_to_setup_row(
                 "run_id": run_id,
             }
         )
-        rev_hist = notes.setdefault("revision_history", [])
-        rev_hist.append(
-            {"run_id": run_id, "impact": impact.value, "at": revision_time.isoformat()}
+        append_unified_revision_history(
+            notes,
+            run_id=run_id,
+            impact=impact,
+            revision_at=revision_time,
+            sequence_before=sequence_before,
+            sequence_after=list(plan.get("confirmation_sequence") or []),
+            prior_levels=prior_levels,
+            new_levels=_levels_dict_from_plan(plan),
+            confirmation_snapshot_before=snapshot_before,
+            confirmation_snapshot_after_merge=dict(row.confirmation_state or {}),
+            monitor_from_ms=row.monitor_from_ms,
+            monitor_cursor_ms=row.monitor_cursor_ms,
+            thesis_fa=structured.get("trade_reason") or structured.get("structure_summary"),
         )
         row.objective_notes = notes
         return impact
@@ -419,7 +498,20 @@ def apply_conditional_revision_to_setup_row(
             "run_id": run_id,
         }
     )
-    rev_hist = notes.setdefault("revision_history", [])
-    rev_hist.append({"run_id": run_id, "impact": impact.value, "at": datetime.now(timezone.utc).isoformat()})
+    append_unified_revision_history(
+        notes,
+        run_id=run_id,
+        impact=impact,
+        revision_at=revision_time,
+        sequence_before=sequence_before,
+        sequence_after=list(sequence),
+        prior_levels=prior_levels,
+        new_levels=_levels_dict_from_plan(plan),
+        confirmation_snapshot_before=snapshot_before,
+        confirmation_snapshot_after_merge=dict(row.confirmation_state or {}),
+        monitor_from_ms=row.monitor_from_ms,
+        monitor_cursor_ms=row.monitor_cursor_ms,
+        thesis_fa=structured.get("trade_reason") or structured.get("structure_summary"),
+    )
     row.objective_notes = notes
     return impact

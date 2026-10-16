@@ -16,6 +16,7 @@ from app.services.confirmation_replay import (
     diff_live_vs_replay,
     replay_confirmations_on_5m_bars,
 )
+from app.services.ict_confirmation_engine import ConfirmationProgress
 from app.services.market_data import MarketDataService
 from app.services.monitor_kline_fetch import MONITOR_INTERVAL, fetch_replay_5m_bundle
 from app.services.opportunity_miss_report import build_miss_audit_report
@@ -58,7 +59,7 @@ async def replay_open_setups(
             continue
         boundary = _monitor_boundary_ms(setup)
         zone_lo, zone_hi = _zone_bounds(setup)
-        replay_status, status_notes = assess_replay_history(
+        replay_status, status_notes, replay_seed = assess_replay_history(
             closed_bars=bundle_5m.closed,
             monitor_from_ms=boundary,
             monitor_cursor_ms=setup.monitor_cursor_ms,
@@ -66,6 +67,7 @@ async def replay_open_setups(
             data_complete=bundle_5m.data_complete,
             gaps_remaining=list(bundle_5m.gaps_remaining or []),
             objective_notes=setup.objective_notes or {},
+            confirmation_state=conf,
         )
         multi = detect_same_5m_multi_token_candidates(
             direction=setup.direction,
@@ -78,16 +80,20 @@ async def replay_open_setups(
             monitor_from_ms=boundary,
             now_ms=now_ms,
         )
-        replay = replay_confirmations_on_5m_bars(
-            direction=setup.direction,
-            sequence=[str(x) for x in seq],
-            closed_bars=bundle_5m.closed,
-            zone_lo=zone_lo,
-            zone_hi=zone_hi,
-            invalidation_level=setup.invalidation_level,
-            structured=setup.structured_snapshot or {},
-            monitor_from_ms=boundary,
-        )
+        if replay_status == REPLAY_STATUS_OK:
+            replay = replay_confirmations_on_5m_bars(
+                direction=setup.direction,
+                sequence=[str(x) for x in seq],
+                closed_bars=bundle_5m.closed,
+                zone_lo=zone_lo,
+                zone_hi=zone_hi,
+                invalidation_level=setup.invalidation_level,
+                structured=setup.structured_snapshot or {},
+                monitor_from_ms=boundary,
+                initial_confirmation_state=replay_seed,
+            )
+        else:
+            replay = ConfirmationProgress(sequence=[str(x) for x in seq])
         diff = diff_live_vs_replay(
             setup_id=setup.setup_id,
             live_state=conf,

@@ -45,25 +45,26 @@ def assess_replay_history(
     data_complete: bool,
     gaps_remaining: list[int],
     objective_notes: dict[str, Any] | None,
+    confirmation_state: dict[str, Any] | None = None,
     interval: str = "5m",
-) -> tuple[str, list[str]]:
+) -> tuple[str, list[str], dict[str, Any] | None]:
     notes: list[str] = []
     if not closed_bars:
-        return REPLAY_STATUS_INSUFFICIENT_HISTORY, ["no_closed_bars"]
+        return REPLAY_STATUS_INSUFFICIENT_HISTORY, ["no_closed_bars"], None
 
     in_range = [c for c in closed_bars if c.time_ms >= monitor_from_ms]
     if not in_range:
-        return REPLAY_STATUS_INSUFFICIENT_HISTORY, ["no_bars_at_or_after_monitor_boundary"]
+        return REPLAY_STATUS_INSUFFICIENT_HISTORY, ["no_bars_at_or_after_monitor_boundary"], None
 
     if in_range[0].time_ms > monitor_from_ms:
         notes.append(
             f"earliest_bar_open_ms={in_range[0].time_ms}_after_boundary={monitor_from_ms}"
         )
-        return REPLAY_STATUS_INSUFFICIENT_HISTORY, notes
+        return REPLAY_STATUS_INSUFFICIENT_HISTORY, notes, None
 
     if not data_complete or gaps_remaining:
         notes.append("market_bundle_incomplete_or_gaps")
-        return REPLAY_STATUS_INSUFFICIENT_HISTORY, notes
+        return REPLAY_STATUS_INSUFFICIENT_HISTORY, notes, None
 
     cursor = monitor_cursor_ms if monitor_cursor_ms is not None and monitor_cursor_ms >= 0 else monitor_from_ms - 1
     skipped = detect_skipped_closed_bars(
@@ -75,16 +76,18 @@ def assess_replay_history(
     )
     if skipped:
         notes.append(f"skipped_closed_bars_in_bundle={skipped[:5]}")
-        return REPLAY_STATUS_INSUFFICIENT_HISTORY, notes
+        return REPLAY_STATUS_INSUFFICIENT_HISTORY, notes, None
 
-    rev_hist = (objective_notes or {}).get("revision_history") or []
-    for entry in rev_hist:
-        impact = str(entry.get("impact") or "").lower()
-        if impact in ("sequence", "levels_and_sequence", "structural"):
-            notes.append(f"revision_impact_{impact}_at_{entry.get('at')}")
-            return REPLAY_STATUS_SEQUENCE_LIMITED, notes
+    from app.services.revision_replay import assess_revision_replay_trust
 
-    return REPLAY_STATUS_OK, notes
+    rev_status, rev_notes, seed = assess_revision_replay_trust(
+        confirmation_state=confirmation_state or {},
+        objective_notes=objective_notes,
+    )
+    if rev_status != REPLAY_STATUS_OK:
+        return rev_status, notes + rev_notes, None
+
+    return REPLAY_STATUS_OK, notes, seed
 
 
 def replay_confirmations_on_5m_bars(
@@ -97,9 +100,20 @@ def replay_confirmations_on_5m_bars(
     invalidation_level: float | None,
     structured: dict[str, Any],
     monitor_from_ms: int,
+    initial_confirmation_state: dict[str, Any] | None = None,
 ) -> ConfirmationProgress:
-    """Full replay from scenario boundary with empty confirmation state (independent of monitor cursor)."""
-    state: dict[str, Any] = {"confirmation_timestamps": {}, "confirmation_evidence": {}}
+    """Full replay from scenario boundary (independent of monitor cursor).
+
+    When ``initial_confirmation_state`` is set (post-revision merge snapshot), replay continues
+    from validated confirmations instead of re-deriving the full prefix from candles.
+    """
+    if initial_confirmation_state:
+        state = {
+            "confirmation_timestamps": dict(initial_confirmation_state.get("confirmation_timestamps") or {}),
+            "confirmation_evidence": dict(initial_confirmation_state.get("confirmation_evidence") or {}),
+        }
+    else:
+        state = {"confirmation_timestamps": {}, "confirmation_evidence": {}}
     cursor = monitor_from_ms - 1
     last: ConfirmationProgress | None = None
     sorted_bars = sorted(closed_bars, key=lambda c: c.time_ms)

@@ -83,6 +83,39 @@ def _engine_delay_ms(timeline: dict[str, Any]) -> int | None:
     return max(0, ready_ms - int(final_close))
 
 
+def _live_replay_aligned(replay_diff: dict[str, Any] | None) -> bool:
+    if not replay_diff:
+        return False
+    if not _replay_trusted(replay_diff):
+        return False
+    if replay_diff.get("missing_in_live") or replay_diff.get("extra_in_live"):
+        return False
+    if replay_diff.get("order_mismatch"):
+        return False
+    return True
+
+
+def chronology_advisories(replay_diff: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not replay_diff:
+        return []
+    amb = [
+        c
+        for c in replay_diff.get("same_bar_multi_token_candidates") or []
+        if len(c.get("tokens_on_5m_close_window") or []) > 1 and not c.get("chronology_provable_on_1m")
+    ]
+    if not amb:
+        return []
+    return [
+        {
+            "kind": "ambiguous_chronology",
+            "bar_open_ms": c.get("bar_open_ms"),
+            "tokens_on_5m_close_window": c.get("tokens_on_5m_close_window"),
+            "chronology_reason": c.get("chronology_reason"),
+        }
+        for c in amb
+    ]
+
+
 def _replay_trusted(replay_diff: dict[str, Any] | None) -> bool:
     if not replay_diff:
         return False
@@ -125,13 +158,8 @@ def classify_setup_outcome(setup: AiProposedSetup, *, timeline: dict[str, Any], 
     if reason in (REASON_MISSING_MARKET_DATA, REASON_STALE_MARKET_DATA) or health.get("ok") is False:
         return OUTCOME_MARKET_DATA_GAP_STALE
 
-    if replay_diff and replay_diff.get("same_bar_multi_token_candidates"):
-        amb = [
-            c
-            for c in replay_diff["same_bar_multi_token_candidates"]
-            if len(c.get("tokens_on_5m_close_window") or []) > 1 and not c.get("chronology_provable_on_1m")
-        ]
-        if amb:
+    if replay_diff and chronology_advisories(replay_diff):
+        if _replay_trusted(replay_diff) and not _live_replay_aligned(replay_diff):
             return OUTCOME_AMBIGUOUS_CHRONOLOGY
 
     if reason == REASON_MISSING_CONFIRMATIONS or lc in (WAIT_LONG, WAIT_SHORT):
@@ -200,6 +228,7 @@ async def build_miss_audit_report(
             "rejection_reason": setup.last_rejection_reason,
             "timeline": timeline,
             "replay_diff": replay_diff,
+            "chronology_advisories": chronology_advisories(replay_diff),
         }
         buckets.setdefault(outcome, []).append(entry)
         rows.append(entry)
