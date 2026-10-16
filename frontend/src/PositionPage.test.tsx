@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { PositionPage, type PositionPrefill } from "./PositionPage";
 
@@ -10,6 +10,7 @@ vi.mock("./api", () => ({
 
 describe("PositionPage AI prefill", () => {
   beforeEach(() => {
+    cleanup();
     apiFetch.mockReset();
     apiFetch.mockImplementation((path: string) => {
       if (path.includes("/settings")) {
@@ -112,7 +113,7 @@ describe("PositionPage AI prefill", () => {
     expect(cards[1].querySelector(".position-trade-card__pnl")).not.toHaveTextContent("999");
     expect(screen.getByRole("link", { name: "+ سفارش جدید" })).toHaveAttribute("href", "#position-new-order");
     fireEvent.click(screen.getByRole("button", { name: "گزارش کامل" }));
-    expect(screen.getByText("تاریخچه معاملات")).toBeInTheDocument();
+    expect(await screen.findByText("تاریخچه معاملات")).toBeInTheDocument();
   });
 
 });
