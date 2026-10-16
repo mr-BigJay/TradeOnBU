@@ -63,6 +63,14 @@ async def test_limit_fill_only_after_order_creation_time():
                 "mss": boundary + 300_000,
                 "entry_zone_touch": boundary + 600_000,
             },
+            "confirmation_evidence": {
+                "entry_zone_touch": {
+                    "bar_low": 99.8,
+                    "bar_high": 100.6,
+                    "zone_lo": 99.0,
+                    "zone_hi": 101.0,
+                }
+            },
         }
         row.lifecycle_state = "READY_LONG"
         row.structured_snapshot = {

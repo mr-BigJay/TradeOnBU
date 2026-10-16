@@ -166,6 +166,16 @@ async def maybe_auto_open_paper_position(
         meta["reason"] = "wallet_not_initialized"
         return meta
 
+    from app.services.conditional_revision import objective_confirmations_satisfied
+
+    lifecycle_upper = (setup.lifecycle_state or "").upper()
+    if lifecycle_upper in (READY_LONG, READY_SHORT):
+        ok_conf, conf_reason = objective_confirmations_satisfied(setup)
+        if not ok_conf:
+            meta["skipped"] = True
+            meta["reason"] = conf_reason or "missing_confirmations"
+            return meta
+
     ok_val, val_reason = trade_decision_allows_auto_paper(
         structured, validation, require_ai_flags=require_ai_flags
     )

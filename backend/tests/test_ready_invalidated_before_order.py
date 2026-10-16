@@ -50,6 +50,26 @@ async def test_ready_setup_invalidated_on_5m_gap_before_any_paper_order():
             expires_at=now + timedelta(hours=12),
             last_validation_result={"ok": True, "net_rr": 2.5},
             structured_snapshot={"decision": "LONG", "final_ai_decision": "LONG"},
+            conditional_plan={"confirmation_sequence": ["liquidity_sweep", "mss", "entry_zone_touch"]},
+            confirmation_state={
+                "sequence": ["liquidity_sweep", "mss", "entry_zone_touch"],
+                "required": ["liquidity_sweep", "mss", "entry_zone_touch"],
+                "completed": ["liquidity_sweep", "mss", "entry_zone_touch"],
+                "missing": [],
+                "confirmation_timestamps": {
+                    "liquidity_sweep": inv_open - 900_000,
+                    "mss": inv_open - 600_000,
+                    "entry_zone_touch": inv_open - 300_000,
+                },
+                "confirmation_evidence": {
+                    "entry_zone_touch": {
+                        "bar_low": 99.5,
+                        "bar_high": 100.5,
+                        "zone_lo": 99.0,
+                        "zone_hi": 101.0,
+                    }
+                },
+            },
         )
         session.add(setup)
         await session.commit()

@@ -14,6 +14,7 @@ from app.domain.setup_lifecycle import (
     POSITION_OPEN,
     READY_LONG,
     READY_SHORT,
+    REASON_MISSING_CONFIRMATIONS,
     wait_state_for_direction,
 )
 from app.services.conditional_setup import apply_conditional_plan_to_setup_row
@@ -199,6 +200,39 @@ def _drop_sequence_suffix(
         evidence.pop(tok, None)
 
 
+def objective_confirmations_satisfied(row: Any) -> tuple[bool, str | None]:
+    """Objective ICT sequence complete, ordered, and entry touch evidenced for current zone."""
+    from app.services.ict_confirmation_engine import ConfirmationProgress, all_required_met
+
+    conf = row.confirmation_state or {}
+    sequence = conf.get("sequence") or conf.get("required") or []
+    if not isinstance(sequence, list) or not sequence:
+        return False, REASON_MISSING_CONFIRMATIONS
+
+    progress = ConfirmationProgress(
+        sequence=[str(x) for x in sequence],
+        completed=[str(x) for x in (conf.get("completed") or [])],
+        missing=[str(x) for x in (conf.get("missing") or [])],
+        confirmation_timestamps=dict(conf.get("confirmation_timestamps") or {}),
+    )
+    if not all_required_met(progress):
+        return False, REASON_MISSING_CONFIRMATIONS
+
+    if "entry_zone_touch" in progress.sequence:
+        timestamps = progress.confirmation_timestamps
+        if "entry_zone_touch" in timestamps:
+            if row.entry_zone_low is None or row.entry_zone_high is None:
+                return False, REASON_MISSING_CONFIRMATIONS
+            touch_ev = (conf.get("confirmation_evidence") or {}).get("entry_zone_touch")
+            if not entry_zone_touch_evidence_valid(
+                touch_ev,
+                zone_lo=float(row.entry_zone_low),
+                zone_hi=float(row.entry_zone_high),
+            ):
+                return False, REASON_MISSING_CONFIRMATIONS
+    return True, None
+
+
 def sanitize_entry_zone_touch_in_state(
     state: dict[str, Any],
     *,
@@ -358,10 +392,20 @@ def apply_conditional_revision_to_setup_row(
         row.monitor_from_ms = old_monitor_from
         row.monitor_cursor_ms = old_monitor_cursor
 
-    if impact == RevisionImpact.NONE and old_lifecycle in _PRESERVE_LIFECYCLE:
+    conf_ok, reject_reason = objective_confirmations_satisfied(row)
+    if not conf_ok:
+        row.lifecycle_state = wait_state_for_direction(direction)
+        row.last_rejection_reason = reject_reason or REASON_MISSING_CONFIRMATIONS
+        row.last_validation_result = {
+            "ok": False,
+            "reason": reject_reason or REASON_MISSING_CONFIRMATIONS,
+            "missing": row.confirmation_state.get("missing") or [],
+            "ict_confirmed": False,
+        }
+    elif not row.confirmation_state.get("missing") and old_lifecycle in _PRESERVE_LIFECYCLE:
         row.lifecycle_state = old_lifecycle
     elif not row.confirmation_state.get("missing"):
-        row.lifecycle_state = old_lifecycle if old_lifecycle in _PRESERVE_LIFECYCLE else wait_state_for_direction(direction)
+        row.lifecycle_state = wait_state_for_direction(direction)
     else:
         row.lifecycle_state = wait_state_for_direction(direction)
 

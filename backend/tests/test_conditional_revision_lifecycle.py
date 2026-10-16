@@ -142,10 +142,27 @@ async def test_ready_with_auto_paper_off_does_not_create_order(session):
         lifecycle_state=READY_LONG,
         monitoring_enabled=True,
         entry_price=100.0,
+        entry_zone_low=99.0,
+        entry_zone_high=101.0,
         stop_loss=94.0,
         take_profit=115.0,
         invalidation_level=93.0,
         expires_at=datetime.now(timezone.utc) + timedelta(hours=12),
+        confirmation_state={
+            "sequence": ["entry_zone_touch"],
+            "required": ["entry_zone_touch"],
+            "completed": ["entry_zone_touch"],
+            "missing": [],
+            "confirmation_timestamps": {"entry_zone_touch": 1_700_000_000_000},
+            "confirmation_evidence": {
+                "entry_zone_touch": {
+                    "bar_low": 99.5,
+                    "bar_high": 100.5,
+                    "zone_lo": 99.0,
+                    "zone_hi": 101.0,
+                }
+            },
+        },
     )
     session.add(setup)
     session.add(SimPositionSettings(id=1, auto_open_paper_positions=False, initial_balance_set=True))

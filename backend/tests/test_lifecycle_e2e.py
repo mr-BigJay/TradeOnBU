@@ -428,6 +428,14 @@ async def test_e2e_revision_none_keeps_ict_confirmed():
                 "mss": 2000,
                 "entry_zone_touch": 3000,
             },
+            "confirmation_evidence": {
+                "entry_zone_touch": {
+                    "bar_low": 82310.0,
+                    "bar_high": 82390.0,
+                    "zone_lo": 82300.0,
+                    "zone_hi": 82400.0,
+                }
+            },
         }
         await session.commit()
         row2, meta = await create_setup_from_structured(

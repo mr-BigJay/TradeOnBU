@@ -74,6 +74,14 @@ def _confirmed_short_setup(*, setup_id: str, boundary: int, cursor_ms: int) -> A
             "completed": list(seq),
             "missing": [],
             "confirmation_timestamps": ts,
+            "confirmation_evidence": {
+                "entry_zone_touch": {
+                    "bar_low": 82310.0,
+                    "bar_high": 82390.0,
+                    "zone_lo": 82300.0,
+                    "zone_hi": 82400.0,
+                }
+            },
         },
         conditional_plan={"confirmation_sequence": seq},
         structured_snapshot={"confirmation_type": "sweep_mss_poi"},

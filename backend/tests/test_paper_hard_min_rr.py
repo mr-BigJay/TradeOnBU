@@ -37,9 +37,26 @@ async def test_auto_paper_rejects_when_runtime_min_rr_below_2_but_costs_fail_har
             status="open",
             lifecycle_state=READY_LONG,
             entry_price=100.0,
+            entry_zone_low=99.0,
+            entry_zone_high=101.0,
             stop_loss=98.0,
             take_profit=103.5,
             expires_at=datetime.now(timezone.utc) + timedelta(hours=12),
+            confirmation_state={
+                "sequence": ["entry_zone_touch"],
+                "required": ["entry_zone_touch"],
+                "completed": ["entry_zone_touch"],
+                "missing": [],
+                "confirmation_timestamps": {"entry_zone_touch": 1_000_000},
+                "confirmation_evidence": {
+                    "entry_zone_touch": {
+                        "bar_low": 99.5,
+                        "bar_high": 100.5,
+                        "zone_lo": 99.0,
+                        "zone_hi": 101.0,
+                    }
+                },
+            },
             structured_snapshot={
                 "decision": "LONG",
                 "liquidity_event_clear": True,
@@ -92,6 +109,14 @@ async def test_opportunity_monitor_promotion_blocked_when_net_rr_under_2():
                 "completed": ["entry_zone_touch"],
                 "missing": [],
                 "confirmation_timestamps": {"entry_zone_touch": 300_000},
+                "confirmation_evidence": {
+                    "entry_zone_touch": {
+                        "bar_low": 99.5,
+                        "bar_high": 100.5,
+                        "zone_lo": 99.0,
+                        "zone_hi": 101.0,
+                    }
+                },
             },
         )
         session.add(setup)

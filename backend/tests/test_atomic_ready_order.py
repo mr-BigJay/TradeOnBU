@@ -47,6 +47,21 @@ async def test_order_failure_leaves_ready_without_orphan_pending_or_margin():
             expires_at=now + timedelta(hours=12),
             last_validation_result={"ok": True, "source": "test"},
             structured_snapshot={"decision": "LONG"},
+            confirmation_state={
+                "sequence": ["entry_zone_touch"],
+                "required": ["entry_zone_touch"],
+                "completed": ["entry_zone_touch"],
+                "missing": [],
+                "confirmation_timestamps": {"entry_zone_touch": 300_000},
+                "confirmation_evidence": {
+                    "entry_zone_touch": {
+                        "bar_low": 99.5,
+                        "bar_high": 100.5,
+                        "zone_lo": 99.0,
+                        "zone_hi": 101.0,
+                    }
+                },
+            },
         )
         session.add(setup)
         await session.commit()
@@ -119,6 +134,22 @@ async def test_audit_failure_after_order_create_rolls_back_position_and_margin()
             expires_at=now + timedelta(hours=12),
             last_validation_result={"ok": True, "net_rr": 2.5},
             structured_snapshot={"decision": "LONG", "final_ai_decision": "LONG"},
+            conditional_plan={"confirmation_sequence": ["entry_zone_touch"]},
+            confirmation_state={
+                "sequence": ["entry_zone_touch"],
+                "required": ["entry_zone_touch"],
+                "completed": ["entry_zone_touch"],
+                "missing": [],
+                "confirmation_timestamps": {"entry_zone_touch": 300_000},
+                "confirmation_evidence": {
+                    "entry_zone_touch": {
+                        "bar_low": 99.5,
+                        "bar_high": 100.5,
+                        "zone_lo": 99.0,
+                        "zone_hi": 101.0,
+                    }
+                },
+            },
         )
         session.add(setup)
         await session.commit()

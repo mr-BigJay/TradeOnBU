@@ -330,7 +330,26 @@ async def _attempt_ready_paper_order(
     summary: dict[str, Any],
 ) -> bool:
     """Create paper order while READY; transition to PENDING_ENTRY only on success (atomic savepoint)."""
+    from app.services.conditional_revision import objective_confirmations_satisfied
     from app.services.paper_auto_trading import _has_position_for_setup
+
+    if _setup_expired(setup, now):
+        setup.status = "expired"
+        setup.lifecycle_state = EXPIRED
+        setup.last_rejection_reason = REASON_SETUP_EXPIRED
+        return False
+
+    conf_ok, reject_reason = objective_confirmations_satisfied(setup)
+    if not conf_ok:
+        setup.lifecycle_state = wait_state_for_direction(setup.direction)
+        setup.last_rejection_reason = reject_reason or REASON_MISSING_CONFIRMATIONS
+        setup.last_validation_result = {
+            "ok": False,
+            "reason": reject_reason or REASON_MISSING_CONFIRMATIONS,
+            "missing": (setup.confirmation_state or {}).get("missing") or [],
+            "ict_confirmed": False,
+        }
+        return False
 
     if await _has_position_for_setup(session, setup.setup_id):
         setup.lifecycle_state = PENDING_ENTRY
@@ -543,15 +562,6 @@ class OpportunityMonitorService:
             if setup.lifecycle_state in (POSITION_OPEN, POSITION_CLOSED):
                 continue
 
-            if setup.lifecycle_state in (READY_LONG, READY_SHORT):
-                if await _monitor_ready_structural_invalidation_before_order(
-                    session, setup, bundle, now_ms, now, summary
-                ):
-                    continue
-                await _attempt_ready_paper_order(session, setup, now=now, summary=summary)
-                if setup.lifecycle_state == PENDING_ENTRY:
-                    continue
-
             if _setup_expired(setup, now):
                 setup.status = "expired"
                 setup.lifecycle_state = EXPIRED
@@ -570,6 +580,12 @@ class OpportunityMonitorService:
             new_bars = _eligible_closed_bars(setup, bundle.closed, now_ms)
             if not new_bars:
                 setup.last_monitor_at = now
+                if setup.lifecycle_state in (READY_LONG, READY_SHORT):
+                    if await _monitor_ready_structural_invalidation_before_order(
+                        session, setup, bundle, now_ms, now, summary
+                    ):
+                        continue
+                    await _attempt_ready_paper_order(session, setup, now=now, summary=summary)
                 continue
 
             zone_lo, zone_hi = _zone_bounds(setup)
@@ -696,20 +712,42 @@ class OpportunityMonitorService:
                     }
 
             if setup.lifecycle_state in (READY_LONG, READY_SHORT):
-                if all_required_met(progress_check):
-                    rr_ok, net_rr = await _net_rr_ok(session, setup)
-                    if not rr_ok:
-                        setup.lifecycle_state = ict_confirmed_state_for_direction(setup.direction)
-                        setup.last_rejection_reason = REASON_ICT_CONFIRMED_BLOCKED_RR
-                        setup.last_validation_result = {
-                            "ok": False,
-                            "reason": REASON_ICT_CONFIRMED_BLOCKED_RR,
-                            "display_status": DISPLAY_ICT_CONFIRMED_BLOCKED_RR,
-                            "net_rr": net_rr,
-                            "ict_confirmed": True,
-                            "missing": [],
-                        }
-                        continue
+                if not all_required_met(progress_check):
+                    setup.lifecycle_state = wait_state_for_direction(setup.direction)
+                    setup.last_rejection_reason = REASON_MISSING_CONFIRMATIONS
+                    setup.last_validation_result = {
+                        "ok": False,
+                        "reason": REASON_MISSING_CONFIRMATIONS,
+                        "missing": progress_check.missing,
+                        "ict_confirmed": False,
+                    }
+                    continue
+                from app.services.conditional_revision import objective_confirmations_satisfied
+
+                conf_ok, reject_reason = objective_confirmations_satisfied(setup)
+                if not conf_ok:
+                    setup.lifecycle_state = wait_state_for_direction(setup.direction)
+                    setup.last_rejection_reason = reject_reason or REASON_MISSING_CONFIRMATIONS
+                    setup.last_validation_result = {
+                        "ok": False,
+                        "reason": reject_reason or REASON_MISSING_CONFIRMATIONS,
+                        "missing": progress_check.missing,
+                        "ict_confirmed": False,
+                    }
+                    continue
+                rr_ok, net_rr = await _net_rr_ok(session, setup)
+                if not rr_ok:
+                    setup.lifecycle_state = ict_confirmed_state_for_direction(setup.direction)
+                    setup.last_rejection_reason = REASON_ICT_CONFIRMED_BLOCKED_RR
+                    setup.last_validation_result = {
+                        "ok": False,
+                        "reason": REASON_ICT_CONFIRMED_BLOCKED_RR,
+                        "display_status": DISPLAY_ICT_CONFIRMED_BLOCKED_RR,
+                        "net_rr": net_rr,
+                        "ict_confirmed": True,
+                        "missing": [],
+                    }
+                    continue
                 if await _monitor_ready_structural_invalidation_before_order(
                     session, setup, bundle, now_ms, now, summary
                 ):
