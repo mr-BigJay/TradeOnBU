@@ -32,6 +32,8 @@ jobs:
           python-version: "3.12"
       - name: Install backend dependencies
         run: pip install -r requirements.txt
+      - name: Prepare isolated test database directory
+        run: mkdir -p data
       - name: Opportunities API tests
         env:
           SKIP_CONFIG_GUARD: "1"
