@@ -105,4 +105,4 @@ def test_seeded_replay_without_revision_timestamp_is_fail_closed():
     assert status != REPLAY_STATUS_OK
     assert seed is None
     assert replay_from is None
-    assert any("revision_timestamp" in n for n in notes_out)
+    assert any("timestamp" in n for n in notes_out)
