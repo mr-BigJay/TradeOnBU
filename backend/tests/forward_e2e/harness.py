@@ -161,6 +161,7 @@ def emit_scenario_evidence(timeline: ScenarioTimeline) -> None:
 
 class ScriptedMarket:
     def __init__(self) -> None:
+        self.ticker_price: float | None = None
         self.closed_5m: list[Candle] = []
         self.closed_1m: list[Candle] = []
         self.catalog_5m: list[Candle] = []
@@ -202,7 +203,8 @@ class ScriptedMarket:
         if not candles:
             raise AssertionError("ScriptedMarket.fetch_ticker needs scripted closed candles")
         last = candles[-1]
-        return float(last.close), int(last.time_ms)
+        price = float(self.ticker_price if self.ticker_price is not None else last.close)
+        return price, int(last.time_ms)
 
     async def fetch_historical_closed(
         self,

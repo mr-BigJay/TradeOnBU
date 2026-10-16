@@ -11,6 +11,7 @@ from app.domain.setup_lifecycle import PENDING_ENTRY, POSITION_OPEN, READY_LONG,
 from app.domain.time_utils import ensure_utc
 from app.models import AiProposedSetup, SimPosition, SimPositionSettings
 from app.services.ai_setup_memory import validate_proposed_setup_levels
+from app.services.market_data import MarketDataService
 from app.services.position.execution_adapters import OrderRequest
 from app.services.position.position_service import PositionServiceError, SimPositionService
 from app.services.position.settings_service import get_or_create_settings
@@ -132,6 +133,46 @@ async def _has_position_for_setup(session: AsyncSession, setup_id: str) -> bool:
     return result.scalar_one_or_none() is not None
 
 
+async def _verify_fill_net_rr(
+    session: AsyncSession,
+    *,
+    direction: str,
+    fill_price: float,
+    sl: float,
+    tp: float,
+    order_type: str,
+) -> tuple[bool, float]:
+    from app.domain.paper_execution_policy import HARD_MIN_AUTO_PAPER_NET_RR
+    from app.services.execution_model_sim import net_rr_acceptable_for_auto_paper
+
+    return await net_rr_acceptable_for_auto_paper(
+        session,
+        direction=direction,
+        entry=fill_price,
+        sl=sl,
+        tp=tp,
+        min_net_rr=HARD_MIN_AUTO_PAPER_NET_RR,
+        order_type=order_type,
+    )
+
+
+async def sync_setup_lifecycle_after_auto_order(
+    session: AsyncSession,
+    setup: AiProposedSetup,
+    pos: SimPosition,
+) -> str:
+    """Return lifecycle state applied to setup."""
+    from app.domain.setup_lifecycle import PENDING_ENTRY, POSITION_OPEN
+
+    if pos.status == "open":
+        await mark_setup_paper_fill(session, pos)
+        setup.lifecycle_state = POSITION_OPEN
+        setup.paper_fill_recorded = True
+        return POSITION_OPEN
+    setup.lifecycle_state = PENDING_ENTRY
+    return PENDING_ENTRY
+
+
 async def maybe_auto_open_paper_position(
     session: AsyncSession,
     *,
@@ -143,6 +184,7 @@ async def maybe_auto_open_paper_position(
     commit: bool = True,
     require_ai_flags: bool = True,
     live_price: float | None = None,
+    market: MarketDataService | None = None,
 ) -> dict[str, Any]:
     """
     Create a paper entry (limit or market) from a validated AI setup when auto mode is enabled.
@@ -223,18 +265,21 @@ async def maybe_auto_open_paper_position(
         meta["reason"] = "position_already_active_for_setup"
         return meta
 
-    from app.services.paper_execution_budget import auto_paper_budget_allows_new_entry
+    from app.services.paper_execution_budget import (
+        rollback_allocate_auto_paper_budget,
+        try_allocate_auto_paper_budget,
+    )
 
-    budget_ok, budget_reason, budget_meta = await auto_paper_budget_allows_new_entry(session)
+    budget_ok, budget_reason, budget_meta = await try_allocate_auto_paper_budget(session)
     meta["budget"] = budget_meta
     if not budget_ok:
         meta["skipped"] = True
         meta["reason"] = budget_reason
         return meta
-
     if await _active_position_count(session) >= runtime.max_simultaneous_positions:
         meta["skipped"] = True
         meta["reason"] = "max_simultaneous_positions"
+        await rollback_allocate_auto_paper_budget(session)
         return meta
 
     entry = float(setup.entry_price)  # type: ignore[arg-type]
@@ -254,6 +299,7 @@ async def maybe_auto_open_paper_position(
     if skip_entry:
         meta["skipped"] = True
         meta["reason"] = skip_entry
+        await rollback_allocate_auto_paper_budget(session)
         return meta
 
     rr_entry = float(live_price) if order_type == "market" and live_price is not None else entry
@@ -272,9 +318,20 @@ async def maybe_auto_open_paper_position(
         meta["net_rr"] = net_rr_mode
         meta["execution_entry"] = rr_entry
         meta["order_type"] = order_type
+        await rollback_allocate_auto_paper_budget(session)
         return meta
 
-    svc = SimPositionService()
+    ict_snapshot = build_ict_entry_audit_snapshot(structured=structured, setup=setup, validation=validation)
+    order_extra = {
+        "auto_paper": True,
+        "ai_run_id": run_id,
+        "source": "gpt_auto_paper",
+        "ict_entry_snapshot": ict_snapshot,
+        "planned_entry": entry,
+        "live_price_at_order": live_price,
+    }
+
+    svc = SimPositionService(market=market or MarketDataService())
     req = OrderRequest(
         symbol=symbol,
         direction=direction,
@@ -285,6 +342,7 @@ async def maybe_auto_open_paper_position(
         stop_loss=sl,
         take_profit=tp,
         ai_setup_id=setup.setup_id,
+        order_extra=order_extra,
     )
     try:
         result = await svc.create_order(session, req, commit=False)
@@ -292,25 +350,34 @@ async def maybe_auto_open_paper_position(
         meta["skipped"] = True
         meta["reason"] = "order_rejected"
         meta["detail"] = str(exc)
+        await rollback_allocate_auto_paper_budget(session)
         return meta
 
     if not result.success or not result.position_id:
         meta["skipped"] = True
         meta["reason"] = "order_failed"
         meta["detail"] = result.message
+        await rollback_allocate_auto_paper_budget(session)
         return meta
 
-    ict_snapshot = build_ict_entry_audit_snapshot(structured=structured, setup=setup, validation=validation)
     pos = await svc.get_position_by_public_id(session, result.position_id)
-    if pos:
-        pos.extra = {
-            **pos.extra,
-            "auto_paper": True,
-            "ai_run_id": run_id,
-            "source": "gpt_auto_paper",
-            "ict_entry_snapshot": ict_snapshot,
-        }
-        await session.flush()
+    if pos and pos.status == "open" and pos.fill_price is not None:
+        fill_ok, fill_net_rr = await _verify_fill_net_rr(
+            session,
+            direction=direction,
+            fill_price=float(pos.fill_price),
+            sl=sl,
+            tp=tp,
+            order_type=order_type,
+        )
+        meta["net_rr_at_fill"] = fill_net_rr
+        if not fill_ok:
+            await svc.manual_close(session, pos.public_id)
+            meta["skipped"] = True
+            meta["reason"] = "net_rr_below_min_at_fill"
+            meta["net_rr"] = fill_net_rr
+            return meta
+        await mark_setup_paper_fill(session, pos)
 
     meta["created"] = True
     meta["position_id"] = result.position_id

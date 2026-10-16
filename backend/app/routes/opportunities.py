@@ -181,16 +181,32 @@ async def execution_metrics(
     return await build_execution_metrics(session, period=period)
 
 
-@router.get("/execution-backtest")
-async def execution_backtest_compare(
+@router.get("/entry-policy-compare")
+async def entry_policy_compare(
     session: AsyncSession = Depends(get_db),
     _=Depends(require_dashboard_access),
     symbol: str = "BTCUSDT",
     limit: int = Query(300, ge=10, le=2000),
 ):
-    from app.services.paper_execution_backtest import compare_entry_policies_on_history
+    """Entry-mode policy comparison on stored promotion snapshots — not a profit backtest."""
+    from app.services.paper_entry_policy_compare import compare_entry_policies_on_history
 
     return await compare_entry_policies_on_history(session, symbol=symbol, limit=limit)
+
+
+@router.get("/execution-backtest")
+async def execution_backtest_legacy_alias(
+    session: AsyncSession = Depends(get_db),
+    _=Depends(require_dashboard_access),
+    symbol: str = "BTCUSDT",
+    limit: int = Query(300, ge=10, le=2000),
+):
+    """Deprecated alias for ``/entry-policy-compare``."""
+    from app.services.paper_entry_policy_compare import compare_entry_policies_on_history
+
+    body = await compare_entry_policies_on_history(session, symbol=symbol, limit=limit)
+    body["deprecated_endpoint"] = "use /api/gui/opportunities/entry-policy-compare"
+    return body
 
 
 @router.get("/items")

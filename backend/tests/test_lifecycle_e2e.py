@@ -103,10 +103,11 @@ async def test_full_wait_ready_pending_open_e2e():
     async with SessionLocal() as session:
         mon = OpportunityMonitorService()
         with patch.object(mon.market, "fetch_kline_bundle", AsyncMock(return_value=bundle)):
-            with patch("app.services.opportunity_monitor._utc_now") as mock_now:
-                mock_now.return_value = datetime.fromtimestamp(now_ms / 1000, tz=timezone.utc)
-                with patch("app.services.opportunity_monitor.is_market_data_fresh", return_value=(True, 10, 600)):
-                    summary = await mon.monitor_setups(session, symbol="BTCUSDT")
+            with patch.object(mon.market, "fetch_ticker", AsyncMock(return_value=(101.0, now_ms))):
+                with patch("app.services.opportunity_monitor._utc_now") as mock_now:
+                    mock_now.return_value = datetime.fromtimestamp(now_ms / 1000, tz=timezone.utc)
+                    with patch("app.services.opportunity_monitor.is_market_data_fresh", return_value=(True, 10, 600)):
+                        summary = await mon.monitor_setups(session, symbol="BTCUSDT")
         await session.commit()
 
         row = (await session.execute(select(AiProposedSetup).where(AiProposedSetup.setup_id == "e2e-setup-1"))).scalar_one()
@@ -391,14 +392,15 @@ async def test_e2e_wait_ict_confirmed_ready_pending():
             [(98, 102, 100), (99.5, 100.5, 100.2), (99.2, 100.8, 100.1), (99.0, 100.5, 100.0)],
         )
         with patch.object(mon.market, "fetch_kline_bundle", AsyncMock(return_value=bundle2)):
-            with patch("app.services.opportunity_monitor._utc_now") as mock_now2:
-                mock_now2.return_value = datetime.fromtimestamp(now_ms_2 / 1000, tz=timezone.utc)
-                with patch("app.services.opportunity_monitor.is_market_data_fresh", return_value=(True, 10, 600)):
-                    with patch(
-                        "app.services.opportunity_monitor._net_rr_ok",
-                        AsyncMock(return_value=(True, 2.25)),
-                    ):
-                        summary = await mon.monitor_setups(session, symbol="BTCUSDT")
+            with patch.object(mon.market, "fetch_ticker", AsyncMock(return_value=(101.0, now_ms_2))):
+                with patch("app.services.opportunity_monitor._utc_now") as mock_now2:
+                    mock_now2.return_value = datetime.fromtimestamp(now_ms_2 / 1000, tz=timezone.utc)
+                    with patch("app.services.opportunity_monitor.is_market_data_fresh", return_value=(True, 10, 600)):
+                        with patch(
+                            "app.services.opportunity_monitor._net_rr_ok",
+                            AsyncMock(return_value=(True, 2.25)),
+                        ):
+                            summary = await mon.monitor_setups(session, symbol="BTCUSDT")
         await session.commit()
         row = (await session.execute(select(AiProposedSetup).where(AiProposedSetup.setup_id == "e2e-ict-path"))).scalar_one()
         assert row.lifecycle_state == PENDING_ENTRY

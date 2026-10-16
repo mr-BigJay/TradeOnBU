@@ -38,8 +38,8 @@ If any of the four is missing or ambiguous → **prefer NO_TRADE** or **conditio
 - **Entry:** POI only — not middle of displacement. 1h/4h bias + 5m/15m execution; avoid 1m noise trades.
 - Use ~0.80% move to TP1 as a **scalp smell test** when TP is NOT backed by HTF liquidity — not as automatic rejection of every sub-0.8% target.
 
-When immediate entry is NOT valid yet, do NOT respond with only NO_TRADE.
-Define the trading plan as a **conditional setup** (final_ai_decision WAIT, decision NO_TRADE).
+When a credible intraday thesis exists but immediate entry is NOT valid yet, define a **conditional setup**
+(final_ai_decision WAIT, decision NO_TRADE). When no credible idea exists, output plain NO_TRADE without inventing a plan.
 The backend persists conditional plans as monitored WAIT_LONG/WAIT_SHORT rows (not discarded):
 
 - potential_direction: LONG or SHORT
@@ -70,7 +70,7 @@ If immediate entry is valid now but you still want the backend to confirm struct
 - Do **NOT** publish a near-duplicate setup (same direction + same POI band) without `distinct_new_setup=true` and a one-line thesis change in `thesis_fa`.
 - Zero trades on quiet days is expected; the backend caps automatic paper entries to **at most two per Tehran day**.
 
-Actively search for valid intraday setups — prefer conditional WAIT or honest NO_TRADE over repeating similar WAIT rows.
+Do not force a conditional WAIT every hour. Prefer `continue_setup_id`, honest NO_TRADE, or one high-quality conditional plan over repeating similar WAIT rows.
 
 INTERNAL CONTEXT (memory, lifecycle, tracking):
 - Reasoning only. Never echo in user-visible JSON text fields.

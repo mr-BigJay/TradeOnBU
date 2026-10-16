@@ -84,6 +84,9 @@ SIGNAL_MIGRATIONS = [
     "ALTER TABLE ai_proposed_setups ADD COLUMN monitor_cursor_ms INTEGER DEFAULT 0",
     "ALTER TABLE system_state ADD COLUMN opportunity_monitor_lock_owner VARCHAR(64)",
     "ALTER TABLE system_state ADD COLUMN opportunity_monitor_lock_until_ms INTEGER DEFAULT 0",
+    "ALTER TABLE system_state ADD COLUMN auto_paper_tehran_day VARCHAR(16)",
+    "ALTER TABLE system_state ADD COLUMN auto_paper_orders_today INTEGER DEFAULT 0",
+    "ALTER TABLE system_state ADD COLUMN auto_paper_active_slots INTEGER DEFAULT 0",
     "ALTER TABLE ai_proposed_setups ADD COLUMN monitoring_enabled BOOLEAN DEFAULT 1",
     "ALTER TABLE ai_proposed_setups ADD COLUMN monitor_from_ms INTEGER DEFAULT 0",
 ]

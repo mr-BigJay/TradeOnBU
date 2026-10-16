@@ -19,7 +19,7 @@ Most AI hourly runs produce **WAIT/READY scenarios**; a smaller fraction becomes
 3. **Net R:R at execution price** — market entries re-check R:R using live price with taker slippage model.
 4. **AI instructions** — explicit NO_TRADE acceptance; continue_setup_id; anti-duplicate hourly setups.
 5. **Metrics API** — `/api/gui/opportunities/execution-metrics` and summary `execution_kpi` (fills, candidate→fill, win rate — not WAIT counts).
-6. **Backtest compare** — `/api/gui/opportunities/execution-backtest` walks stored setups without lookahead; reports uncertainty when samples are thin.
+6. **Entry policy compare** — `/api/gui/opportunities/entry-policy-compare` (not a profit backtest) replays stored `live_price_at_ready` promotion snapshots; `/execution-backtest` is a deprecated alias.
 
 ## How to read backtest output
 

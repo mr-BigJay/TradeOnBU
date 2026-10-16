@@ -1,4 +1,4 @@
-"""Walk-forward style comparison: legacy limit-only vs entry-mode policy (no lookahead)."""
+"""Compare legacy always-limit vs entry-mode policy on stored setup snapshots (not PnL backtest)."""
 
 from __future__ import annotations
 
@@ -29,11 +29,8 @@ async def compare_entry_policies_on_history(
     limit: int = 300,
 ) -> dict[str, Any]:
     """
-    For each setup that reached READY/PENDING, replay entry-mode choice using
-    `live_price` stored on last validation (if any) or planned entry (conservative).
-
-    Does NOT simulate intrabar fills — compares whether legacy always-limit would
-    still attempt vs new policy (skip/market/limit). Actual fill outcomes come from DB.
+    Entry-policy replay: uses only fields persisted at or before READY promotion
+    (`live_price_at_ready`, validation timestamps). Does not simulate fills or PnL.
     """
     setups = list(
         (
@@ -55,6 +52,7 @@ async def compare_entry_policies_on_history(
     new_market = 0
     new_limit = 0
     actual_fills = 0
+    snapshot_missing = 0
 
     rows: list[dict[str, Any]] = []
 
@@ -71,8 +69,10 @@ async def compare_entry_policies_on_history(
         entry = float(s.entry_price or 0)
         if entry <= 0:
             continue
-        live = vr.get("live_price_at_ready") or vr.get("promoted_live_price")
+        live = vr.get("live_price_at_ready")
+        promoted_at = vr.get("promoted_at")
         if live is None:
+            snapshot_missing += 1
             notes = s.objective_notes or {}
             live = notes.get("last_live_price")
 
@@ -100,20 +100,26 @@ async def compare_entry_policies_on_history(
             {
                 "setup_id": s.setup_id,
                 "lifecycle": s.lifecycle_state,
+                "promoted_at": promoted_at,
+                "live_price_at_ready": live,
+                "planned_entry": entry,
                 "legacy_would_limit": True,
                 "new_order_type": order_type if not skip else None,
                 "new_skip": skip,
-                "actual_fill": filled,
+                "actual_fill_observed": filled,
                 "distance_bps": diag.get("distance_bps"),
             }
         )
 
     n = len(rows)
-    uncertainty = n < 20 or actual_fills < 5
+    uncertainty = n < 20 or actual_fills < 5 or snapshot_missing > max(1, n // 2)
 
     return {
+        "report_type": "entry_policy_compare",
+        "not_a_profit_backtest": True,
         "symbol": symbol,
         "sample_setups": n,
+        "snapshots_missing_live_price": snapshot_missing,
         "legacy_limit_attempts": legacy_attempts,
         "new_policy": {
             "attempts": new_attempts,
@@ -123,14 +129,12 @@ async def compare_entry_policies_on_history(
         },
         "observed_fills_in_sample": actual_fills,
         "candidate_to_fill_observed": (actual_fills / legacy_attempts) if legacy_attempts else None,
-        "lookahead_free": True,
-        "method_note": (
-            "Uses stored setup validation notes only; live_price_at_ready is set on READY promotion "
-            "when available. No fabricated fill probabilities."
+        "lookahead_policy": (
+            "Each row uses stored promotion snapshot only; no future bars or fill simulation."
         ),
         "uncertainty": uncertainty,
         "uncertainty_reason": (
-            "Insufficient historical READY/PENDING samples or fills for stable comparison."
+            "Insufficient READY/PENDING samples, missing live_price_at_ready snapshots, or too few observed fills."
             if uncertainty
             else None
         ),

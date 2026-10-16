@@ -52,6 +52,9 @@ class SystemState(Base):
     ai_analysis_lock_until_ms: Mapped[int] = mapped_column(Integer, default=0)
     opportunity_monitor_lock_owner: Mapped[str | None] = mapped_column(String(64), nullable=True)
     opportunity_monitor_lock_until_ms: Mapped[int] = mapped_column(Integer, default=0)
+    auto_paper_tehran_day: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    auto_paper_orders_today: Mapped[int] = mapped_column(Integer, default=0)
+    auto_paper_active_slots: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class RuntimeSettings(Base):

@@ -166,6 +166,8 @@ class SimPositionService:
             entry_is_maker=order_type == "limit",
         )
         session.add(pos)
+        if req.order_extra:
+            pos.extra = {**(pos.extra or {}), **req.order_extra}
         await session.flush()
 
         await wallet.append_ledger(
@@ -275,6 +277,10 @@ class SimPositionService:
         await _log_event(session, pos, "ORDER_CANCELLED", pos.status, "cancelled")
         pos.status = "cancelled"
         pos.closed_at = datetime.now(timezone.utc)
+        if (pos.extra or {}).get("auto_paper"):
+            from app.services.paper_execution_budget import release_auto_paper_active_slot
+
+            await release_auto_paper_active_slot(session)
         if commit:
             await session.commit()
         return ExecutionResult(True, public_id, "لغو شد", {})
@@ -413,6 +419,9 @@ class SimPositionService:
                     "net_pnl_usdt": net,
                 },
             )
+            from app.services.paper_execution_budget import release_auto_paper_active_slot
+
+            await release_auto_paper_active_slot(session)
         from app.services.position.equity_service import record_equity_snapshot
 
         await record_equity_snapshot(session, self)

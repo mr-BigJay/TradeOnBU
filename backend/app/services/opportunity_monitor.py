@@ -339,6 +339,7 @@ async def _attempt_ready_paper_order(
     now: datetime,
     summary: dict[str, Any],
     live_price: float | None = None,
+    market: MarketDataService | None = None,
 ) -> bool:
     """Create paper order while READY; transition to PENDING_ENTRY only on success (atomic savepoint)."""
     from app.services.conditional_revision import objective_confirmations_satisfied
@@ -407,6 +408,7 @@ async def _attempt_ready_paper_order(
                 commit=False,
                 require_ai_flags=False,
                 live_price=live_price,
+                market=market,
             )
             if not auto.get("created"):
                 setup.lifecycle_state = ready_state_for_direction(direction)
@@ -420,11 +422,24 @@ async def _attempt_ready_paper_order(
                     "net_rr": net_rr,
                 }
                 return False
-            setup.lifecycle_state = PENDING_ENTRY
+            from app.services.paper_auto_trading import sync_setup_lifecycle_after_auto_order
+            from app.services.position.position_service import SimPositionService
+
+            svc = SimPositionService(market=market)
+            pos = None
+            pid = auto.get("position_id")
+            if pid:
+                pos = await svc.get_position_by_public_id(session, str(pid))
+            if pos is not None:
+                await sync_setup_lifecycle_after_auto_order(session, setup, pos)
+            else:
+                setup.lifecycle_state = PENDING_ENTRY
             setup.last_validation_result = {
                 "ok": True,
                 "net_rr": net_rr,
                 "order_created_at": now.isoformat(),
+                "order_type": auto.get("order_type"),
+                "live_price_at_ready": live_price,
             }
             append_timeline_event(setup, "paper_order_created", net_rr=net_rr, at_ms=int(now.timestamp() * 1000))
             await log_setup_event(
@@ -719,7 +734,12 @@ class OpportunityMonitorService:
                     ):
                         continue
                     await _attempt_ready_paper_order(
-                        session, setup, now=now, summary=summary, live_price=live_price
+                        session,
+                        setup,
+                        now=now,
+                        summary=summary,
+                        live_price=live_price,
+                        market=self.market,
                     )
                 continue
 
@@ -899,7 +919,12 @@ class OpportunityMonitorService:
                 ):
                     continue
                 await _attempt_ready_paper_order(
-                    session, setup, now=now, summary=summary, live_price=live_price
+                    session,
+                    setup,
+                    now=now,
+                    summary=summary,
+                    live_price=live_price,
+                    market=self.market,
                 )
 
         await session.flush()

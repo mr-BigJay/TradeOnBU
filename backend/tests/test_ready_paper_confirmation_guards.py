@@ -199,10 +199,11 @@ async def test_valid_ready_still_creates_paper_order():
         )
         mon = OpportunityMonitorService()
         with patch.object(mon.market, "fetch_kline_bundle", AsyncMock(return_value=bundle)):
-            with patch("app.services.opportunity_monitor._utc_now", return_value=now_dt):
-                with patch("app.services.opportunity_monitor.is_market_data_fresh", return_value=(True, 10, 600)):
-                    with patch("app.services.opportunity_monitor._net_rr_ok", AsyncMock(return_value=(True, 2.2))):
-                        summary = await mon.monitor_setups(session, symbol="BTCUSDT")
+            with patch.object(mon.market, "fetch_ticker", AsyncMock(return_value=(101.0, now_ms))):
+                with patch("app.services.opportunity_monitor._utc_now", return_value=now_dt):
+                    with patch("app.services.opportunity_monitor.is_market_data_fresh", return_value=(True, 10, 600)):
+                        with patch("app.services.opportunity_monitor._net_rr_ok", AsyncMock(return_value=(True, 2.2))):
+                            summary = await mon.monitor_setups(session, symbol="BTCUSDT")
         await session.commit()
         row = (await session.execute(select(AiProposedSetup).where(AiProposedSetup.setup_id == row.setup_id))).scalar_one()
         assert summary["orders"] >= 1
