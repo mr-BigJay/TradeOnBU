@@ -169,6 +169,7 @@ def apply_conditional_plan_to_setup_row(
         "completed": [],
         "missing": list(sequence),
         "confirmation_timestamps": {},
+        "confirmation_evidence": {},
     }
     row.run_id = run_id
     row.structured_snapshot = structured

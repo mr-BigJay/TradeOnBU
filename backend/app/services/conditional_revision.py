@@ -23,6 +23,7 @@ class RevisionImpact(str, Enum):
     NONE = "none"
     LEVELS = "levels"
     SEQUENCE = "sequence"
+    LEVELS_AND_SEQUENCE = "levels_and_sequence"
     STRUCTURAL = "structural"
 
 
@@ -100,12 +101,16 @@ def assess_conditional_revision_impact(row: Any, plan: dict[str, Any]) -> Revisi
             and _levels_equivalent(float(row.take_profit), float(tp), ref=ref)
         )
 
-    if zone_changed or levels_changed:
-        return RevisionImpact.LEVELS
-
     old_seq = _sequence_from_row(row)
     new_seq = list(plan.get("confirmation_sequence") or [])
-    if old_seq != new_seq:
+    sequence_changed = old_seq != new_seq
+    levels_or_zone_changed = zone_changed or levels_changed
+
+    if levels_or_zone_changed and sequence_changed:
+        return RevisionImpact.LEVELS_AND_SEQUENCE
+    if levels_or_zone_changed:
+        return RevisionImpact.LEVELS
+    if sequence_changed:
         return RevisionImpact.SEQUENCE
 
     return RevisionImpact.NONE
@@ -238,9 +243,12 @@ def merge_confirmation_state(
         timestamps = {}
         evidence = {}
 
-    elif impact == RevisionImpact.SEQUENCE:
+    elif impact in (RevisionImpact.SEQUENCE, RevisionImpact.LEVELS_AND_SEQUENCE):
         timestamps = _merge_timestamps_for_sequence_revision(old_sequence, new_sequence, timestamps)
         evidence = {k: v for k, v in evidence.items() if k in timestamps}
+        if impact == RevisionImpact.LEVELS_AND_SEQUENCE and "entry_zone_touch" in new_sequence:
+            idx = new_sequence.index("entry_zone_touch")
+            _drop_sequence_suffix(new_sequence, timestamps, evidence, idx)
 
     elif impact == RevisionImpact.LEVELS:
         if "entry_zone_touch" in new_sequence:
@@ -284,7 +292,7 @@ def apply_conditional_revision_to_setup_row(
     plan: dict[str, Any],
     run_id: int,
     structured: dict[str, Any],
-    created_at: datetime | None = None,
+    revision_at: datetime | None = None,
 ) -> RevisionImpact:
     """Apply a duplicate conditional revision; preserve monitor + confirmations when safe."""
     impact = assess_conditional_revision_impact(row, plan)
@@ -292,11 +300,31 @@ def apply_conditional_revision_to_setup_row(
     old_monitor_from = row.monitor_from_ms
     old_monitor_cursor = row.monitor_cursor_ms
     old_conf = dict(row.confirmation_state or {})
+    revision_time = revision_at or datetime.now(timezone.utc)
 
     if impact == RevisionImpact.STRUCTURAL:
         apply_conditional_plan_to_setup_row(
-            row, plan=plan, run_id=run_id, structured=structured, created_at=created_at
+            row,
+            plan=plan,
+            run_id=run_id,
+            structured=structured,
+            created_at=revision_time,
         )
+        notes = dict(row.objective_notes or {})
+        history = notes.setdefault("lifecycle_history", [])
+        history.append(
+            {
+                "at": revision_time.isoformat(),
+                "event": "conditional_revision",
+                "impact": impact.value,
+                "run_id": run_id,
+            }
+        )
+        rev_hist = notes.setdefault("revision_history", [])
+        rev_hist.append(
+            {"run_id": run_id, "impact": impact.value, "at": revision_time.isoformat()}
+        )
+        row.objective_notes = notes
         return impact
 
     direction = plan["potential_direction"]
@@ -323,7 +351,7 @@ def apply_conditional_revision_to_setup_row(
         zone_hi=row.entry_zone_high,
     )
 
-    if impact in (RevisionImpact.NONE, RevisionImpact.LEVELS):
+    if impact in (RevisionImpact.NONE, RevisionImpact.LEVELS, RevisionImpact.LEVELS_AND_SEQUENCE):
         row.monitor_from_ms = old_monitor_from
         row.monitor_cursor_ms = old_monitor_cursor
     elif impact == RevisionImpact.SEQUENCE and old_monitor_from is not None:

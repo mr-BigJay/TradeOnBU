@@ -813,7 +813,11 @@ async def _persist_conditional_setup(
         _store_original_forecast(dup)
         _append_conditional_revision(dup, source_run_id=run_id, structured=structured, plan=plan)
         impact = apply_conditional_revision_to_setup_row(
-            dup, plan=plan, run_id=run_id, structured=structured, created_at=dup.created_at
+            dup,
+            plan=plan,
+            run_id=run_id,
+            structured=structured,
+            revision_at=datetime.now(timezone.utc),
         )
         meta["revision_impact"] = impact.value
         dup.expires_at = datetime.fromisoformat(plan["expires_at"])

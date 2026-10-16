@@ -270,6 +270,9 @@ def test_narrow_btc_zone_shift_is_levels_and_drops_stale_touch():
         stop_loss=82650.0,
         take_profit=81730.0,
         invalidation_level=82800.0,
+        conditional_plan={
+            "confirmation_sequence": ["liquidity_sweep", "mss", "entry_zone_touch"],
+        },
     )
     plan = {
         "potential_direction": "SHORT",
@@ -318,6 +321,258 @@ def test_sequence_revision_keeps_valid_prefix_only():
     merged = merge_confirmation_state(old_state, new_seq, RevisionImpact.SEQUENCE)
     assert merged["confirmation_timestamps"] == {"liquidity_sweep": 100}
     assert merged["missing"] == ["bos", "entry_zone_touch"]
+
+
+def test_levels_and_sequence_combined_drops_stale_middle_confirmations():
+    from app.models import AiProposedSetup
+    from app.services.conditional_revision import merge_confirmation_state
+    from app.services.ict_confirmation_engine import sequence_order_valid
+
+    row = AiProposedSetup(
+        direction="LONG",
+        entry_price=100.0,
+        entry_zone_low=99.0,
+        entry_zone_high=101.0,
+        stop_loss=94.0,
+        take_profit=115.0,
+        invalidation_level=93.0,
+        confirmation_state={
+            "sequence": ["bos", "fvg_retest", "entry_zone_touch"],
+            "required": ["bos", "fvg_retest", "entry_zone_touch"],
+        },
+    )
+    plan = {
+        "potential_direction": "LONG",
+        "confirmation_sequence": ["mss", "fvg_retest", "entry_zone_touch"],
+        "proposed_entry_mid": 101.25,
+        "entry_zone_low": 100.5,
+        "entry_zone_high": 102.0,
+        "proposed_stop_loss": 94.0,
+        "proposed_take_profit": 115.0,
+        "structural_invalidation_level": 93.0,
+    }
+    assert assess_conditional_revision_impact(row, plan) == RevisionImpact.LEVELS_AND_SEQUENCE
+    old_state = {
+        "sequence": ["bos", "fvg_retest", "entry_zone_touch"],
+        "confirmation_timestamps": {"bos": 100, "fvg_retest": 200, "entry_zone_touch": 300},
+        "confirmation_evidence": {
+            "entry_zone_touch": {
+                "bar_low": 99.8,
+                "bar_high": 100.2,
+                "zone_lo": 99.0,
+                "zone_hi": 101.0,
+            }
+        },
+    }
+    merged = merge_confirmation_state(
+        old_state, plan["confirmation_sequence"], RevisionImpact.LEVELS_AND_SEQUENCE
+    )
+    assert merged["confirmation_timestamps"] == {}
+    assert merged["missing"] == ["mss", "fvg_retest", "entry_zone_touch"]
+
+
+@pytest.mark.asyncio
+async def test_levels_and_sequence_revision_monitor_not_stuck_invalid_order():
+    await init_db()
+    from unittest.mock import AsyncMock, patch
+
+    from app.domain.candle_utils import candle_close_ms
+    from app.domain.setup_lifecycle import WAIT_LONG
+    from app.domain.setup_monitor_boundary import first_eligible_bar_open_ms
+    from app.services.conditional_revision import apply_conditional_revision_to_setup_row
+    from app.services.ict_confirmation_engine import sequence_order_valid
+    from app.services.market_data import KlineBundle
+    from app.services.opportunity_monitor import OpportunityMonitorService
+    from tests.test_lifecycle_realistic_pipeline import _5m
+
+    created = datetime(2026, 10, 10, 12, 0, tzinfo=timezone.utc)
+    boundary = first_eligible_bar_open_ms(created, "5m")
+
+    async with SessionLocal() as session:
+        row, _ = await create_setup_from_structured(
+            session,
+            run_id=80,
+            symbol="BTCUSDT",
+            structured=_long_bos_fvg_structured(),
+        )
+        row.created_at = created
+        row.monitor_from_ms = boundary
+        row.monitor_cursor_ms = boundary - 1
+        row.confirmation_state = {
+            "sequence": ["bos", "fvg_retest", "entry_zone_touch"],
+            "required": ["bos", "fvg_retest", "entry_zone_touch"],
+            "completed": ["bos", "fvg_retest", "entry_zone_touch"],
+            "missing": [],
+            "confirmation_timestamps": {
+                "bos": boundary,
+                "fvg_retest": boundary + 300_000,
+                "entry_zone_touch": boundary + 600_000,
+            },
+            "confirmation_evidence": {
+                "entry_zone_touch": {
+                    "bar_low": 99.8,
+                    "bar_high": 100.2,
+                    "zone_lo": 99.0,
+                    "zone_hi": 101.0,
+                }
+            },
+        }
+        await session.commit()
+
+        plan = {
+            "potential_direction": "LONG",
+            "confirmation_sequence": ["mss", "fvg_retest", "entry_zone_touch"],
+        "entry_zone_low": 100.5,
+        "entry_zone_high": 102.0,
+        "proposed_entry_mid": 101.25,
+            "proposed_stop_loss": 94.0,
+            "proposed_take_profit": 115.0,
+            "structural_invalidation_level": 93.0,
+        }
+        structured = _long_mss_fvg_structured()
+        impact = apply_conditional_revision_to_setup_row(
+            row,
+            plan=plan,
+            run_id=81,
+            structured=structured,
+            revision_at=datetime(2026, 10, 10, 12, 30, tzinfo=timezone.utc),
+        )
+        await session.commit()
+        assert impact == RevisionImpact.LEVELS_AND_SEQUENCE
+        ts = row.confirmation_state.get("confirmation_timestamps") or {}
+        assert "fvg_retest" not in ts
+        assert ts == {}
+
+        bars = [
+            _5m(boundary, o=100.0, h=100.3, l=99.0, c=100.1),
+            _5m(boundary + 300_000, o=100.0, h=100.2, l=98.6, c=99.4),
+        ]
+        bundle = KlineBundle(
+            closed=bars,
+            forming=None,
+            gaps_detected=[],
+            gaps_remaining=[],
+            data_complete=True,
+            interval="5m",
+        )
+        now_ms = candle_close_ms(bars[-1], "5m") + 10_000
+        mon = OpportunityMonitorService()
+        with patch.object(mon.market, "fetch_kline_bundle", AsyncMock(return_value=bundle)):
+            with patch("app.services.opportunity_monitor._utc_now") as mock_now:
+                mock_now.return_value = datetime.fromtimestamp(now_ms / 1000, tz=timezone.utc)
+                with patch("app.services.opportunity_monitor.is_market_data_fresh", return_value=(True, 10, 600)):
+                    await mon.monitor_setups(session, symbol="BTCUSDT")
+        await session.commit()
+        row = (await session.execute(select(AiProposedSetup).where(AiProposedSetup.setup_id == row.setup_id))).scalar_one()
+        assert row.lifecycle_state == WAIT_LONG
+        progress_ts = row.confirmation_state.get("confirmation_timestamps") or {}
+        assert "mss" in (row.confirmation_state.get("missing") or [])
+        assert "fvg_retest" not in progress_ts
+        last_ms = -1
+        for tok in row.confirmation_state["sequence"]:
+            if tok not in progress_ts:
+                break
+            assert progress_ts[tok] >= last_ms
+            last_ms = progress_ts[tok]
+
+
+def _long_bos_fvg_structured(**overrides):
+    base = {
+        "decision": "WAIT",
+        "setup_mode": "conditional",
+        "potential_direction": "LONG",
+        "market_bias": "LONG",
+        "conditional_entry_zone_low": 99.0,
+        "conditional_entry_zone_high": 101.0,
+        "proposed_stop_loss": 94.0,
+        "proposed_take_profit": 115.0,
+        "structural_invalidation_level": 93.0,
+        "confirmation_type": "bos_fvg_retest",
+        "expires_hours": 48,
+        "trade_reason": "bos fvg test",
+    }
+    base.update(overrides)
+    return base
+
+
+def _long_mss_fvg_structured(**overrides):
+    base = {
+        "decision": "WAIT",
+        "setup_mode": "conditional",
+        "potential_direction": "LONG",
+        "market_bias": "LONG",
+        "conditional_entry_zone_low": 100.5,
+        "conditional_entry_zone_high": 102.0,
+        "proposed_stop_loss": 94.0,
+        "proposed_take_profit": 115.0,
+        "structural_invalidation_level": 93.0,
+        "confirmation_type": "mss_fvg_retest",
+        "expires_hours": 48,
+        "trade_reason": "mss fvg revision",
+    }
+    base.update(overrides)
+    return base
+
+
+@pytest.mark.asyncio
+async def test_structural_revision_monitor_boundary_at_revision_time():
+    await init_db()
+    from app.domain.setup_monitor_boundary import first_eligible_bar_open_ms
+    from app.services.conditional_revision import apply_conditional_revision_to_setup_row
+
+    old_created = datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc)
+    revision_time = datetime(2026, 10, 10, 14, 0, tzinfo=timezone.utc)
+    old_boundary = first_eligible_bar_open_ms(old_created, "5m")
+    new_boundary = first_eligible_bar_open_ms(revision_time, "5m")
+
+    async with SessionLocal() as session:
+        row, _ = await create_setup_from_structured(
+            session, run_id=90, symbol="BTCUSDT", structured=_long_bos_fvg_structured()
+        )
+        row.created_at = old_created
+        row.monitor_from_ms = old_boundary
+        row.monitor_cursor_ms = old_boundary + 600_000
+        row.confirmation_state = {
+            "sequence": ["bos", "fvg_retest", "entry_zone_touch"],
+            "required": ["bos", "fvg_retest", "entry_zone_touch"],
+            "completed": ["bos", "fvg_retest", "entry_zone_touch"],
+            "missing": [],
+            "confirmation_timestamps": {
+                "bos": old_boundary,
+                "fvg_retest": old_boundary + 300_000,
+                "entry_zone_touch": old_boundary + 600_000,
+            },
+        }
+        await session.commit()
+
+        structured = _long_bos_fvg_structured(
+            potential_direction="SHORT",
+            market_bias="SHORT",
+            conditional_entry_zone_low=82300.0,
+            conditional_entry_zone_high=82400.0,
+            proposed_stop_loss=82650.0,
+            proposed_take_profit=81730.0,
+            structural_invalidation_level=82800.0,
+            confirmation_type="sweep_mss_poi",
+        )
+        plan, err = __import__(
+            "app.services.conditional_setup", fromlist=["parse_conditional_plan"]
+        ).parse_conditional_plan(structured)
+        assert err is None and plan is not None
+        impact = apply_conditional_revision_to_setup_row(
+            row, plan=plan, run_id=91, structured=structured, revision_at=revision_time
+        )
+        await session.commit()
+        assert impact == RevisionImpact.STRUCTURAL
+        assert row.monitor_from_ms == new_boundary
+        assert row.monitor_cursor_ms == new_boundary - 1
+        assert row.confirmation_state.get("confirmation_timestamps") == {}
+        assert row.confirmation_state.get("missing") == plan["confirmation_sequence"]
+
+        reloaded = (
+            await session.execute(select(AiProposedSetup).where(AiProposedSetup.setup_id == row.setup_id))
+        ).scalar_one()
+        assert reloaded.monitor_from_ms == new_boundary
 
 
 @pytest.mark.asyncio
