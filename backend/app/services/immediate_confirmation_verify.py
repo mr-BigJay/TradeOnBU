@@ -59,6 +59,7 @@ async def evaluate_immediate_objective_confirmations(
         "completed": [],
         "missing": list(sequence),
         "confirmation_timestamps": {},
+        "confirmation_evidence": {},
     }
     cursor = immediate_replay_window_start_ms(persist_ms, MONITOR_INTERVAL, MAX_REPLAY_BARS) - 1
     invalidated = False
@@ -137,6 +138,7 @@ async def evaluate_immediate_objective_confirmations(
             "completed": progress.completed,
             "missing": progress.missing,
             "confirmation_timestamps": progress.confirmation_timestamps,
+            "confirmation_evidence": progress.confirmation_evidence,
         }
         cursor = bar.time_ms
         if progress.invalidated:

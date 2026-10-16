@@ -602,6 +602,7 @@ class OpportunityMonitorService:
                     "completed": progress.completed,
                     "missing": progress.missing,
                     "confirmation_timestamps": progress.confirmation_timestamps,
+                    "confirmation_evidence": progress.confirmation_evidence,
                 }
                 if progress.invalidated:
                     invalidated = True

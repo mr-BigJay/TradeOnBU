@@ -64,6 +64,14 @@ async def test_revision_without_structural_change_preserves_confirmations():
                 "mss": 1_700_000_300_000,
                 "entry_zone_touch": 1_700_000_600_000,
             },
+            "confirmation_evidence": {
+                "entry_zone_touch": {
+                    "bar_low": 82310.0,
+                    "bar_high": 82390.0,
+                    "zone_lo": 82300.0,
+                    "zone_hi": 82400.0,
+                }
+            },
         }
         row.monitor_from_ms = 1_700_000_000_000
         row.monitor_cursor_ms = 1_700_000_600_000
@@ -108,6 +116,8 @@ async def test_revision_sequence_change_does_not_inherit_invalid_confirmations()
         assert "mss" not in (row2.confirmation_state.get("completed") or [])
         assert "liquidity_sweep" in (row2.confirmation_state.get("completed") or [])
         assert "bos" in (row2.confirmation_state.get("missing") or [])
+        assert "entry_zone_touch" not in (row2.confirmation_state.get("completed") or [])
+        assert "entry_zone_touch" not in (row2.confirmation_state.get("confirmation_timestamps") or {})
 
 
 def test_ict_confirmed_state_distinct_from_wait():
@@ -243,3 +253,154 @@ def test_invalidation_change_wins_over_sequence_change():
         "structural_invalidation_level": 82950.0,
     }
     assert assess_conditional_revision_impact(row, plan) == RevisionImpact.STRUCTURAL
+
+
+def test_narrow_btc_zone_shift_is_levels_and_drops_stale_touch():
+    from app.models import AiProposedSetup
+    from app.services.conditional_revision import (
+        entry_zone_touch_evidence_valid,
+        merge_confirmation_state,
+    )
+
+    row = AiProposedSetup(
+        direction="SHORT",
+        entry_price=82375.0,
+        entry_zone_low=82350.0,
+        entry_zone_high=82380.0,
+        stop_loss=82650.0,
+        take_profit=81730.0,
+        invalidation_level=82800.0,
+    )
+    plan = {
+        "potential_direction": "SHORT",
+        "confirmation_sequence": ["liquidity_sweep", "mss", "entry_zone_touch"],
+        "proposed_entry_mid": 82385.0,
+        "entry_zone_low": 82370.0,
+        "entry_zone_high": 82400.0,
+        "proposed_stop_loss": 82650.0,
+        "proposed_take_profit": 81730.0,
+        "structural_invalidation_level": 82800.0,
+    }
+    assert assess_conditional_revision_impact(row, plan) == RevisionImpact.LEVELS
+    old_state = {
+        "sequence": ["liquidity_sweep", "mss", "entry_zone_touch"],
+        "confirmation_timestamps": {
+            "liquidity_sweep": 100,
+            "mss": 200,
+            "entry_zone_touch": 300,
+        },
+        "confirmation_evidence": {
+            "entry_zone_touch": {
+                "bar_low": 82355.0,
+                "bar_high": 82360.0,
+                "zone_lo": 82350.0,
+                "zone_hi": 82380.0,
+            }
+        },
+    }
+    merged = merge_confirmation_state(old_state, plan["confirmation_sequence"], RevisionImpact.LEVELS)
+    assert "entry_zone_touch" not in merged["confirmation_timestamps"]
+    assert not entry_zone_touch_evidence_valid(
+        old_state["confirmation_evidence"]["entry_zone_touch"],
+        zone_lo=82370.0,
+        zone_hi=82400.0,
+    )
+
+
+def test_sequence_revision_keeps_valid_prefix_only():
+    from app.services.conditional_revision import merge_confirmation_state
+
+    old_state = {
+        "sequence": ["liquidity_sweep", "mss", "entry_zone_touch"],
+        "confirmation_timestamps": {"liquidity_sweep": 100, "mss": 200, "entry_zone_touch": 300},
+    }
+    new_seq = ["liquidity_sweep", "bos", "entry_zone_touch"]
+    merged = merge_confirmation_state(old_state, new_seq, RevisionImpact.SEQUENCE)
+    assert merged["confirmation_timestamps"] == {"liquidity_sweep": 100}
+    assert merged["missing"] == ["bos", "entry_zone_touch"]
+
+
+@pytest.mark.asyncio
+async def test_revision_sequence_then_monitor_reaches_ready():
+    await init_db()
+    from unittest.mock import AsyncMock, patch
+
+    from app.domain.candle_utils import candle_close_ms
+    from app.domain.setup_lifecycle import READY_LONG, WAIT_LONG
+    from app.domain.setup_monitor_boundary import first_eligible_bar_open_ms
+    from app.models import SimPosition
+    from app.services.market_data import KlineBundle
+    from app.services.opportunity_monitor import OpportunityMonitorService
+    from tests.test_ai_trader_persistence_contract import _production_conditional_wait_long
+    from tests.test_lifecycle_realistic_pipeline import _sweep_mss_poi_long_bars
+
+    created = datetime(2026, 10, 10, 12, 7, tzinfo=timezone.utc)
+    boundary = first_eligible_bar_open_ms(created, "5m")
+    structured = _production_conditional_wait_long()
+    structured2 = {**structured, "confirmation_type": "sweep_bos_poi", "trade_reason": "mss to bos revision"}
+
+    async with SessionLocal() as session:
+        row, _ = await create_setup_from_structured(session, run_id=70, symbol="BTCUSDT", structured=structured)
+        row.lifecycle_state = WAIT_LONG
+        row.created_at = created
+        row.monitor_from_ms = boundary
+        row.monitor_cursor_ms = boundary - 1
+        row.confirmation_state = {
+            "sequence": ["liquidity_sweep", "mss", "entry_zone_touch"],
+            "required": ["liquidity_sweep", "mss", "entry_zone_touch"],
+            "completed": ["liquidity_sweep", "mss", "entry_zone_touch"],
+            "missing": [],
+            "confirmation_timestamps": {
+                "liquidity_sweep": boundary,
+                "mss": boundary + 300_000,
+                "entry_zone_touch": boundary + 600_000,
+            },
+            "confirmation_evidence": {
+                "entry_zone_touch": {
+                    "bar_low": 99.8,
+                    "bar_high": 100.6,
+                    "zone_lo": 99.0,
+                    "zone_hi": 101.0,
+                }
+            },
+        }
+        await session.commit()
+
+        row2, meta = await create_setup_from_structured(session, run_id=71, symbol="BTCUSDT", structured=structured2)
+        await session.commit()
+        assert meta.get("revision_impact") == RevisionImpact.SEQUENCE.value
+        assert row2.lifecycle_state == WAIT_LONG
+        assert row2.confirmation_state.get("missing") == ["bos", "entry_zone_touch"]
+        assert "entry_zone_touch" not in (row2.confirmation_state.get("confirmation_timestamps") or {})
+
+        closed_5m = _sweep_mss_poi_long_bars(boundary)
+        last_bar = closed_5m[-1]
+        now_ms = candle_close_ms(last_bar, "5m") + 15_000
+        bundle = KlineBundle(
+            closed=closed_5m,
+            forming=None,
+            gaps_detected=[],
+            gaps_remaining=[],
+            data_complete=True,
+            interval="5m",
+        )
+        mon = OpportunityMonitorService()
+        with patch.object(mon.market, "fetch_kline_bundle", AsyncMock(return_value=bundle)):
+            with patch("app.services.opportunity_monitor._utc_now") as mock_now:
+                mock_now.return_value = datetime.fromtimestamp(now_ms / 1000, tz=timezone.utc)
+                with patch("app.services.opportunity_monitor.is_market_data_fresh", return_value=(True, 10, 600)):
+                    with patch(
+                        "app.services.opportunity_monitor._net_rr_ok",
+                        AsyncMock(return_value=(True, 2.05)),
+                    ):
+                        summary = await mon.monitor_setups(session, symbol="BTCUSDT")
+        await session.commit()
+
+        row3 = (await session.execute(select(AiProposedSetup).where(AiProposedSetup.setup_id == row2.setup_id))).scalar_one()
+        assert summary["promoted"] == 1
+        assert row3.lifecycle_state == READY_LONG
+        assert row3.confirmation_state.get("completed") == ["liquidity_sweep", "bos", "entry_zone_touch"]
+        touch_ev = (row3.confirmation_state.get("confirmation_evidence") or {}).get("entry_zone_touch")
+        assert touch_ev is not None
+        assert touch_ev["zone_lo"] == 99.0 and touch_ev["zone_hi"] == 101.0
+        assert (await session.execute(select(SimPosition))).scalars().all() == []

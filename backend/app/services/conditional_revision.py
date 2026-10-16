@@ -27,8 +27,13 @@ class RevisionImpact(str, Enum):
 
 
 def _absolute_level_tolerance(ref: float) -> float:
-    """Structural level match: small absolute band, not loose %-only similarity."""
+    """Structural level match for SL/TP/entry/invalidation."""
     return max(25.0, abs(ref) * 0.0005)
+
+
+def _entry_zone_boundary_tolerance(ref: float) -> float:
+    """Tighter tolerance for entry zone bounds (narrow BTC POI zones)."""
+    return max(5.0, abs(ref) * 0.00015)
 
 
 def _levels_equivalent(a: float | None, b: float | None, *, ref: float) -> bool:
@@ -55,12 +60,16 @@ def _entry_zones_equivalent(
         return False
     old_lo, old_hi = float(row.entry_zone_low), float(row.entry_zone_high)
     new_lo, new_hi = float(zone_lo), float(zone_hi)
-    if not _levels_equivalent(old_lo, new_lo, ref=ref):
-        return False
-    if not _levels_equivalent(old_hi, new_hi, ref=ref):
+    tol = _entry_zone_boundary_tolerance(ref)
+    if abs(old_lo - new_lo) > tol or abs(old_hi - new_hi) > tol:
         return False
     overlap = min(old_hi, new_hi) - max(old_lo, new_lo)
-    return overlap > 0
+    if overlap <= 0:
+        return False
+    min_width = min(old_hi - old_lo, new_hi - new_lo)
+    if min_width <= 0:
+        return False
+    return overlap >= min_width * 0.5
 
 
 def assess_conditional_revision_impact(row: Any, plan: dict[str, Any]) -> RevisionImpact:
@@ -114,29 +123,136 @@ def _sequence_from_row(row: Any) -> list[str]:
     return []
 
 
+def _old_sequence_from_state(old_state: dict[str, Any]) -> list[str]:
+    seq = old_state.get("sequence") or old_state.get("required") or []
+    if isinstance(seq, list):
+        return [str(x) for x in seq]
+    return []
+
+
+def _merge_timestamps_for_sequence_revision(
+    old_sequence: list[str],
+    new_sequence: list[str],
+    timestamps: dict[str, int],
+) -> dict[str, int]:
+    """Keep only a valid prefix of confirmations aligned with the new sequence."""
+    prefix: dict[str, int] = {}
+    for i, tok in enumerate(new_sequence):
+        if i >= len(old_sequence) or old_sequence[i] != tok:
+            break
+        if tok not in timestamps:
+            break
+        prefix[tok] = int(timestamps[tok])
+
+    ordered: dict[str, int] = {}
+    last_ms = -1
+    for tok in new_sequence:
+        if tok not in prefix:
+            break
+        ms = prefix[tok]
+        if ms < last_ms:
+            break
+        ordered[tok] = ms
+        last_ms = ms
+    return ordered
+
+
+def _bar_intersects_zone(bar_low: float, bar_high: float, zone_lo: float, zone_hi: float) -> bool:
+    return float(bar_high) >= float(zone_lo) and float(bar_low) <= float(zone_hi)
+
+
+def entry_zone_touch_evidence_valid(
+    evidence: dict[str, Any] | None,
+    *,
+    zone_lo: float,
+    zone_hi: float,
+) -> bool:
+    if not evidence:
+        return False
+    try:
+        blo = float(evidence["bar_low"])
+        bhi = float(evidence["bar_high"])
+        zlo = float(evidence["zone_lo"])
+        zhi = float(evidence["zone_hi"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    if not _bar_intersects_zone(blo, bhi, zone_lo, zone_hi):
+        return False
+    if zlo != zone_lo or zhi != zone_hi:
+        return _bar_intersects_zone(blo, bhi, zone_lo, zone_hi)
+    return True
+
+
+def _drop_sequence_suffix(
+    sequence: list[str],
+    timestamps: dict[str, int],
+    evidence: dict[str, Any],
+    start_idx: int,
+) -> None:
+    for tok in sequence[start_idx:]:
+        timestamps.pop(tok, None)
+        evidence.pop(tok, None)
+
+
+def sanitize_entry_zone_touch_in_state(
+    state: dict[str, Any],
+    *,
+    zone_lo: float | None,
+    zone_hi: float | None,
+) -> dict[str, Any]:
+    if zone_lo is None or zone_hi is None:
+        return state
+    sequence = list(state.get("sequence") or state.get("required") or [])
+    timestamps = dict(state.get("confirmation_timestamps") or {})
+    evidence = dict(state.get("confirmation_evidence") or {})
+    if "entry_zone_touch" not in timestamps:
+        return state
+    touch_ev = evidence.get("entry_zone_touch")
+    if entry_zone_touch_evidence_valid(touch_ev, zone_lo=float(zone_lo), zone_hi=float(zone_hi)):
+        return state
+    if "entry_zone_touch" in sequence:
+        idx = sequence.index("entry_zone_touch")
+        _drop_sequence_suffix(sequence, timestamps, evidence, idx)
+    out = {
+        **state,
+        "sequence": sequence,
+        "required": sequence,
+        "confirmation_timestamps": timestamps,
+        "confirmation_evidence": evidence,
+    }
+    out["completed"] = [t for t in sequence if t in timestamps]
+    out["missing"] = [t for t in sequence if t not in timestamps]
+    return out
+
+
 def merge_confirmation_state(
     old_state: dict[str, Any],
     new_sequence: list[str],
     impact: RevisionImpact,
 ) -> dict[str, Any]:
     timestamps = dict(old_state.get("confirmation_timestamps") or {})
+    evidence = dict(old_state.get("confirmation_evidence") or {})
+    old_sequence = _old_sequence_from_state(old_state)
 
     if impact == RevisionImpact.STRUCTURAL:
         timestamps = {}
+        evidence = {}
 
     elif impact == RevisionImpact.SEQUENCE:
-        timestamps = {k: v for k, v in timestamps.items() if k in new_sequence}
+        timestamps = _merge_timestamps_for_sequence_revision(old_sequence, new_sequence, timestamps)
+        evidence = {k: v for k, v in evidence.items() if k in timestamps}
 
     elif impact == RevisionImpact.LEVELS:
         if "entry_zone_touch" in new_sequence:
             idx = new_sequence.index("entry_zone_touch")
-            for tok in new_sequence[idx:]:
-                timestamps.pop(tok, None)
+            _drop_sequence_suffix(new_sequence, timestamps, evidence, idx)
         else:
             timestamps = {k: v for k, v in timestamps.items() if k in new_sequence}
+            evidence = {k: v for k, v in evidence.items() if k in new_sequence}
 
     elif impact == RevisionImpact.NONE:
         timestamps = {k: v for k, v in timestamps.items() if k in new_sequence}
+        evidence = {k: v for k, v in evidence.items() if k in new_sequence}
 
     completed = [t for t in new_sequence if t in timestamps]
     missing = [t for t in new_sequence if t not in timestamps]
@@ -146,6 +262,7 @@ def merge_confirmation_state(
         "completed": completed,
         "missing": missing,
         "confirmation_timestamps": timestamps,
+        "confirmation_evidence": evidence,
     }
 
 
@@ -200,6 +317,11 @@ def apply_conditional_revision_to_setup_row(
     row.run_id = run_id
 
     row.confirmation_state = merge_confirmation_state(old_conf, sequence, impact)
+    row.confirmation_state = sanitize_entry_zone_touch_in_state(
+        row.confirmation_state,
+        zone_lo=row.entry_zone_low,
+        zone_hi=row.entry_zone_high,
+    )
 
     if impact in (RevisionImpact.NONE, RevisionImpact.LEVELS):
         row.monitor_from_ms = old_monitor_from

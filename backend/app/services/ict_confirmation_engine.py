@@ -12,6 +12,7 @@ class ConfirmationProgress:
     completed: list[str] = field(default_factory=list)
     missing: list[str] = field(default_factory=list)
     confirmation_timestamps: dict[str, int] = field(default_factory=dict)
+    confirmation_evidence: dict[str, dict[str, float]] = field(default_factory=dict)
     invalidated: bool = False
     invalidation_reason: str | None = None
     last_bar_ms: int = 0
@@ -202,12 +203,14 @@ def process_bar_sequential(
 ) -> ConfirmationProgress:
     """Evaluate one closed bar; confirmations must occur in order after monitor_from_ms."""
     timestamps = dict(confirmation_state.get("confirmation_timestamps") or {})
+    evidence = dict(confirmation_state.get("confirmation_evidence") or {})
     completed = [t for t in sequence if t in timestamps]
     progress = ConfirmationProgress(
         sequence=list(sequence),
         completed=completed,
         missing=[t for t in sequence if t not in completed],
         confirmation_timestamps=timestamps,
+        confirmation_evidence=evidence,
         last_bar_ms=bar.time_ms,
     )
 
@@ -234,8 +237,16 @@ def process_bar_sequential(
         structured=structured,
     ):
         timestamps[nxt] = bar.time_ms
+        if nxt == "entry_zone_touch":
+            evidence[nxt] = {
+                "bar_low": float(bar.low),
+                "bar_high": float(bar.high),
+                "zone_lo": float(zone_lo),
+                "zone_hi": float(zone_hi),
+            }
         completed = [t for t in sequence if t in timestamps]
         progress.confirmation_timestamps = timestamps
+        progress.confirmation_evidence = evidence
         progress.completed = completed
         progress.missing = [t for t in sequence if t not in completed]
 
