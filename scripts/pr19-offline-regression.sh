@@ -34,11 +34,10 @@ docker run --rm \
   -v "$S/backend:/app/backend:ro" \
   -v "$S/scripts:/app/scripts:ro" \
   -v "$S/docker-compose.yml:/app/docker-compose.yml:ro" \
-  -v "$T:/app/backend/data:rw" \
+  --tmpfs /app/backend/data:rw,size=256m \
   -w /app/backend \
   "$IMAGE" \
-  python -m pytest tests/ \
-  -q --tb=short --disable-warnings -p no:cacheprovider \
+  sh -ec 'python -c "import os, sqlite3, pathlib; p=pathlib.Path(\"/app/backend/data/_smoke.db\"); print(\"DB_MOUNT\", p.parent, \"writable=\", os.access(p.parent, os.W_OK), flush=True); db=sqlite3.connect(str(p)); db.execute(\"create table t (id integer)\"); db.close(); p.unlink()" && exec python -m pytest tests/ -q --tb=short --disable-warnings -p no:cacheprovider' \
   > "$T/test.log" 2>&1
 RC=$?
 set -e
