@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
+from app.domain.candle_utils import interval_ms
 from app.domain.opportunity_miss_reasons import (
     REPLAY_STATUS_OK,
     REPLAY_STATUS_SEQUENCE_LIMITED,
@@ -55,11 +57,50 @@ def confirmation_timestamps_compatible_with_sequence(sequence: list[str], timest
     return True, None
 
 
+def _parse_revision_at_ms(entry: dict[str, Any]) -> int | None:
+    for key in ("at", "revised_at"):
+        raw = entry.get(key)
+        if not raw:
+            continue
+        try:
+            dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return int(dt.timestamp() * 1000)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def compute_snapshot_replay_from_ms(
+    *,
+    monitor_from_ms: int,
+    seed: dict[str, Any],
+    revision_at_ms: int | None,
+    interval: str = "5m",
+) -> int:
+    """
+    First 5m bar open at which seeded replay may evaluate new confirmations.
+
+    Skips candles before the revision instant and before the last merged confirmation bar.
+    """
+    step = interval_ms(interval)
+    ts = dict(seed.get("confirmation_timestamps") or {})
+    after_last_conf = monitor_from_ms
+    if ts:
+        after_last_conf = max(int(v) for v in ts.values()) + step
+    rev_floor = monitor_from_ms
+    if revision_at_ms is not None:
+        rev_floor = revision_at_ms
+    return max(monitor_from_ms, after_last_conf, rev_floor)
+
+
 def assess_revision_replay_trust(
     *,
     confirmation_state: dict[str, Any],
     objective_notes: dict[str, Any] | None,
-) -> tuple[str, list[str], dict[str, Any] | None]:
+    monitor_from_ms: int = 0,
+) -> tuple[str, list[str], dict[str, Any] | None, int | None]:
     """
     Return (replay_status, notes, optional seeded confirmation_state for replay).
 
@@ -73,10 +114,11 @@ def assess_revision_replay_trust(
     ok, reason = confirmation_timestamps_compatible_with_sequence(seq, ts)
     if not ok:
         notes.append(reason or "incompatible_live_timestamps")
-        return REPLAY_STATUS_SEQUENCE_LIMITED, notes, None
+        return REPLAY_STATUS_SEQUENCE_LIMITED, notes, None, None
 
     rev_hist = list((objective_notes or {}).get("revision_history") or [])
     seeded: dict[str, Any] | None = None
+    seed_revision_at_ms: int | None = None
 
     def _levels_changed(prior: dict[str, Any], new_lv: dict[str, Any]) -> bool:
         for key in ("entry_zone_low", "entry_zone_high", "entry_price", "stop_loss", "take_profit", "invalidation_level"):
@@ -95,32 +137,45 @@ def assess_revision_replay_trust(
 
         if prior_levels and new_levels and _levels_changed(prior_levels, new_levels) and not snapshot:
             notes.append("levels_change_without_snapshot")
-            return REPLAY_STATUS_SEQUENCE_LIMITED, notes, None
+            return REPLAY_STATUS_SEQUENCE_LIMITED, notes, None, None
 
         if seq_before and seq_after and seq_before != seq_after:
             if not snapshot:
                 notes.append(f"sequence_change_{seq_before}_to_{seq_after}_without_snapshot")
-                return REPLAY_STATUS_SEQUENCE_LIMITED, notes, None
+                return REPLAY_STATUS_SEQUENCE_LIMITED, notes, None, None
             seeded = sanitize_conf_snapshot(snapshot)
+            seed_revision_at_ms = _parse_revision_at_ms(entry)
 
         if impact in ("sequence", "levels_and_sequence", "structural"):
             if not snapshot:
                 notes.append(f"revision_impact_{impact}_without_snapshot")
-                return REPLAY_STATUS_SEQUENCE_LIMITED, notes, None
+                return REPLAY_STATUS_SEQUENCE_LIMITED, notes, None, None
             seeded = sanitize_conf_snapshot(snapshot)
+            seed_revision_at_ms = _parse_revision_at_ms(entry)
 
         if kind == "conditional_revision" and seq_after and not seq_before:
             notes.append("legacy_revision_missing_sequence_before")
-            return REPLAY_STATUS_SEQUENCE_LIMITED, notes, None
+            return REPLAY_STATUS_SEQUENCE_LIMITED, notes, None, None
 
         if kind == "conditional_revision" and seq_after and seq_after != seq:
             notes.append("legacy_revision_sequence_differs_from_live_state")
-            return REPLAY_STATUS_SEQUENCE_LIMITED, notes, None
+            return REPLAY_STATUS_SEQUENCE_LIMITED, notes, None, None
 
     if seeded and seq:
         seeded = sanitize_conf_snapshot(seeded)
         if _sequence_from_conf(seeded) != seq:
             notes.append("snapshot_sequence_mismatch")
-            return REPLAY_STATUS_SEQUENCE_LIMITED, notes, None
+            return REPLAY_STATUS_SEQUENCE_LIMITED, notes, None, None
 
-    return REPLAY_STATUS_OK, notes, seeded
+    replay_from_ms: int | None = None
+    if seeded is not None:
+        if seed_revision_at_ms is None:
+            notes.append("seeded_replay_missing_revision_timestamp")
+            return REPLAY_STATUS_SEQUENCE_LIMITED, notes, None, None
+        replay_from_ms = compute_snapshot_replay_from_ms(
+            monitor_from_ms=monitor_from_ms,
+            seed=seeded,
+            revision_at_ms=seed_revision_at_ms,
+        )
+
+    return REPLAY_STATUS_OK, notes, seeded, replay_from_ms if seeded else None

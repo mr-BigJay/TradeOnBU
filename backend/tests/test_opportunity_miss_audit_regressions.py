@@ -141,7 +141,7 @@ def test_first_discontinuity_detects_missing_bar():
 
 
 def test_assess_replay_history_flags_missing_boundary_coverage():
-    status, notes, seed = assess_replay_history(
+    status, notes, seed, _replay_from = assess_replay_history(
         closed_bars=[_candle(2_000_000)],
         monitor_from_ms=1_000_000,
         monitor_cursor_ms=1_500_000,

@@ -59,7 +59,7 @@ async def replay_open_setups(
             continue
         boundary = _monitor_boundary_ms(setup)
         zone_lo, zone_hi = _zone_bounds(setup)
-        replay_status, status_notes, replay_seed = assess_replay_history(
+        replay_status, status_notes, replay_seed, replay_from_ms = assess_replay_history(
             closed_bars=bundle_5m.closed,
             monitor_from_ms=boundary,
             monitor_cursor_ms=setup.monitor_cursor_ms,
@@ -91,6 +91,7 @@ async def replay_open_setups(
                 structured=setup.structured_snapshot or {},
                 monitor_from_ms=boundary,
                 initial_confirmation_state=replay_seed,
+                replay_from_ms=replay_from_ms,
             )
         else:
             replay = ConfirmationProgress(sequence=[str(x) for x in seq])
@@ -113,6 +114,7 @@ async def replay_open_setups(
             "same_bar_multi_token_candidates": diff.same_bar_multi_token_candidates,
             "notes": diff.notes,
             "replay_trusted": diff.replay_status == REPLAY_STATUS_OK,
+            "replay_from_ms": replay_from_ms,
         }
         replay_by_setup[setup.setup_id] = payload
         diffs.append({"setup_id": setup.setup_id, **payload})

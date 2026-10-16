@@ -35,7 +35,7 @@ def test_staging_setup_legacy_revision_limits_replay():
             }
         ]
     }
-    status, rev_notes, seed = assess_revision_replay_trust(
+    status, rev_notes, seed, _replay_from = assess_revision_replay_trust(
         confirmation_state=conf,
         objective_notes=notes,
     )
@@ -84,12 +84,19 @@ def test_unified_revision_with_snapshot_allows_seeded_replay():
                 "sequence_before": ["mss", "fvg_retest", "entry_zone_touch"],
                 "sequence_after": ["liquidity_sweep", "mss", "entry_zone_touch"],
                 "confirmation_snapshot_after_merge": snapshot,
+                "at": "2024-01-01T12:00:00+00:00",
             }
         ]
     }
-    status, _, seed = assess_revision_replay_trust(confirmation_state=conf, objective_notes=notes)
+    status, _, seed, replay_from = assess_revision_replay_trust(
+        confirmation_state=conf,
+        objective_notes=notes,
+        monitor_from_ms=1_700_000_000_000,
+    )
     assert status == REPLAY_STATUS_OK
     assert seed is not None
+    assert replay_from is not None
+    assert replay_from >= 1_700_000_100_000
     assert seed.get("confirmation_timestamps", {}).get("mss") == 1_700_000_100_000
 
 

@@ -41,5 +41,6 @@ ALL_OUTCOMES = frozenset(
 )
 
 REPLAY_STATUS_OK = "ok"
+REPLAY_STATUS_NOT_RUN = "not_run"
 REPLAY_STATUS_INSUFFICIENT_HISTORY = "insufficient_history"
 REPLAY_STATUS_SEQUENCE_LIMITED = "sequence_revision_limited"

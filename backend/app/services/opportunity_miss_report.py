@@ -25,6 +25,7 @@ from app.domain.opportunity_miss_reasons import (
     OUTCOME_REPLAY_SEQUENCE_LIMITED,
     OUTCOME_TERMINAL_OTHER,
     REPLAY_STATUS_INSUFFICIENT_HISTORY,
+    REPLAY_STATUS_NOT_RUN,
     REPLAY_STATUS_OK,
     REPLAY_STATUS_SEQUENCE_LIMITED,
 )
@@ -127,8 +128,8 @@ def _replay_trusted(replay_diff: dict[str, Any] | None) -> bool:
 def derive_replay_status(replay_diff: dict[str, Any] | None) -> str:
     """Replay audit axis (independent of trading / execution outcome)."""
     if not replay_diff:
-        return REPLAY_STATUS_OK
-    return str(replay_diff.get("replay_status") or REPLAY_STATUS_OK)
+        return REPLAY_STATUS_NOT_RUN
+    return str(replay_diff.get("replay_status") or REPLAY_STATUS_NOT_RUN)
 
 
 def classify_execution_outcome(
@@ -274,6 +275,7 @@ async def build_miss_audit_report(
         REPLAY_STATUS_INSUFFICIENT_HISTORY, 0
     )
     summary["replay_sequence_limited_count"] = summary["by_replay_status"].get(REPLAY_STATUS_SEQUENCE_LIMITED, 0)
+    summary["replay_not_run_count"] = summary["by_replay_status"].get(REPLAY_STATUS_NOT_RUN, 0)
     summary["replay_unavailable_count"] = sum(
         1
         for row in rows

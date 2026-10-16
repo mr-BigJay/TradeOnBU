@@ -24,6 +24,9 @@ async def test_miss_audit_route_without_replay(session_app):
     assert "summary" in body
     assert "rows" in body
     assert body["summary"]["total_setups"] >= 0
+    if body["rows"]:
+        assert all(r.get("replay_status") == "not_run" for r in body["rows"])
+        assert body["summary"].get("replay_not_run_count", 0) >= 1
 
 
 @pytest.mark.asyncio
