@@ -112,7 +112,12 @@ async def dashboard(session: AsyncSession = Depends(get_db), _=Depends(require_d
         ).scalars()
     )
     wait = [s for s in setups if s.lifecycle_state in (WAIT_LONG, WAIT_SHORT) and s.status == "open"]
-    ready = [s for s in setups if s.lifecycle_state in (READY_LONG, READY_SHORT)]
+    ready = [s for s in setups if s.lifecycle_state in (READY_LONG, READY_SHORT) and s.status == "open"]
+    ict_confirmed = [
+        s
+        for s in setups
+        if s.lifecycle_state in (ICT_CONFIRMED_LONG, ICT_CONFIRMED_SHORT) and s.status == "open"
+    ]
     invalidated = [s for s in setups if s.lifecycle_state == INVALIDATED or s.status == "invalidated"]
     expired = [s for s in setups if s.lifecycle_state == EXPIRED or s.status == "expired"]
 
@@ -139,6 +144,7 @@ async def dashboard(session: AsyncSession = Depends(get_db), _=Depends(require_d
         "live_price": live,
         "wait_setups": [_serialize_setup(s, live) for s in wait],
         "ready_setups": [_serialize_setup(s, live) for s in ready],
+        "ict_confirmed_setups": [_serialize_setup(s, live) for s in ict_confirmed],
         "pending_orders": [
             {
                 "public_id": p.public_id,

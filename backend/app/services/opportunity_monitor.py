@@ -11,6 +11,7 @@ from app.config import get_effective_settings
 from app.domain.candle_utils import candle_close_ms, interval_ms
 from app.domain.market_freshness import is_market_data_fresh
 from app.domain.setup_lifecycle import (
+    ACTIVE_MONITOR_STATES,
     EXPIRED,
     INVALIDATED,
     PENDING_ENTRY,
@@ -493,11 +494,7 @@ class OpportunityMonitorService:
             .where(AiProposedSetup.symbol == symbol)
             .where(AiProposedSetup.status == "open")
             .where(AiProposedSetup.monitoring_enabled.is_(True))
-            .where(
-                AiProposedSetup.lifecycle_state.in_(
-                    (WAIT_LONG, WAIT_SHORT, READY_LONG, READY_SHORT, PENDING_ENTRY, POSITION_OPEN)
-                )
-            )
+            .where(AiProposedSetup.lifecycle_state.in_(tuple(ACTIVE_MONITOR_STATES)))
         )
         setups = list(result.scalars().all())
         summary: dict[str, Any] = {"checked": len(setups), "promoted": 0, "invalidated": 0, "expired": 0, "orders": 0}

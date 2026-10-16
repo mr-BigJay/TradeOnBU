@@ -18,7 +18,11 @@ from app.domain.setup_lifecycle import (
 )
 from app.models import AiProposedSetup, SimPositionSettings
 from app.services.ai_setup_memory import create_setup_from_structured
-from app.services.conditional_revision import RevisionImpact, assess_conditional_revision_impact
+from app.services.conditional_revision import (
+    RevisionImpact,
+    assess_conditional_revision_impact,
+    merge_confirmation_state,
+)
 
 
 def _short_setup_structured(**overrides):
@@ -173,3 +177,69 @@ def test_assess_impact_none_for_duplicate_levels():
         "structural_invalidation_level": 82800.0,
     }
     assert assess_conditional_revision_impact(row, plan) == RevisionImpact.NONE
+
+
+def test_btc_entry_zone_shift_100_usd_is_levels_not_none():
+    from app.models import AiProposedSetup
+
+    row = AiProposedSetup(
+        direction="SHORT",
+        entry_price=82365.0,
+        entry_zone_low=82300.0,
+        entry_zone_high=82400.0,
+        stop_loss=82650.0,
+        take_profit=81730.0,
+        invalidation_level=82800.0,
+        confirmation_state={
+            "required": ["liquidity_sweep", "mss", "entry_zone_touch"],
+            "confirmation_timestamps": {
+                "liquidity_sweep": 1,
+                "mss": 2,
+                "entry_zone_touch": 3,
+            },
+        },
+    )
+    plan = {
+        "potential_direction": "SHORT",
+        "confirmation_sequence": ["liquidity_sweep", "mss", "entry_zone_touch"],
+        "proposed_entry_mid": 82415.0,
+        "entry_zone_low": 82400.0,
+        "entry_zone_high": 82500.0,
+        "proposed_stop_loss": 82650.0,
+        "proposed_take_profit": 81730.0,
+        "structural_invalidation_level": 82800.0,
+    }
+    assert assess_conditional_revision_impact(row, plan) == RevisionImpact.LEVELS
+    merged = merge_confirmation_state(
+        row.confirmation_state,
+        plan["confirmation_sequence"],
+        RevisionImpact.LEVELS,
+    )
+    assert "entry_zone_touch" not in merged["completed"]
+    assert "entry_zone_touch" in merged["missing"]
+
+
+def test_invalidation_change_wins_over_sequence_change():
+    from app.models import AiProposedSetup
+
+    row = AiProposedSetup(
+        direction="SHORT",
+        entry_price=82365.0,
+        entry_zone_low=82300.0,
+        entry_zone_high=82400.0,
+        stop_loss=82650.0,
+        take_profit=81730.0,
+        invalidation_level=82800.0,
+        confirmation_state={"required": ["liquidity_sweep", "mss", "entry_zone_touch"]},
+    )
+    plan = {
+        "potential_direction": "SHORT",
+        "confirmation_sequence": ["liquidity_sweep", "bos", "entry_zone_touch"],
+        "proposed_entry_mid": 82365.0,
+        "entry_zone_low": 82300.0,
+        "entry_zone_high": 82400.0,
+        "proposed_stop_loss": 82650.0,
+        "proposed_take_profit": 81730.0,
+        "structural_invalidation_level": 82950.0,
+    }
+    assert assess_conditional_revision_impact(row, plan) == RevisionImpact.STRUCTURAL

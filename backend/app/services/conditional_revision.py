@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
@@ -27,11 +26,41 @@ class RevisionImpact(str, Enum):
     STRUCTURAL = "structural"
 
 
-def _levels_similar(a: float | None, b: float | None, ref: float, tol_pct: float = 0.15) -> bool:
+def _absolute_level_tolerance(ref: float) -> float:
+    """Structural level match: small absolute band, not loose %-only similarity."""
+    return max(25.0, abs(ref) * 0.0005)
+
+
+def _levels_equivalent(a: float | None, b: float | None, *, ref: float) -> bool:
     if a is None or b is None:
         return False
-    tol = abs(ref) * (tol_pct / 100.0)
-    return abs(a - b) <= tol
+    tol = _absolute_level_tolerance(ref)
+    return abs(float(a) - float(b)) <= tol
+
+
+def _entry_zones_equivalent(
+    row: Any,
+    plan: dict[str, Any],
+    *,
+    ref: float,
+) -> bool:
+    zone_lo = plan.get("entry_zone_low")
+    zone_hi = plan.get("entry_zone_high")
+    if (
+        row.entry_zone_low is None
+        or row.entry_zone_high is None
+        or zone_lo is None
+        or zone_hi is None
+    ):
+        return False
+    old_lo, old_hi = float(row.entry_zone_low), float(row.entry_zone_high)
+    new_lo, new_hi = float(zone_lo), float(zone_hi)
+    if not _levels_equivalent(old_lo, new_lo, ref=ref):
+        return False
+    if not _levels_equivalent(old_hi, new_hi, ref=ref):
+        return False
+    overlap = min(old_hi, new_hi) - max(old_lo, new_lo)
+    return overlap > 0
 
 
 def assess_conditional_revision_impact(row: Any, plan: dict[str, Any]) -> RevisionImpact:
@@ -39,27 +68,14 @@ def assess_conditional_revision_impact(row: Any, plan: dict[str, Any]) -> Revisi
     if str(row.direction or "").upper() != direction:
         return RevisionImpact.STRUCTURAL
 
-    old_seq = _sequence_from_row(row)
-    new_seq = list(plan.get("confirmation_sequence") or [])
-    if old_seq != new_seq:
-        return RevisionImpact.SEQUENCE
-
     ref = float(plan.get("proposed_entry_mid") or row.entry_price or 1.0)
+
     inv = plan.get("structural_invalidation_level")
     if row.invalidation_level is not None and inv is not None:
-        if not _levels_similar(float(row.invalidation_level), float(inv), ref):
+        if not _levels_equivalent(float(row.invalidation_level), float(inv), ref=ref):
             return RevisionImpact.STRUCTURAL
 
-    zone_lo = plan.get("entry_zone_low")
-    zone_hi = plan.get("entry_zone_high")
-    zone_changed = not (
-        row.entry_zone_low is not None
-        and row.entry_zone_high is not None
-        and zone_lo is not None
-        and zone_hi is not None
-        and _levels_similar(float(row.entry_zone_low), float(zone_lo), ref)
-        and _levels_similar(float(row.entry_zone_high), float(zone_hi), ref)
-    )
+    zone_changed = not _entry_zones_equivalent(row, plan, ref=ref)
 
     sl = plan.get("proposed_stop_loss")
     tp = plan.get("proposed_take_profit")
@@ -70,13 +86,19 @@ def assess_conditional_revision_impact(row: Any, plan: dict[str, Any]) -> Revisi
             row.entry_price is not None
             and row.stop_loss is not None
             and row.take_profit is not None
-            and _levels_similar(float(row.entry_price), float(entry), ref)
-            and _levels_similar(float(row.stop_loss), float(sl), ref)
-            and _levels_similar(float(row.take_profit), float(tp), ref)
+            and _levels_equivalent(float(row.entry_price), float(entry), ref=ref)
+            and _levels_equivalent(float(row.stop_loss), float(sl), ref=ref)
+            and _levels_equivalent(float(row.take_profit), float(tp), ref=ref)
         )
 
     if zone_changed or levels_changed:
         return RevisionImpact.LEVELS
+
+    old_seq = _sequence_from_row(row)
+    new_seq = list(plan.get("confirmation_sequence") or [])
+    if old_seq != new_seq:
+        return RevisionImpact.SEQUENCE
+
     return RevisionImpact.NONE
 
 
@@ -200,11 +222,10 @@ def apply_conditional_revision_to_setup_row(
             "at": datetime.now(timezone.utc).isoformat(),
             "event": "conditional_revision",
             "impact": impact.value,
-            "from_lifecycle": old_lifecycle,
-            "to_lifecycle": row.lifecycle_state,
             "run_id": run_id,
-            "preserved_confirmations": row.confirmation_state.get("completed"),
         }
     )
+    rev_hist = notes.setdefault("revision_history", [])
+    rev_hist.append({"run_id": run_id, "impact": impact.value, "at": datetime.now(timezone.utc).isoformat()})
     row.objective_notes = notes
     return impact

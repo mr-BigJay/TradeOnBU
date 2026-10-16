@@ -13,6 +13,10 @@ type SetupRow = {
   missing_confirmations?: string[];
   completed_confirmations?: string[];
   rejection_label_fa?: string;
+  net_rr?: number;
+  display_status?: string;
+  ict_confirmed?: boolean;
+  required_confirmations?: string[];
   age_minutes?: number;
   expires_at_tehran?: string;
 };
@@ -21,6 +25,7 @@ type Dashboard = {
   live_price?: number;
   wait_setups: SetupRow[];
   ready_setups: SetupRow[];
+  ict_confirmed_setups: SetupRow[];
   pending_orders: { public_id: string; status_label_fa: string }[];
   open_positions: { public_id: string; status_label_fa: string }[];
   invalidated_setups: SetupRow[];
@@ -68,6 +73,8 @@ export function OpportunitiesPage() {
             {s.completed_confirmations && s.completed_confirmations.length > 0 && (
               <p className="hint">تأیید شده: {s.completed_confirmations.join(", ")}</p>
             )}
+            {s.net_rr != null && <p className="meta-line">Net R:R {s.net_rr.toFixed(2)}</p>}
+            {s.display_status && <p className="hint">{s.display_status}</p>}
             {s.rejection_label_fa && <p className="toast">{s.rejection_label_fa}</p>}
             <p className="meta-line">
               سن {s.age_minutes ?? "—"} دقیقه · انقضا {s.expires_at_tehran ?? "—"}
@@ -86,6 +93,7 @@ export function OpportunitiesPage() {
 
       {renderSetups("WAIT — در انتظار تأیید", data.wait_setups)}
       {renderSetups("READY — آماده Paper", data.ready_setups)}
+      {renderSetups("ICT_CONFIRMED — BLOCKED_BY_NET_RR", data.ict_confirmed_setups ?? [])}
 
       <section className="section">
         <h2 className="section-title">سفارش / پوزیشن Paper</h2>

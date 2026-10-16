@@ -9,7 +9,16 @@ from sqlalchemy import func, select
 
 from app.db import SessionLocal, init_db
 from app.domain.candles import Candle
-from app.domain.setup_lifecycle import PENDING_ENTRY, POSITION_OPEN, READY_LONG, WAIT_LONG
+from app.domain.setup_lifecycle import (
+    ICT_CONFIRMED_LONG,
+    INVALIDATED,
+    PENDING_ENTRY,
+    POSITION_OPEN,
+    READY_LONG,
+    WAIT_LONG,
+)
+from app.services.ai_setup_memory import create_setup_from_structured
+from app.services.conditional_revision import RevisionImpact
 from app.domain.setup_monitor_boundary import first_eligible_bar_open_ms
 from app.models import AiProposedSetup, SimPosition, SimPositionSettings
 from app.services.market_data import KlineBundle
@@ -286,3 +295,236 @@ async def test_expiration_naive_sqlite_datetime():
         await session.commit()
         row = (await session.execute(select(AiProposedSetup).where(AiProposedSetup.setup_id == "exp-1"))).scalar_one()
         assert row.lifecycle_state == "EXPIRED"
+
+
+def _long_structured(**overrides):
+    base = {
+        "decision": "WAIT",
+        "setup_mode": "conditional",
+        "potential_direction": "LONG",
+        "market_bias": "LONG",
+        "conditional_entry_zone_low": 99.0,
+        "conditional_entry_zone_high": 101.0,
+        "proposed_stop_loss": 94.0,
+        "proposed_take_profit": 115.0,
+        "structural_invalidation_level": 93.0,
+        "confirmation_type": "sweep_mss_poi",
+        "confirmation_sequence": ["entry_zone_touch"],
+        "expires_hours": 48,
+        "trade_reason": "e2e",
+    }
+    base.update(overrides)
+    return base
+
+
+@pytest.mark.asyncio
+async def test_e2e_wait_ict_confirmed_ready_pending():
+    await init_db()
+    created = datetime.now(timezone.utc) - timedelta(minutes=30)
+    boundary = first_eligible_bar_open_ms(created, "5m")
+    bundle = _build_bundle_from_boundary(boundary, [(98, 102, 100), (99.5, 100.5, 100.2), (99.2, 100.8, 100.1)])
+    last_open = bundle.closed[-1].time_ms
+    now_ms_1 = last_open + 300_000 + 10_000
+    now_ms_2 = last_open + 600_000 + 10_000
+
+    async with SessionLocal() as session:
+        await wallet.append_ledger(session, entry_type=wallet.LEDGER_INITIAL, amount_usdt=50_000.0)
+        settings = (await session.execute(select(SimPositionSettings))).scalar_one_or_none()
+        if not settings:
+            session.add(SimPositionSettings(id=1))
+        settings = (await session.execute(select(SimPositionSettings))).scalar_one()
+        settings.initial_balance_set = True
+        settings.auto_open_paper_positions = True
+        settings.max_risk_pct_per_position = 100.0
+        settings.default_margin_usdt = 50.0
+        settings.default_leverage = 10
+
+        setup = AiProposedSetup(
+            setup_id="e2e-ict-path",
+            run_id=1,
+            symbol="BTCUSDT",
+            direction="LONG",
+            status="open",
+            lifecycle_state=WAIT_LONG,
+            setup_mode="conditional",
+            monitoring_enabled=True,
+            monitor_from_ms=boundary,
+            monitor_cursor_ms=boundary - 1,
+            created_at=created,
+            entry_price=100.0,
+            entry_zone_low=99.0,
+            entry_zone_high=101.0,
+            stop_loss=94.0,
+            take_profit=115.0,
+            invalidation_level=93.0,
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
+            confirmation_state={
+                "sequence": ["entry_zone_touch"],
+                "required": ["entry_zone_touch"],
+                "completed": [],
+                "missing": ["entry_zone_touch"],
+                "confirmation_timestamps": {},
+            },
+            conditional_plan={"confirmation_sequence": ["entry_zone_touch"]},
+            structured_snapshot={"confirmation_type": "sweep_mss_poi"},
+        )
+        session.add(setup)
+        await session.commit()
+
+        mon = OpportunityMonitorService()
+        with patch.object(mon.market, "fetch_kline_bundle", AsyncMock(return_value=bundle)):
+            with patch("app.services.opportunity_monitor._utc_now") as mock_now:
+                mock_now.return_value = datetime.fromtimestamp(now_ms_1 / 1000, tz=timezone.utc)
+                with patch("app.services.opportunity_monitor.is_market_data_fresh", return_value=(True, 10, 600)):
+                    with patch(
+                        "app.services.opportunity_monitor._net_rr_ok",
+                        AsyncMock(return_value=(False, 1.55)),
+                    ):
+                        await mon.monitor_setups(session, symbol="BTCUSDT")
+        await session.commit()
+        row = (await session.execute(select(AiProposedSetup).where(AiProposedSetup.setup_id == "e2e-ict-path"))).scalar_one()
+        assert row.lifecycle_state == ICT_CONFIRMED_LONG
+        assert (await session.execute(select(func.count()).select_from(SimPosition))).scalar_one() == 0
+
+        bundle2 = _build_bundle_from_boundary(
+            boundary,
+            [(98, 102, 100), (99.5, 100.5, 100.2), (99.2, 100.8, 100.1), (99.0, 100.5, 100.0)],
+        )
+        with patch.object(mon.market, "fetch_kline_bundle", AsyncMock(return_value=bundle2)):
+            with patch("app.services.opportunity_monitor._utc_now") as mock_now2:
+                mock_now2.return_value = datetime.fromtimestamp(now_ms_2 / 1000, tz=timezone.utc)
+                with patch("app.services.opportunity_monitor.is_market_data_fresh", return_value=(True, 10, 600)):
+                    with patch(
+                        "app.services.opportunity_monitor._net_rr_ok",
+                        AsyncMock(return_value=(True, 2.25)),
+                    ):
+                        summary = await mon.monitor_setups(session, symbol="BTCUSDT")
+        await session.commit()
+        row = (await session.execute(select(AiProposedSetup).where(AiProposedSetup.setup_id == "e2e-ict-path"))).scalar_one()
+        assert row.lifecycle_state == PENDING_ENTRY
+        assert summary["orders"] >= 1
+        assert (await session.execute(select(func.count()).select_from(SimPosition))).scalar_one() == 1
+
+
+@pytest.mark.asyncio
+async def test_e2e_revision_none_keeps_ict_confirmed():
+    await init_db()
+    from tests.test_conditional_revision_lifecycle import _short_setup_structured
+
+    async with SessionLocal() as session:
+        row, _ = await create_setup_from_structured(
+            session, run_id=10, symbol="BTCUSDT", structured=_short_setup_structured()
+        )
+        from app.domain.setup_lifecycle import ICT_CONFIRMED_SHORT
+
+        row.lifecycle_state = ICT_CONFIRMED_SHORT
+        row.confirmation_state = {
+            "sequence": ["liquidity_sweep", "mss", "entry_zone_touch"],
+            "required": ["liquidity_sweep", "mss", "entry_zone_touch"],
+            "completed": ["liquidity_sweep", "mss", "entry_zone_touch"],
+            "missing": [],
+            "confirmation_timestamps": {
+                "liquidity_sweep": 1000,
+                "mss": 2000,
+                "entry_zone_touch": 3000,
+            },
+        }
+        await session.commit()
+        row2, meta = await create_setup_from_structured(
+            session,
+            run_id=11,
+            symbol="BTCUSDT",
+            structured=_short_setup_structured(trade_reason="repeat"),
+        )
+        await session.commit()
+        assert meta.get("revision_impact") == RevisionImpact.NONE.value
+        assert row2.lifecycle_state == ICT_CONFIRMED_SHORT
+
+
+@pytest.mark.asyncio
+async def test_e2e_structural_revision_resets_wait():
+    await init_db()
+    from app.domain.setup_lifecycle import WAIT_SHORT
+    from tests.test_conditional_revision_lifecycle import _short_setup_structured
+
+    async with SessionLocal() as session:
+        row, _ = await create_setup_from_structured(
+            session, run_id=20, symbol="BTCUSDT", structured=_short_setup_structured()
+        )
+        from app.domain.setup_lifecycle import ICT_CONFIRMED_SHORT
+
+        row.lifecycle_state = ICT_CONFIRMED_SHORT
+        row.confirmation_state = {
+            "sequence": ["liquidity_sweep", "mss", "entry_zone_touch"],
+            "required": ["liquidity_sweep", "mss", "entry_zone_touch"],
+            "completed": ["liquidity_sweep", "mss", "entry_zone_touch"],
+            "missing": [],
+            "confirmation_timestamps": {"entry_zone_touch": 1000},
+        }
+        await session.commit()
+        row2, meta = await create_setup_from_structured(
+            session,
+            run_id=21,
+            symbol="BTCUSDT",
+            structured=_short_setup_structured(
+                structural_invalidation_level=82950.0,
+                trade_reason="invalidation moved",
+            ),
+        )
+        await session.commit()
+        assert meta.get("revision_impact") == RevisionImpact.STRUCTURAL.value
+        assert row2.lifecycle_state == WAIT_SHORT
+        assert row2.confirmation_state.get("missing")
+
+
+@pytest.mark.asyncio
+async def test_e2e_invalidation_from_wait():
+    await init_db()
+    created = datetime.now(timezone.utc) - timedelta(minutes=30)
+    boundary = first_eligible_bar_open_ms(created, "5m")
+    bundle = _build_bundle_from_boundary(boundary, [(98, 102, 100), (92, 94, 92.5)])
+    last_open = bundle.closed[-1].time_ms
+    now_ms = last_open + 300_000 + 10_000
+
+    async with SessionLocal() as session:
+        setup = AiProposedSetup(
+            setup_id="e2e-inv",
+            run_id=1,
+            symbol="BTCUSDT",
+            direction="LONG",
+            status="open",
+            lifecycle_state=WAIT_LONG,
+            monitoring_enabled=True,
+            monitor_from_ms=boundary,
+            monitor_cursor_ms=boundary - 1,
+            created_at=created,
+            entry_price=100.0,
+            entry_zone_low=99.0,
+            entry_zone_high=101.0,
+            stop_loss=94.0,
+            take_profit=115.0,
+            invalidation_level=93.0,
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
+            confirmation_state={
+                "sequence": ["entry_zone_touch"],
+                "required": ["entry_zone_touch"],
+                "completed": [],
+                "missing": ["entry_zone_touch"],
+                "confirmation_timestamps": {},
+            },
+            conditional_plan={"confirmation_sequence": ["entry_zone_touch"]},
+            structured_snapshot={},
+        )
+        session.add(setup)
+        await session.commit()
+
+        mon = OpportunityMonitorService()
+        with patch.object(mon.market, "fetch_kline_bundle", AsyncMock(return_value=bundle)):
+            with patch("app.services.opportunity_monitor._utc_now") as mock_now:
+                mock_now.return_value = datetime.fromtimestamp(now_ms / 1000, tz=timezone.utc)
+                with patch("app.services.opportunity_monitor.is_market_data_fresh", return_value=(True, 10, 600)):
+                    summary = await mon.monitor_setups(session, symbol="BTCUSDT")
+        await session.commit()
+        row = (await session.execute(select(AiProposedSetup).where(AiProposedSetup.setup_id == "e2e-inv"))).scalar_one()
+        assert summary["invalidated"] == 1
+        assert row.lifecycle_state == INVALIDATED
