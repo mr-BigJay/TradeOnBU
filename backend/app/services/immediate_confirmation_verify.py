@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+import httpx
+
 from app.config import get_effective_settings
 from app.domain.candle_utils import candle_close_ms
 from app.domain.market_freshness import is_market_data_fresh
@@ -51,7 +53,15 @@ async def evaluate_immediate_objective_confirmations(
 
     market = MarketDataService()
     if bundle is None:
-        bundle = await market.fetch_kline_bundle(symbol, MONITOR_INTERVAL, 120)
+        try:
+            bundle = await market.fetch_kline_bundle(symbol, MONITOR_INTERVAL, 120)
+        except (httpx.RequestError, httpx.HTTPStatusError):
+            # A ticker/market outage must never produce an unconfirmed immediate READY.
+            # Missing evidence is handled by the existing fail-closed branch below.
+            bundle = KlineBundle(
+                closed=[], forming=None, gaps_detected=[], gaps_remaining=[],
+                data_complete=False, interval=MONITOR_INTERVAL,
+            )
 
     conf_state: dict[str, Any] = {
         "sequence": list(sequence),
