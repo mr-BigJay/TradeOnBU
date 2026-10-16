@@ -9,6 +9,14 @@ MAX_MONITOR_KLINE_LIMIT = 500
 MIN_MONITOR_KLINE_LIMIT = 120
 
 
+def next_closed_bar_open_ms(*, cursor_ms: int, boundary_ms: int, interval: str = "5m") -> int:
+    """Next 5m bar open on the exchange grid after cursor, not before monitor boundary."""
+    step = interval_ms(interval)
+    if cursor_ms < boundary_ms:
+        return boundary_ms
+    return ((cursor_ms // step) + 1) * step
+
+
 def monitor_kline_limit_for_setups(
     *,
     monitor_cursor_ms: int,
@@ -88,8 +96,32 @@ def detect_skipped_closed_bars(
     upper = max(present)
 
     expected: list[int] = []
-    t = max(boundary_ms, cursor_ms + step)
+    t = next_closed_bar_open_ms(cursor_ms=cursor_ms, boundary_ms=boundary_ms, interval=interval)
     while t <= upper:
         expected.append(t)
         t += step
     return [open_ms for open_ms in expected if open_ms not in present]
+
+
+def first_discontinuity_open_ms(
+    *,
+    new_bars: list,
+    cursor_ms: int,
+    boundary_ms: int,
+    interval: str = "5m",
+) -> int | None:
+    """First expected 5m open missing within `new_bars` after cursor (grid-aware, boundary-safe)."""
+    if not new_bars:
+        return None
+    step = interval_ms(interval)
+    sorted_bars = sorted(new_bars, key=lambda c: c.time_ms)
+    t = next_closed_bar_open_ms(cursor_ms=cursor_ms, boundary_ms=boundary_ms, interval=interval)
+    i = 0
+    while t <= sorted_bars[-1].time_ms:
+        while i < len(sorted_bars) and sorted_bars[i].time_ms < t:
+            i += 1
+        if i >= len(sorted_bars) or sorted_bars[i].time_ms > t:
+            return t
+        i += 1
+        t += step
+    return None

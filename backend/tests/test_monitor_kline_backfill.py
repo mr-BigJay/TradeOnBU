@@ -62,5 +62,5 @@ def test_detect_skipped_closed_bars_flags_missing_opens():
         boundary_ms=boundary,
         now_ms=now_ms,
     )
-    assert boundary + step in skipped
-    assert boundary + 3 * step in skipped
+    assert 1_200_000 in skipped
+    assert 1_800_000 in skipped

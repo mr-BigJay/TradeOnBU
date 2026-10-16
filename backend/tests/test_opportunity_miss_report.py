@@ -21,7 +21,12 @@ def test_classify_potential_missed_when_replay_differs():
     outcome = classify_setup_outcome(
         setup,
         timeline={"paper_orders": []},
-        replay_diff={"missing_in_live": ["mss"], "order_mismatch": False},
+        replay_diff={
+            "missing_in_live": ["mss"],
+            "order_mismatch": False,
+            "replay_status": "ok",
+            "replay_trusted": True,
+        },
     )
     assert outcome == OUTCOME_POTENTIAL_MISSED
 

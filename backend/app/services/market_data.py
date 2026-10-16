@@ -120,7 +120,8 @@ class MarketDataService:
 
         merged: dict[int, Candle] = {}
         end_time: int | None = None
-        for _ in range(12):
+        max_pages = max(12, (max_bars // 200) + 2)
+        for _ in range(max_pages):
             batch = await self._fetch_klines_window(symbol, interval, limit=200, end_time_ms=end_time)
             if not batch:
                 break
@@ -130,7 +131,7 @@ class MarketDataService:
             oldest = batch[0].time_ms
             if oldest <= from_ms or len(batch) < 200:
                 break
-            end_time = oldest
+            end_time = oldest - 1
             if len(merged) >= max_bars:
                 break
 
@@ -157,12 +158,19 @@ class MarketDataService:
         if in_range and in_range[0].time_ms > from_ms + step:
             gaps_remaining = [from_ms] + gaps_remaining
 
+        covers_start = (not in_range) or (in_range[0].time_ms <= from_ms)
+        data_complete = len(gaps_remaining) == 0 and covers_start
+        if len(merged) >= max_bars and in_range and in_range[0].time_ms > from_ms:
+            data_complete = False
+            if from_ms not in gaps_remaining:
+                gaps_remaining = [from_ms] + list(gaps_remaining)
+
         return KlineBundle(
             closed=closed,
             forming=forming,
             gaps_detected=gaps_detected,
             gaps_remaining=gaps_remaining,
-            data_complete=len(gaps_remaining) == 0 and (not in_range or in_range[0].time_ms <= from_ms),
+            data_complete=data_complete,
             interval=interval,
         )
 

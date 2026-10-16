@@ -199,9 +199,11 @@ async def miss_audit_report(
     if include_replay:
         replay_out = await replay_open_setups(session, symbol=symbol)
         replay_meta = {
+            "fetch_meta": replay_out.get("fetch_meta"),
             "kline_5m_limit": replay_out.get("kline_5m_limit"),
             "data_complete_5m": replay_out.get("data_complete_5m"),
             "gaps_remaining_5m": replay_out.get("gaps_remaining_5m"),
+            "data_complete_1m": replay_out.get("data_complete_1m"),
         }
         for row in replay_out.get("replay_diffs") or []:
             sid = row.get("setup_id")

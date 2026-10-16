@@ -22,6 +22,8 @@ def test_diff_live_vs_replay_detects_missing_confirmations():
 
 
 def test_diff_notes_multi_token_without_1m_proof():
+    from app.domain.opportunity_miss_reasons import REPLAY_STATUS_OK
+
     replay = ConfirmationProgress(sequence=["a"], confirmation_timestamps={})
     multi = [
         {
@@ -35,5 +37,6 @@ def test_diff_notes_multi_token_without_1m_proof():
         live_state={},
         replay=replay,
         multi_candidates=multi,
+        replay_status=REPLAY_STATUS_OK,
     )
     assert any("multi-token" in n for n in diff.notes)

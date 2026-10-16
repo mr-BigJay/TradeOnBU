@@ -52,9 +52,10 @@ from app.services.ict_confirmation_engine import (
 from app.services.position.position_service import SimPositionService
 from app.services.market_data import MarketDataService
 from app.services.monitor_kline_backfill import (
-    aggregate_monitor_kline_limit,
     detect_skipped_closed_bars,
+    first_discontinuity_open_ms,
 )
+from app.services.monitor_kline_fetch import fetch_monitor_5m_bundle
 from app.services.opportunity_audit import log_setup_event
 from app.services.opportunity_timeline import append_timeline_event
 from app.services.opportunity_monitor_lock import (
@@ -526,11 +527,12 @@ class OpportunityMonitorService:
         setups = list(result.scalars().all())
         summary: dict[str, Any] = {"checked": len(setups), "promoted": 0, "invalidated": 0, "expired": 0, "orders": 0}
 
-        kline_limit, backfill_meta = aggregate_monitor_kline_limit(setups, now_ms=now_ms, interval=MONITOR_INTERVAL)
+        bundle, fetch_meta = await fetch_monitor_5m_bundle(self.market, symbol, setups, now_ms=now_ms)
+        kline_limit = fetch_meta.get("aggregate_limit", 120)
         summary["kline_limit"] = kline_limit
-        summary["backfill_meta"] = backfill_meta
+        summary["backfill_meta"] = fetch_meta.get("per_setup") or []
+        summary["fetch_meta"] = fetch_meta
 
-        bundle = await self.market.fetch_kline_bundle(symbol, MONITOR_INTERVAL, kline_limit)
         if not bundle.data_complete or not bundle.closed:
             for setup in setups:
                 _record_market_data_health(
@@ -596,6 +598,8 @@ class OpportunityMonitorService:
                 now_ms=now_ms,
                 interval=MONITOR_INTERVAL,
             )
+            cursor_eff = _monitor_cursor_effective(setup, boundary)
+            gap_suspend = bool(skipped_opens)
             if skipped_opens:
                 append_timeline_event(
                     setup,
@@ -607,11 +611,79 @@ class OpportunityMonitorService:
                     session,
                     setup_id=setup.setup_id,
                     event_type="monitor_gap_detected",
-                    reason_code="engine_delay",
+                    reason_code=REASON_MISSING_MARKET_DATA,
                     payload={"skipped": skipped_opens[:20], "kline_limit": kline_limit},
                 )
 
             new_bars = _eligible_closed_bars(setup, bundle.closed, now_ms)
+            if not gap_suspend and new_bars:
+                jump = first_discontinuity_open_ms(
+                    new_bars=new_bars,
+                    cursor_ms=cursor_eff,
+                    boundary_ms=boundary,
+                    interval=MONITOR_INTERVAL,
+                )
+                if jump is not None:
+                    gap_suspend = True
+                    skipped_opens = skipped_opens or [jump]
+                    append_timeline_event(
+                        setup,
+                        "monitor_gap_detected",
+                        skipped_bar_opens_ms=[jump],
+                        kline_limit=kline_limit,
+                        reason="discontinuity_before_new_bars",
+                    )
+                    await log_setup_event(
+                        session,
+                        setup_id=setup.setup_id,
+                        event_type="monitor_gap_detected",
+                        reason_code=REASON_MISSING_MARKET_DATA,
+                        payload={"skipped": [jump], "kline_limit": kline_limit},
+                    )
+
+            if gap_suspend:
+                _record_market_data_health(
+                    setup,
+                    ok=False,
+                    reason=REASON_MISSING_MARKET_DATA,
+                    now=now,
+                    extra={"skipped": skipped_opens[:20], "data_complete": bundle.data_complete},
+                )
+                setup.last_monitor_at = now
+                if setup.lifecycle_state in (READY_LONG, READY_SHORT):
+                    for bar in new_bars:
+                        if _check_invalidation_on_bar(
+                            bar,
+                            direction=setup.direction,
+                            invalidation_level=setup.invalidation_level,
+                        ):
+                            await _invalidate_setup_structurally(
+                                session,
+                                setup,
+                                bar=bar,
+                                pos=None,
+                                summary=summary,
+                                event_type="ready_invalidated",
+                            )
+                            break
+                    if setup.lifecycle_state in (READY_LONG, READY_SHORT):
+                        from app.services.conditional_revision import objective_confirmations_satisfied
+
+                        conf_ok, reject_reason = objective_confirmations_satisfied(setup)
+                        if not conf_ok:
+                            setup.lifecycle_state = wait_state_for_direction(setup.direction)
+                            setup.last_rejection_reason = reject_reason or REASON_MISSING_CONFIRMATIONS
+                            setup.last_validation_result = {
+                                "ok": False,
+                                "reason": reject_reason or REASON_MISSING_CONFIRMATIONS,
+                                "missing": (setup.confirmation_state or {}).get("missing") or [],
+                                "ict_confirmed": False,
+                            }
+                    continue
+                if setup.lifecycle_state in (PENDING_ENTRY, POSITION_OPEN):
+                    await _sync_position_lifecycle(session, setup)
+                continue
+
             if not new_bars:
                 setup.last_monitor_at = now
                 if setup.lifecycle_state in (READY_LONG, READY_SHORT):

@@ -15,6 +15,11 @@ OUTCOME_POTENTIAL_MISSED = "potential_missed_valid_opportunity"
 OUTCOME_AMBIGUOUS_CHRONOLOGY = "ambiguous_chronology_unsafe_to_infer"
 OUTCOME_INTENTIONAL_WAIT = "intentional_wait_or_monitoring"
 OUTCOME_TERMINAL_OTHER = "terminal_other"
+OUTCOME_INSUFFICIENT_REPLAY_HISTORY = "insufficient_replay_history"
+OUTCOME_REPLAY_SEQUENCE_LIMITED = "replay_sequence_revision_limited"
+
+# READY promotion / order attempt delay above this → engine_delay (milliseconds)
+ENGINE_DELAY_THRESHOLD_MS = 120_000
 
 ALL_OUTCOMES = frozenset(
     {
@@ -30,5 +35,11 @@ ALL_OUTCOMES = frozenset(
         OUTCOME_AMBIGUOUS_CHRONOLOGY,
         OUTCOME_INTENTIONAL_WAIT,
         OUTCOME_TERMINAL_OTHER,
+        OUTCOME_INSUFFICIENT_REPLAY_HISTORY,
+        OUTCOME_REPLAY_SEQUENCE_LIMITED,
     }
 )
+
+REPLAY_STATUS_OK = "ok"
+REPLAY_STATUS_INSUFFICIENT_HISTORY = "insufficient_history"
+REPLAY_STATUS_SEQUENCE_LIMITED = "sequence_revision_limited"

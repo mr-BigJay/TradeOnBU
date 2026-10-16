@@ -41,6 +41,30 @@ TEST_ENGINE = create_async_engine(
 TestSession = async_sessionmaker(TEST_ENGINE, expire_on_commit=False)
 
 
+@pytest.fixture(autouse=True)
+def delegate_monitor_kline_fetch(monkeypatch, request):
+    """Keep legacy tests working: monitor tick uses mocked fetch_kline_bundle."""
+    if request.node.get_closest_marker("no_monitor_fetch_delegate"):
+        return
+
+    async def _delegate(market, symbol, setups, *, now_ms):
+        from app.services.monitor_kline_backfill import aggregate_monitor_kline_limit
+
+        limit, per = aggregate_monitor_kline_limit(setups, now_ms=now_ms, interval="5m")
+        cap = min(limit, 200)
+        bundle = await market.fetch_kline_bundle(symbol, "5m", cap)
+        return bundle, {
+            "aggregate_limit": limit,
+            "per_setup": per,
+            "fetch_mode": "recent_window",
+        }
+
+    monkeypatch.setattr(
+        "app.services.opportunity_monitor.fetch_monitor_5m_bundle",
+        _delegate,
+    )
+
+
 @pytest_asyncio.fixture(autouse=True)
 async def prepare_db():
     from app.services.settings_runtime import reset_settings_overlay
