@@ -210,8 +210,14 @@ async def test_worker_monitors_when_scan_paused(monkeypatch):
     from app.services.entry_detection import EntryDetectionService
     from app.services.signal_monitor import SignalMonitorService
 
+    # A paused scan still runs signal monitoring; unrelated opportunity/paper
+    # monitors are isolated so this scheduling test never reaches live Bitunix.
     with patch.object(SignalMonitorService, "monitor_open_signals", fake_monitor), patch.object(
         EntryDetectionService, "scan", fake_scan
+    ), patch(
+        "app.services.opportunity_monitor.run_opportunity_monitor_tick", AsyncMock(return_value={})
+    ), patch(
+        "app.services.position.position_monitor.SimPositionMonitorService.monitor_session", AsyncMock(return_value=0)
     ):
         w = BotWorker()
         async with SessionLocal() as session:
