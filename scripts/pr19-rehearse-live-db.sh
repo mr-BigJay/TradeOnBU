@@ -40,7 +40,7 @@ from urllib.parse import quote
 
 source_path, backup_path = map(Path, sys.argv[1:])
 with source_path.open("rb") as f:
-    if f.read(16) != b"SQLite format 3\\0":
+    if f.read(16) != b"SQLite format 3\0":
         raise SystemExit("STOP: Source file is not a valid SQLite database")
 source_uri = "file:" + quote(str(source_path), safe="/") + "?mode=ro"
 with sqlite3.connect(source_uri, uri=True, timeout=30) as live:
