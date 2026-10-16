@@ -3,6 +3,7 @@ import { apiFetch } from "./api";
 import { displayTehranTime } from "./displayTime";
 import { mergeOpenFormDefaults, type OpenFormState } from "./positionFormMerge";
 import { EquityCurve, MoneyValue, numberText, PositionTradeCard, StatTile } from "./PositionVisuals";
+import { PositionPerformancePreview, PositionWalletOverview } from "./PositionOverview";
 
 export type PositionPrefill = {
   direction: string;
@@ -18,7 +19,7 @@ type Tab = "wallet" | "settings" | "open" | "report";
 const TABS: { id: Tab; label: string }[] = [
   { id: "wallet", label: "کیف پول" },
   { id: "settings", label: "تنظیمات" },
-  { id: "open", label: "پوزیشن باز" },
+  { id: "open", label: "پوزیشن‌ها" },
   { id: "report", label: "گزارش" },
 ];
 
@@ -29,13 +30,14 @@ type Props = {
 };
 
 export function PositionPage({ prefill, onConsumePrefill, initialTab }: Props) {
-  const [tab, setTab] = useState<Tab>(initialTab || "wallet");
+  const [tab, setTab] = useState<Tab>(initialTab || "open");
   const [msg, setMsg] = useState("");
   const [wallet, setWallet] = useState<Record<string, unknown> | null>(null);
   const [settings, setSettings] = useState<Record<string, unknown> | null>(null);
   const [positions, setPositions] = useState<unknown[]>([]);
   const [report, setReport] = useState<Record<string, unknown> | null>(null);
-  const [period, setPeriod] = useState("all");
+  const [overviewReport, setOverviewReport] = useState<Record<string, unknown> | null>(null);
+  const [period, setPeriod] = useState("30d");
   const [customStart, setCustomStart] = useState("");
   const [customEnd, setCustomEnd] = useState("");
 
@@ -94,15 +96,21 @@ export function PositionPage({ prefill, onConsumePrefill, initialTab }: Props) {
     setReport(await apiFetch(`/api/gui/position/reports?${qs}`));
   }, [period, customStart, customEnd]);
 
+  const loadOverviewReport = useCallback(async () => {
+    setOverviewReport(await apiFetch("/api/gui/position/reports?period=30d"));
+  }, []);
+
   useEffect(() => {
     if (tab === "wallet") loadWallet().catch((e) => setMsg(String(e)));
     if (tab === "settings") loadSettings().catch((e) => setMsg(String(e)));
     if (tab === "open") {
-      loadSettings().catch(() => {});
-      loadPositions().catch((e) => setMsg(String(e)));
+      loadSettings().catch((e) => setMsg("خطا در دریافت تنظیمات: " + String(e)));
+      loadPositions().catch((e) => setMsg("خطا در دریافت پوزیشن‌ها: " + String(e)));
+      loadWallet().catch((e) => setMsg("خطا در دریافت کیف پول: " + String(e)));
+      loadOverviewReport().catch((e) => setMsg("خطا در دریافت گزارش: " + String(e)));
     }
     if (tab === "report") loadReport().catch((e) => setMsg(String(e)));
-  }, [tab, loadWallet, loadSettings, loadPositions, loadReport]);
+  }, [tab, loadWallet, loadSettings, loadPositions, loadReport, loadOverviewReport]);
 
   useEffect(() => {
     if (settings && tab === "open") {
@@ -111,6 +119,20 @@ export function PositionPage({ prefill, onConsumePrefill, initialTab }: Props) {
   }, [settings, tab]);
 
   const settingsForm = useMemo(() => settings || {}, [settings]);
+  const activePositions = positions.filter((p) => (p as Record<string, unknown>).status !== "pending_entry");
+  const pendingPositions = positions.filter((p) => (p as Record<string, unknown>).status === "pending_entry");
+
+  const formMargin = Number(form.margin_usdt);
+  const formLeverage = Number(form.leverage);
+  const orderNotional = Number.isFinite(formMargin) && Number.isFinite(formLeverage) &&
+    formMargin > 0 && formLeverage > 0 ? formMargin * formLeverage : null;
+  const makerRate = Number(settingsForm.maker_fee_rate);
+  const takerRate = Number(settingsForm.taker_fee_rate);
+  const estimatedRoundTripFees = orderNotional !== null && settings &&
+    Number.isFinite(makerRate) && Number.isFinite(takerRate) &&
+    makerRate >= 0 && takerRate >= 0
+    ? orderNotional * (form.order_type === "limit" ? makerRate + takerRate : takerRate * 2)
+    : null;
 
   async function saveSettings() {
     setMsg("");
@@ -337,19 +359,24 @@ export function PositionPage({ prefill, onConsumePrefill, initialTab }: Props) {
       )}
 
       {tab === "open" && (
-        <section className="section position-trading-layout">
-          <form className="card form-card position-order-form" onSubmit={submitOpen}>
+        <div className="position-open-dashboard">
+          <PositionWalletOverview wallet={wallet} />
+          <section className="section position-trading-layout">
+          <form id="position-new-order" className="card form-card position-order-form" onSubmit={submitOpen}>
             <div className="position-section-heading">
-              <div><h2>ثبت سفارش آزمایشی</h2><p>مدیریت ورود و ریسک معامله</p></div>
+              <div><h2>ثبت سفارش جدید</h2><p>Paper Trading · محاسبات شبیه‌سازی‌شده</p></div>
             </div>
             <div className="position-order-fields">
-              <div>
-                <label htmlFor="position-direction">جهت معامله</label>
-                <select id="position-direction" value={form.direction}
-                  onChange={(e) => setForm({ ...form, direction: e.target.value })}>
-                  <option value="LONG">LONG</option>
-                  <option value="SHORT">SHORT</option>
-                </select>
+              <div className="position-order-fields__wide">
+                <span className="position-form-label">جهت معامله</span>
+                <div className="position-direction-select" role="group" aria-label="جهت معامله">
+                  <button type="button" aria-pressed={form.direction === "LONG"}
+                    className={form.direction === "LONG" ? "position-direction-choice position-direction-choice--long active" : "position-direction-choice position-direction-choice--long"}
+                    onClick={() => setForm({ ...form, direction: "LONG" })}>LONG</button>
+                  <button type="button" aria-pressed={form.direction === "SHORT"}
+                    className={form.direction === "SHORT" ? "position-direction-choice position-direction-choice--short active" : "position-direction-choice position-direction-choice--short"}
+                    onClick={() => setForm({ ...form, direction: "SHORT" })}>SHORT</button>
+                </div>
               </div>
               <div>
                 <label htmlFor="position-margin">مارجین (USDT)</label>
@@ -388,35 +415,68 @@ export function PositionPage({ prefill, onConsumePrefill, initialTab }: Props) {
               </div>
             </div>
             {form.ai_setup_id && <p className="hint">AI setup: <bdi dir="ltr">{form.ai_setup_id}</bdi></p>}
+            <div className="position-order-summary">
+              <h3>خلاصه سفارش</h3>
+              <div><span>مارجین مورد نیاز</span><MoneyValue value={formMargin > 0 ? formMargin : null} /></div>
+              <div><span>ارزش اسمی پوزیشن</span><MoneyValue value={orderNotional} /></div>
+              <div><span>کارمزد تقریبی رفت‌وبرگشت</span><MoneyValue value={estimatedRoundTripFees} decimals={4} /></div>
+              <p>برآورد کارمزد با فرض اجرای Limit به‌صورت Maker است؛ نرخ و هزینه واقعی ممکن است متفاوت باشند.</p>
+            </div>
             <button type="submit" className="btn-primary btn-block">تأیید سفارش مجازی</button>
             <p className="position-order-form__note">سفارش صرفاً Paper است و به بازار واقعی ارسال نمی‌شود.</p>
           </form>
 
           <div className="position-trading-list">
             <div className="position-section-heading">
-              <div><h2>پوزیشن‌ها و سفارش‌های فعال</h2><p>نمای لحظه‌ای بر پایه داده دریافتی از API</p></div>
-              <span className="position-count" dir="ltr">{positions.length}</span>
+              <div><h2>پوزیشن‌های باز</h2><p>وضعیت معاملات فعال با داده‌های موجود بازار</p></div>
+              <div className="position-list-heading__actions">
+                <span className="position-count" dir="ltr">{activePositions.length}</span>
+                <a className="position-new-order-link" href="#position-new-order">+ سفارش جدید</a>
+              </div>
             </div>
-            {positions.length === 0 && (
+            {activePositions.length === 0 && (
               <div className="position-empty-list position-empty-list--card">
-                <strong>هنوز پوزیشن فعالی نداری</strong>
-                <p>پس از ثبت سفارش، اطلاعات و وضعیت اجرای آن در این بخش دیده می‌شود.</p>
+                <strong>پوزیشن بازی وجود ندارد</strong>
+                <p>با ثبت سفارش آزمایشی، جزئیات معامله در این بخش ظاهر می‌شود.</p>
               </div>
             )}
-            {(positions as Record<string, unknown>[]).map((p) => (
+            {(activePositions as Record<string, unknown>[]).map((p) => (
               <PositionTradeCard key={String(p.public_id)} position={p}
                 onCancel={() => {
                   apiFetch("/api/gui/position/positions/" + p.public_id + "/cancel", { method: "POST" })
-                    .then(loadPositions).catch((e) => setMsg(String(e)));
+                    .then(() => loadPositions()).catch((e) => setMsg(String(e)));
                 }}
                 onClose={() => {
                   apiFetch("/api/gui/position/positions/" + p.public_id + "/close", { method: "POST" })
-                    .then(() => { loadPositions(); loadWallet(); }).catch((e) => setMsg(String(e)));
+                    .then(() => { loadPositions(); loadWallet(); loadOverviewReport(); }).catch((e) => setMsg(String(e)));
+                }}
+              />
+            ))}
+            <div className="position-section-heading position-pending-heading">
+              <div><h2>سفارش‌های در انتظار ورود</h2><p>تا پیش از تکمیل ورود، سود و زیان محاسبه نمی‌شود</p></div>
+              <span className="position-count position-count--pending" dir="ltr">{pendingPositions.length}</span>
+            </div>
+            {pendingPositions.length === 0 && (
+              <div className="position-empty-list position-empty-list--card">
+                سفارش در انتظار ورود وجود ندارد.
+              </div>
+            )}
+            {(pendingPositions as Record<string, unknown>[]).map((p) => (
+              <PositionTradeCard key={String(p.public_id)} position={p}
+                onCancel={() => {
+                  apiFetch("/api/gui/position/positions/" + p.public_id + "/cancel", { method: "POST" })
+                    .then(() => loadPositions()).catch((e) => setMsg(String(e)));
+                }}
+                onClose={() => {
+                  apiFetch("/api/gui/position/positions/" + p.public_id + "/close", { method: "POST" })
+                    .then(() => { loadPositions(); loadWallet(); loadOverviewReport(); }).catch((e) => setMsg(String(e)));
                 }}
               />
             ))}
           </div>
-        </section>
+          </section>
+          <PositionPerformancePreview report={overviewReport} onOpenReport={() => setTab("report")} />
+        </div>
       )}
 
       {tab === "report" && report && (
