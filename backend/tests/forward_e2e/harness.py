@@ -248,8 +248,7 @@ async def run_opportunity_monitor(
 ) -> dict[str, Any]:
     import datetime as real_datetime
 
-    mon = OpportunityMonitorService()
-    mon.market = market  # type: ignore[assignment]
+    mon = OpportunityMonitorService(market=market)  # type: ignore[arg-type]
     now_dt = ms_to_dt(now_ms)
     with patch("app.services.opportunity_monitor._utc_now", return_value=now_dt):
         with patch("app.services.opportunity_monitor.is_market_data_fresh", return_value=(True, 5, 600)):

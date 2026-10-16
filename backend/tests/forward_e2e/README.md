@@ -4,6 +4,8 @@ Isolated SQLite database: `backend/data/test_forward_paper_e2e.db` (never produc
 
 Destructive DB fixtures call `tests.db_safety.assert_destructive_db_allowed` before `drop_all`.
 
+Forward E2E autouse fixtures block live `MarketDataService` HTTP and inject `ScriptedMarket.fetch_ticker` for equity marks (offline / `--network none` safe).
+
 ## Flow under test
 
 `AI conditional setup → closed 5m ICT confirmations → READY → paper limit → closed 1m fill → POSITION_OPEN`

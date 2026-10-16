@@ -66,6 +66,27 @@ async def forward_session() -> AsyncSession:
 
 
 @pytest.fixture(autouse=True)
+def forbid_live_market_http(monkeypatch):
+    """Fail fast if production MarketDataService HTTP is invoked (VPS --network none parity)."""
+    from app.services.market_data import MarketDataService
+
+    async def _forbidden(self, *args, **kwargs):
+        raise RuntimeError(
+            "Forward E2E must not call live MarketDataService; inject ScriptedMarket on monitors/services"
+        )
+
+    for method in (
+        "fetch_ticker",
+        "fetch_klines",
+        "fetch_closed_klines",
+        "fetch_historical_closed",
+        "fetch_kline_bundle",
+        "fetch_live_price",
+    ):
+        monkeypatch.setattr(MarketDataService, method, _forbidden)
+
+
+@pytest.fixture(autouse=True)
 def delegate_monitor_kline_fetch_forward(monkeypatch, request):
     if request.node.get_closest_marker("no_monitor_fetch_delegate"):
         return
