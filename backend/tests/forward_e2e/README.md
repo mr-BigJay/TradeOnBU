@@ -6,6 +6,10 @@ Destructive DB fixtures call `tests.db_safety.assert_destructive_db_allowed` bef
 
 Forward E2E autouse fixtures block live `MarketDataService` HTTP and inject `ScriptedMarket.fetch_ticker` for equity marks (offline / `--network none` safe).
 
+Backfill scenarios:
+- `test_backfill_recovery_full_context_promotes` — full catalog (48-bar structural context + lag) via real `fetch_monitor_5m_bundle`, expects promotion.
+- `test_backfill_incomplete_history_fail_closed` — missing 5m bar after boundary, fail-closed `missing_market_data`, cursor frozen.
+
 ## Flow under test
 
 `AI conditional setup → closed 5m ICT confirmations → READY → paper limit → closed 1m fill → POSITION_OPEN`
