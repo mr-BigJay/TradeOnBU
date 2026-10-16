@@ -19,5 +19,13 @@ jobs:
         uses: actions/checkout@v4
       - name: Build isolated test image
         run: docker build --tag tradeonbu-tradeonbu:latest .
+      - name: Prepare test-only filesystem mountpoints
+        run: |
+          # The backend mount is read-only. Both the bind source and container
+          # image need an existing data directory for the nested writable volume.
+          mkdir -p backend/data
+          printf 'FROM tradeonbu-tradeonbu:latest\\nRUN mkdir -p /app/backend/data\\n' | docker build -f - -t tradeonbu-pr19-test:latest .
       - name: Run full backend regression without network or production mounts
+        env:
+          PR19_TEST_IMAGE: tradeonbu-pr19-test:latest
         run: bash scripts/pr19-offline-regression.sh
