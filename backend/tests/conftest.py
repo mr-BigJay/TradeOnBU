@@ -46,6 +46,16 @@ TestSession = async_sessionmaker(TEST_ENGINE, expire_on_commit=False)
 
 
 @pytest.fixture(autouse=True)
+def offline_exchange_market_guard(monkeypatch, request):
+    """No Bitunix HTTP during tests; default ticker for equity MTM unless instance-patched."""
+    if request.node.get_closest_marker("forward_e2e"):
+        return
+    from tests.offline_market_guard import install_offline_market_guards
+
+    install_offline_market_guards(monkeypatch)
+
+
+@pytest.fixture(autouse=True)
 def delegate_monitor_kline_fetch(monkeypatch, request):
     """Keep legacy tests working: monitor tick uses mocked fetch_kline_bundle."""
     if request.node.get_closest_marker("no_monitor_fetch_delegate"):

@@ -21,9 +21,11 @@ from app.services.signal_monitor import SignalMonitorService
 from app.services.telegram_approval import TelegramApprovalService
 from tests.helpers.factories import make_signal
 from tests.helpers.market_fakes import complete_bundle, live_quote
+from tests.repo_paths import repo_root, require_repo_file
 
-ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT))
+ROOT = repo_root()
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 
 def test_verify_health_json_compact_and_spaced():
@@ -92,7 +94,7 @@ async def test_absolute_db_path_survives_reopen(tmp_path):
 
 @pytest.mark.asyncio
 async def test_docker_database_url_is_absolute_under_app_data():
-    compose = (ROOT / "docker-compose.yml").read_text()
+    compose = require_repo_file("docker-compose.yml").read_text()
     assert "sqlite+aiosqlite:////app/data/tradeonbu.db" in compose
 
 

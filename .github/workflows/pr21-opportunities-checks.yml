@@ -1,0 +1,66 @@
+name: PR21 Opportunities UI and API
+
+on:
+  pull_request:
+    paths:
+      - "backend/app/routes/opportunities.py"
+      - "backend/app/services/opportunity_list.py"
+      - "backend/tests/test_opportunities_items.py"
+      - "frontend/src/OpportunitiesPage.tsx"
+      - "frontend/src/OpportunitiesPage.test.tsx"
+      - "frontend/src/styles.css"
+      - ".github/workflows/pr21-opportunities-checks.yml"
+  push:
+    branches:
+      - cursor/ict-opportunities-ui-v2-2ec7
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backend-opportunities:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install backend dependencies
+        run: pip install -r requirements.txt
+      - name: Prepare isolated test database directory
+        run: mkdir -p data
+      - name: Opportunities API tests
+        env:
+          SKIP_CONFIG_GUARD: "1"
+          DISABLE_APP_BACKGROUND: "1"
+          DATABASE_URL: sqlite+aiosqlite:///./data/test_tradeonbu.db
+        run: python3 -m pytest tests/test_opportunities_items.py -v
+      - name: Full backend regression
+        env:
+          SKIP_CONFIG_GUARD: "1"
+          DISABLE_APP_BACKGROUND: "1"
+          DATABASE_URL: sqlite+aiosqlite:///./data/test_tradeonbu.db
+        run: python3 -m pytest -q
+
+  frontend-opportunities:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npm run build
+      - run: npm test

@@ -82,6 +82,11 @@ async def test_telegram_settings_no_secret_leak(session_app):
 def test_install_domain_validation():
     import subprocess
 
-    root = __import__("pathlib").Path(__file__).resolve().parents[2]
-    ok = subprocess.run(["bash", "-c", f'source "{root}/scripts/install_lib.sh" && validate_domain trade.example.com'], check=False).returncode
+    from tests.repo_paths import require_repo_file
+
+    install_lib = require_repo_file("scripts/install_lib.sh")
+    ok = subprocess.run(
+        ["bash", "-c", f'source "{install_lib}" && validate_domain trade.example.com'],
+        check=False,
+    ).returncode
     assert ok == 0

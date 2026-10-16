@@ -35,6 +35,12 @@ def live_quote(price: float = 100.0) -> LiveQuote:
 class EmptyCompleteMarket:
     """Market stub with complete empty history (approval precheck passes if entry not touched)."""
 
+    def __init__(self, *, mark_price: float = 100.0) -> None:
+        self.mark_price = mark_price
+
+    async def fetch_ticker(self, symbol: str) -> tuple[float, int | None]:
+        return self.mark_price, live_quote(self.mark_price).receipt_time_ms
+
     async def fetch_kline_bundle(self, symbol: str, interval: str, limit: int = 200) -> KlineBundle:
         return complete_bundle(interval=interval)
 
@@ -51,9 +57,13 @@ class EmptyCompleteMarket:
 class PrecheckTouchMarket:
     """Returns 1m/5m bundles; touch is expressed on 1m for creation-boundary accuracy."""
 
-    def __init__(self, touch_bar: Candle, *, use_5m: bool = False) -> None:
+    def __init__(self, touch_bar: Candle, *, use_5m: bool = False, mark_price: float = 100.0) -> None:
         self.touch_bar = touch_bar
         self.use_5m = use_5m
+        self.mark_price = mark_price
+
+    async def fetch_ticker(self, symbol: str) -> tuple[float, int | None]:
+        return self.mark_price, live_quote(self.mark_price).receipt_time_ms
 
     async def fetch_kline_bundle(self, symbol: str, interval: str, limit: int = 200) -> KlineBundle:
         if interval == "1m":

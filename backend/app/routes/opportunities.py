@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -26,6 +26,7 @@ from app.domain.setup_lifecycle import (
 from app.models import AiAnalysisRun, AiProposedSetup, SimPosition
 from app.routes.auth import require_dashboard_access
 from app.services.opportunity_audit import aggregate_opportunity_stats
+from app.services import opportunity_list as opp_list
 from app.domain.tehran_time import format_tehran
 
 router = APIRouter(prefix="/api/gui/opportunities", tags=["opportunities"])
@@ -96,6 +97,120 @@ def _serialize_setup(row: AiProposedSetup, live_price: float | None = None) -> d
         "revision_history": (row.objective_notes or {}).get("revision_history") or [],
         "lifecycle_history": (row.objective_notes or {}).get("lifecycle_history") or [],
         "run_id": row.run_id,
+    }
+
+
+def _serialize_position(row: SimPosition, setup: AiProposedSetup | None, live_price: float | None) -> dict:
+    base = {
+        "entity_type": "paper_position",
+        "public_id": row.public_id,
+        "symbol": row.symbol,
+        "direction": row.direction,
+        "status": row.status,
+        "paper_segment": (
+            "pending"
+            if row.status == "pending_entry"
+            else "open"
+            if row.status == "open"
+            else "closed"
+        ),
+        "limit_entry_price": row.limit_entry_price,
+        "fill_price": row.fill_price,
+        "stop_loss": row.stop_loss,
+        "take_profit": row.take_profit,
+        "ai_setup_id": row.ai_setup_id,
+        "created_at_tehran": format_tehran(row.created_at),
+        "updated_at_tehran": format_tehran(row.updated_at),
+        "status_label_fa": _PERSIAN_STATUS.get(
+            PENDING_ENTRY if row.status == "pending_entry" else POSITION_OPEN if row.status == "open" else POSITION_CLOSED,
+            row.status,
+        ),
+    }
+    if setup:
+        base["setup"] = _serialize_setup(setup, live_price)
+    return base
+
+
+def _serialize_no_trade_run(row: AiAnalysisRun) -> dict:
+    return {
+        "entity_type": "no_trade",
+        "run_id": row.id,
+        "symbol": row.symbol,
+        "decision": row.decision,
+        "final_ai_decision": row.final_ai_decision,
+        "created_at_tehran": format_tehran(row.created_at),
+        "preview": (row.report_fa or "")[:400],
+        "report_fa": row.report_fa,
+    }
+
+
+@router.get("/summary")
+async def opportunities_summary(session: AsyncSession = Depends(get_db), _=Depends(require_dashboard_access)):
+    """Real counts for dashboard summary cards (server-side, not limited to 200 rows)."""
+    counts = await opp_list.fetch_summary_counts(session)
+    return {"counts": counts}
+
+
+@router.get("/items")
+async def opportunities_items(
+    session: AsyncSession = Depends(get_db),
+    _=Depends(require_dashboard_access),
+    tab: str = Query(..., description="wait|ready|blocked|invalidated|expired|paper|no_trade|other"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=20),
+    paper_status: str = Query(
+        "pending",
+        description="When tab=paper: pending|open|closed",
+    ),
+):
+    tab_norm = tab.strip().lower()
+    if tab_norm not in opp_list.VALID_TABS:
+        raise HTTPException(status_code=400, detail=f"invalid tab: {tab}")
+    if tab_norm == opp_list.TAB_PAPER and paper_status not in opp_list.VALID_PAPER_STATUS:
+        raise HTTPException(status_code=400, detail=f"invalid paper_status: {paper_status}")
+
+    from app.services.market_data import MarketDataService
+
+    market = MarketDataService()
+    try:
+        live, _ = await market.fetch_ticker("BTCUSDT")
+    except Exception:
+        live = None
+
+    rows, meta = await opp_list.list_tab_items(
+        session,
+        tab=tab_norm,
+        page=page,
+        page_size=page_size,
+        paper_status=paper_status,
+    )
+
+    items: list[dict] = []
+    if tab_norm == opp_list.TAB_PAPER:
+        setup_ids = [r.ai_setup_id for r in rows if r.ai_setup_id]
+        setups_by_id: dict[str, AiProposedSetup] = {}
+        if setup_ids:
+            for s in (
+                await session.execute(select(AiProposedSetup).where(AiProposedSetup.setup_id.in_(setup_ids)))
+            ).scalars():
+                setups_by_id[s.setup_id] = s
+        for pos in rows:
+            setup = setups_by_id.get(pos.ai_setup_id) if pos.ai_setup_id else None
+            items.append(_serialize_position(pos, setup, live))
+    elif tab_norm == opp_list.TAB_NO_TRADE:
+        items = [_serialize_no_trade_run(r) for r in rows]
+    else:
+        items = [{**_serialize_setup(s, live), "entity_type": "setup"} for s in rows]
+
+    return {
+        "tab": tab_norm,
+        "paper_status": paper_status if tab_norm == opp_list.TAB_PAPER else None,
+        "items": items,
+        "total": meta["total"],
+        "page": meta["page"],
+        "page_size": meta["page_size"],
+        "total_pages": meta["total_pages"],
+        "live_price": live,
     }
 
 
