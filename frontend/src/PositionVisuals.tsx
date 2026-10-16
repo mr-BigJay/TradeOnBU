@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { displayTehranTime } from "./displayTime";
 
 type Tone = "profit" | "loss" | "neutral";
 type PositionRecord = Record<string, unknown>;
@@ -66,12 +67,15 @@ export function StatTile({
 }
 
 export function EquityCurve({ history }: { history: unknown }) {
-  const points = (Array.isArray(history) ? history : [])
+  const validPoints = (Array.isArray(history) ? history : [])
     .map((point) => ({
       value: numericValue(point?.equity_usdt),
       timestamp: String(point?.recorded_at_tehran || ""),
     }))
     .filter((point): point is { value: number; timestamp: string } => point.value !== null);
+  // Limit SVG vertices without dropping the first/last real snapshots.
+  const stride = Math.max(1, Math.ceil((validPoints.length - 1) / 500));
+  const points = validPoints.filter((_, i) => i === validPoints.length - 1 || i % stride === 0);
 
   if (points.length < 2) {
     return (
@@ -83,9 +87,12 @@ export function EquityCurve({ history }: { history: unknown }) {
     );
   }
 
-  const values = points.map((point) => point.value);
-  const min = Math.min(...values);
-  const max = Math.max(...values);
+  let min = Infinity;
+  let max = -Infinity;
+  for (const point of points) {
+    if (point.value < min) min = point.value;
+    if (point.value > max) max = point.value;
+  }
   const range = Math.max(max - min, Math.max(Math.abs(max), 1) * 0.02);
   const yAt = (v: number) => 176 - ((v - min) / range) * 145;
   const coords = points.map((point, index) => ({
@@ -161,6 +168,8 @@ export function PositionTradeCard({
   const direction = String(p.direction || "").toUpperCase();
   const entry = p.fill_price ?? p.entry_price ?? p.limit_entry_price;
   const stateText = pending ? "در انتظار ورود" : open ? "باز" : status || "نامشخص";
+  const pnlPct = !pending && metrics ? numericValue(metrics.pnl_pct_on_margin) : null;
+  const opened = p.opened_at_tehran || p.created_at_tehran;
   return (
     <article className="position-trade-card">
       <div className="position-trade-card__top">
@@ -181,6 +190,9 @@ export function PositionTradeCard({
           <strong className="position-trade-card__pnl">
             {pending ? <span className="financial-value financial-value--neutral">—</span> : <MoneyValue value={pnl} signed />}
           </strong>
+          {!pending && pnlPct !== null &&
+            <span className={"position-trade-card__percent " + (pnlPct > 0 ? "position-percent--profit" : pnlPct < 0 ? "position-percent--loss" : "")}
+              dir="ltr">{pnlPct > 0 ? "+" : ""}{numberText(pnlPct)}%</span>}
           {!pending && pnl === null && <span className="position-stat-note">قیمت معتبر برای محاسبه موجود نیست</span>}
         </div>
         <div className="position-trade-card__rr">
@@ -195,6 +207,9 @@ export function PositionTradeCard({
         <PositionDetail label="حد سود" value={<span dir="ltr">{numberText(p.take_profit)}</span>} />
         <PositionDetail label="مارجین" value={<MoneyValue value={p.margin_usdt} />} />
         <PositionDetail label="نوع سفارش" value={String(p.order_type || "—").toUpperCase()} />
+        <PositionDetail label="ارزش اسمی پوزیشن" value={<MoneyValue value={metrics?.notional_usdt} />} />
+        <PositionDetail label="کارمزد خروج تخمینی" value={<MoneyValue value={metrics?.estimated_exit_fee_usdt} decimals={4} />} />
+        <PositionDetail label="زمان ثبت / ورود" value={opened ? displayTehranTime(String(opened)) : "—"} />
       </div>
       <div className="position-trade-card__footer">
         <span>معامله آزمایشی · {p.execution_state === "suspended" ? "بررسی داده بازار متوقف شده" : "Bitunix VIP1"}</span>
