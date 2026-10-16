@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 os.environ.setdefault("SKIP_CONFIG_GUARD", "1")
 os.environ.setdefault("DISABLE_APP_BACKGROUND", "1")
 
-_FORWARD_DB = Path(__file__).resolve().parents[1] / "data" / "test_forward_paper_e2e.db"
+_FORWARD_DB = Path(__file__).resolve().parents[2] / "data" / "test_forward_paper_e2e.db"
 _FORWARD_DB.parent.mkdir(parents=True, exist_ok=True)
 FORWARD_DATABASE_URL = f"sqlite+aiosqlite:///{_FORWARD_DB.as_posix()}"
 
@@ -43,6 +43,9 @@ def pytest_configure(config: pytest.Config) -> None:
 
 @pytest_asyncio.fixture(autouse=True)
 async def prepare_forward_db():
+    from tests.db_safety import assert_destructive_db_allowed
+
+    assert_destructive_db_allowed(FORWARD_DATABASE_URL)
     reset_settings_overlay()
     get_settings.cache_clear()
     async with FORWARD_ENGINE.begin() as conn:
@@ -63,7 +66,9 @@ async def forward_session() -> AsyncSession:
 
 
 @pytest.fixture(autouse=True)
-def delegate_monitor_kline_fetch_forward(monkeypatch):
+def delegate_monitor_kline_fetch_forward(monkeypatch, request):
+    if request.node.get_closest_marker("no_monitor_fetch_delegate"):
+        return
     async def _delegate(market, symbol, setups, *, now_ms):
         from app.services.monitor_kline_backfill import aggregate_monitor_kline_limit
 

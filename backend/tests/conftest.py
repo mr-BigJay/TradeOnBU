@@ -20,6 +20,10 @@ from app.main import app
 get_settings.cache_clear()
 
 
+def pytest_configure(config):
+    config.addinivalue_line("markers", "no_monitor_fetch_delegate: use real fetch_monitor_5m_bundle in test")
+
+
 def with_immediate_monitor_fields(structured: dict) -> dict:
     """Fields required for immediate LONG/SHORT persistence (production contract)."""
     return {
@@ -66,9 +70,15 @@ def delegate_monitor_kline_fetch(monkeypatch, request):
 
 
 @pytest_asyncio.fixture(autouse=True)
-async def prepare_db():
+async def prepare_db(request):
     from app.services.settings_runtime import reset_settings_overlay
+    from tests.db_safety import assert_destructive_db_allowed
 
+    if request.node.get_closest_marker("forward_e2e"):
+        yield
+        return
+
+    assert_destructive_db_allowed(os.environ["DATABASE_URL"])
     reset_settings_overlay()
     get_settings.cache_clear()
     async with TEST_ENGINE.begin() as conn:

@@ -2,6 +2,8 @@
 
 Isolated SQLite database: `backend/data/test_forward_paper_e2e.db` (never production/staging).
 
+Destructive DB fixtures call `tests.db_safety.assert_destructive_db_allowed` before `drop_all`.
+
 ## Flow under test
 
 `AI conditional setup → closed 5m ICT confirmations → READY → paper limit → closed 1m fill → POSITION_OPEN`
