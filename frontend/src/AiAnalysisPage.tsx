@@ -12,6 +12,7 @@ type Status = {
   last_run_at_tehran?: string;
   next_run_at_tehran?: string;
   interval_minutes?: number;
+  schedule_description_fa?: string;
   ai_analysis_model?: string;
   ai_reasoning_effort?: string;
 };

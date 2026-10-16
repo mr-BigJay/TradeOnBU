@@ -48,6 +48,7 @@ from app.services.telegram_coordinator import get_telegram_coordinator
 from app.services.telegram_notifier import TelegramNotifier
 from app.services.ai_first_mode import legacy_rule_scan_enabled
 from app.services.trend_engine import TrendEngine
+from app.domain.tehran_time import TEHRAN
 from app.worker import BotWorker
 
 logger = logging.getLogger(__name__)
@@ -90,9 +91,20 @@ async def lifespan(app: FastAPI):
 
         scheduler.add_job(
             _ai_scheduled_tick,
+            "cron",
+            minute=30,
+            second=10,
+            timezone=TEHRAN,
+            id="ai_ict_tehran_cron",
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=300,
+        )
+        scheduler.add_job(
+            _ai_scheduled_tick,
             "interval",
             minutes=1,
-            id="ai_ict_scheduled",
+            id="ai_ict_scheduled_poll",
             max_instances=1,
             coalesce=True,
         )

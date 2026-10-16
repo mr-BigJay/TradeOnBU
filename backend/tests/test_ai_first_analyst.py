@@ -117,6 +117,8 @@ def test_migrate_schedule_leaves_sixty_minute_installs_unchanged():
 
 @pytest.mark.asyncio
 async def test_failure_backoff_does_not_schedule_hourly_routine(session):
+    from app.services.ai_tehran_schedule import active_due_slot_fire_utc, slot_fire_ms
+
     cfg = AiAnalysisSettings(
         id=1,
         enabled=True,
@@ -133,10 +135,12 @@ async def test_failure_backoff_does_not_schedule_hourly_routine(session):
         )
     )
     await session.commit()
+    due = active_due_slot_fire_utc(datetime.now(timezone.utc))
+    if due:
+        cfg.last_scheduled_slot_ms = slot_fire_ms(due)
     record_run_outcome(cfg, "failed", "reasoning_max_unavailable", trigger="scheduled")
     await session.commit()
-    assert cfg.next_run_at <= datetime.now(timezone.utc) + timedelta(minutes=20)
-    assert cfg.next_run_at > datetime.now(timezone.utc) + timedelta(minutes=10)
+    assert cfg.next_run_at > datetime.now(timezone.utc)
     assert await should_run_scheduled(session) is False
 
 

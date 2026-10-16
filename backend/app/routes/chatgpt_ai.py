@@ -24,6 +24,7 @@ from app.services.ai_analysis_scheduler import (
     migrate_ai_schedule_settings,
     scheduling_allowed,
 )
+from app.services.ai_tehran_schedule import next_tehran_scheduled_fire_utc
 from app.services.ai_analysis_executor import execute_ai_analysis_with_lock
 from app.services.siwc.connect_flow import consume_connect_session, new_connect_secret
 from app.services.siwc.credentials import disconnect, get_access_token, get_credential_row
@@ -101,8 +102,8 @@ async def status(session: AsyncSession = Depends(get_db), _=Depends(require_dash
         "last_run_at_tehran": format_tehran(cfg.last_run_at),
         "last_success_at": cfg.last_success_at.isoformat() if cfg.last_success_at else None,
         "last_success_at_tehran": format_tehran(cfg.last_success_at),
-        "next_run_at": cfg.next_run_at.isoformat() if cfg.next_run_at else None,
-        "next_run_at_tehran": format_tehran(cfg.next_run_at),
+        "next_run_at": next_tehran_scheduled_fire_utc().isoformat(),
+        "next_run_at_tehran": format_tehran(next_tehran_scheduled_fire_utc()),
         "timezone_display": "Asia/Tehran",
         "last_error": cfg.last_error,
         "oauth_flow": "siwc_open_source",
@@ -114,6 +115,9 @@ async def status(session: AsyncSession = Depends(get_db), _=Depends(require_dash
         "schedule_default_minutes": DEFAULT_AI_INTERVAL_MINUTES,
         "schedule_min_minutes": MIN_AI_INTERVAL_MINUTES,
         "schedule_max_minutes": MAX_AI_INTERVAL_MINUTES,
+        "schedule_mode": "tehran_hourly_30",
+        "schedule_timezone": "Asia/Tehran",
+        "schedule_description_fa": "هر ساعت در دقیقه ۳۰ (شروع ~۱۰ ثانیه بعد، به وقت تهران)",
     }
 
 
