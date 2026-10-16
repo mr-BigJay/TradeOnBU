@@ -130,7 +130,7 @@ export default function App() {
         </nav>
       </header>
 
-      <main className="app-main">
+      <main className={page === "position" ? "app-main app-main--positions" : "app-main"}>
         {page === "chatgpt" && <ChatGptSettingsPage />}
         {page === "telegram" && <TelegramSettingsPage />}
         {page === "analysis" && (
