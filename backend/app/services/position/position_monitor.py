@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import logging
+
+import httpx
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -32,6 +35,8 @@ from app.services.position.monitor_policies import (
 )
 from app.services.position.position_service import SimPositionService
 from app.services.position.settings_service import get_or_create_settings
+
+logger = logging.getLogger(__name__)
 
 MAX_RECOVERY_MINUTES = 24 * 60
 
@@ -467,7 +472,13 @@ class SimPositionMonitorService:
                 prev_ms = bar.time_ms
                 pos.last_processed_candle_ms = bar.time_ms
 
-        await record_equity_snapshot(session, self.positions)
+        try:
+            await record_equity_snapshot(session, self.positions)
+        except (httpx.RequestError, httpx.HTTPStatusError) as exc:
+            # MTM is observational; a quote outage must not roll back a validated
+            # candle-based paper fill, cancel, or stop/take-profit transition.
+            # Do not fabricate equity using an invented market price.
+            logger.warning("Skipping paper equity snapshot: market quote unavailable (%s)", exc)
         if processed or positions:
             await session.commit()
         return processed
