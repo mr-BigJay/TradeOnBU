@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from typing import Literal
 from datetime import datetime, timezone
 from typing import Any
 from unittest.mock import patch
@@ -13,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.domain.candle_utils import candle_close_ms, interval_ms
 from app.domain.candles import Candle
+from app.domain.setup_lifecycle import POSITION_OPEN
 from app.domain.setup_monitor_boundary import first_eligible_bar_open_ms
 from app.models import AiProposedSetup, SimPosition, SimPositionSettings
 from app.services.market_data import KlineBundle
@@ -22,6 +24,8 @@ from app.services.position.position_monitor import SimPositionMonitorService
 
 INTERVAL_5M = 300_000
 INTERVAL_1M = 60_000
+
+ICT_SEQUENCE: tuple[str, ...] = ("liquidity_sweep", "mss", "entry_zone_touch")
 
 
 def align_minute_open_ms(ts_ms: int) -> int:
@@ -140,8 +144,10 @@ def format_timeline_report(report: dict[str, Any]) -> str:
         f"decision: {report.get('decision_reason')}",
     ]
     for ev in report.get("events") or []:
+        extra = {k: v for k, v in ev.items() if k not in ("kind", "at_ms", "detail")}
+        suffix = f" {extra}" if extra else ""
         lines.append(
-            f"  - {ev.get('kind')}: at_ms={ev.get('at_ms')} detail={ev.get('detail')!r}"
+            f"  - {ev.get('kind')}: at_ms={ev.get('at_ms')} detail={ev.get('detail')!r}{suffix}"
         )
     delays = report.get("delays_ms") or {}
     if delays:
@@ -312,7 +318,12 @@ async def fill_pending_limit_order(
     market.catalog_1m = [hit]
     fill_now = candle_close_ms(hit, "1m") + 5_000
     await run_position_monitor(session, market, now_ms=fill_now)
-    return fill_now
+    return LimitFillResult(
+        monitor_eval_now_ms=fill_now,
+        fill_bar=hit,
+        fill_bar_open_ms=hit.time_ms,
+        fill_bar_close_ms=candle_close_ms(hit, "1m"),
+    )
 
 
 async def run_monitor_fresh_session(
@@ -344,3 +355,116 @@ def promotion_now_ms(closed_5m: list[Candle]) -> int:
 
 def setup_boundary(created: datetime) -> int:
     return first_eligible_bar_open_ms(created, "5m")
+
+
+def ict_confirmation_bars(
+    boundary_ms: int,
+    direction: Literal["LONG", "SHORT"],
+) -> dict[str, Candle]:
+    bars = sweep_mss_poi_long_bars(boundary_ms) if direction == "LONG" else sweep_mss_poi_short_bars(boundary_ms)
+    tail = bars[-3:]
+    return {tok: bar for tok, bar in zip(ICT_SEQUENCE, tail, strict=True)}
+
+
+@dataclass(frozen=True)
+class LimitFillResult:
+    monitor_eval_now_ms: int
+    fill_bar: Candle
+    fill_bar_open_ms: int
+    fill_bar_close_ms: int
+
+
+def build_lagged_backfill_catalog(boundary_ms: int, *, pad_bars_before_ict: int = 120) -> list[Candle]:
+    """Continuous 5m history including structural context before monitor boundary."""
+    from app.services.monitor_kline_backfill import STRUCTURAL_CONTEXT_BARS
+
+    ict_block = sweep_mss_poi_long_bars(boundary_ms)
+    ict_start = ict_block[0].time_ms
+    catalog_start = ict_start - (STRUCTURAL_CONTEXT_BARS + pad_bars_before_ict) * INTERVAL_5M
+    bars: list[Candle] = []
+    t = catalog_start
+    while t < ict_start:
+        bars.append(bar_5m(t, o=100.0, h=100.2, l=99.8, c=100.1))
+        t += INTERVAL_5M
+    bars.extend(ict_block)
+    return bars
+
+
+def assert_ict_confirmation_sequence(setup: AiProposedSetup, expected_bars: dict[str, Candle]) -> dict[str, int]:
+    conf = setup.confirmation_state or {}
+    completed = conf.get("completed") or []
+    assert completed == list(ICT_SEQUENCE)
+    ts = conf.get("confirmation_timestamps") or {}
+    for tok in ICT_SEQUENCE:
+        bar = expected_bars[tok]
+        assert ts[tok] == bar.time_ms, f"{tok} timestamp must be bar open_ms"
+        assert ts["liquidity_sweep"] < ts["mss"] < ts["entry_zone_touch"]
+    return {tok: int(ts[tok]) for tok in ICT_SEQUENCE}
+
+
+async def assert_net_rr_after_costs(
+    session: AsyncSession,
+    *,
+    direction: str,
+    entry: float,
+    sl: float,
+    tp: float,
+) -> float:
+    from app.domain.paper_execution_policy import HARD_MIN_AUTO_PAPER_NET_RR
+    from app.services.execution_model_sim import net_rr_acceptable_for_auto_paper
+
+    ok, net_rr = await net_rr_acceptable_for_auto_paper(
+        session,
+        direction=direction,
+        entry=entry,
+        sl=sl,
+        tp=tp,
+        min_net_rr=HARD_MIN_AUTO_PAPER_NET_RR,
+    )
+    assert ok, f"net R:R {net_rr} below floor {HARD_MIN_AUTO_PAPER_NET_RR}"
+    return net_rr
+
+
+def finalize_success_pipeline_timeline(
+    timeline: ScenarioTimeline,
+    *,
+    setup: AiProposedSetup,
+    pos: SimPosition,
+    expected_bars: dict[str, Candle],
+    monitor_eval_ms: int,
+    fill: LimitFillResult,
+    order_ms: int,
+    net_rr: float,
+) -> None:
+    assert pos.status == "open"
+    assert setup.lifecycle_state == POSITION_OPEN
+    ts_open = assert_ict_confirmation_sequence(setup, expected_bars)
+    touch_close = candle_close_ms(expected_bars["entry_zone_touch"], "5m")
+    for tok in ICT_SEQUENCE:
+        bar = expected_bars[tok]
+        timeline.add(
+            "confirmation",
+            at_ms=ts_open[tok],
+            detail=tok,
+            bar_open_ms=bar.time_ms,
+            bar_close_ms=candle_close_ms(bar, "5m"),
+        )
+    timeline.add("monitor_eval", at_ms=monitor_eval_ms, detail="opportunity_monitor_tick")
+    timeline.add("ready", at_ms=monitor_eval_ms, detail="promoted_to_pending_entry")
+    timeline.add(
+        "paper_limit_order",
+        at_ms=order_ms,
+        detail=str(pos.limit_entry_price),
+        order_created_ms=order_ms,
+    )
+    timeline.add(
+        "fill",
+        at_ms=fill.monitor_eval_now_ms,
+        detail=str(pos.fill_price),
+        fill_price=pos.fill_price,
+        fill_bar_open_ms=fill.fill_bar_open_ms,
+        fill_bar_close_ms=fill.fill_bar_close_ms,
+    )
+    timeline.delays_ms["confirm_close_to_order_ms"] = int(order_ms - touch_close)
+    timeline.delays_ms["order_to_fill_bar_open_ms"] = int(fill.fill_bar_open_ms - order_ms)
+    timeline.add("net_rr_after_costs", detail=f"{net_rr:.4f}")
