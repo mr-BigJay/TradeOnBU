@@ -44,6 +44,12 @@ RC=$?
 set -e
 
 echo "=== REGRESSION RESULT ==="
+if [ "$RC" -ne 0 ]; then
+  echo "=== FIRST FAILURE DETAILS ==="
+  sed -n '1,165p' "$T/test.log"
+  echo "=== ERROR SIGNATURES ==="
+  grep -m 15 -E 'sqlite3\\.OperationalError|sqlalchemy\\.exc\\.OperationalError|OperationalError:|ProgrammingError:|PermissionError:|Read-only file system|unable to open database|ModuleNotFoundError|Traceback' "$T/test.log" || true
+fi
 tail -n 75 "$T/test.log"
 echo "EXIT_CODE=$RC"
 echo "LOG_FILE=$T/test.log"
