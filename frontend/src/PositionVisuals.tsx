@@ -102,7 +102,6 @@ export function EquityCurve({ history }: { history: unknown }) {
   const line = coords.map((point) => numberText(point.x, 2) + "," + numberText(point.y, 2)).join(" ");
   const fill = "16,190 " + line + " 624,190";
   const delta = points[points.length - 1].value - points[0].value;
-  const rising = delta >= 0;
 
   return (
     <div className="position-equity-chart">
@@ -120,18 +119,18 @@ export function EquityCurve({ history }: { history: unknown }) {
         aria-label={"روند اکوییتی، از " + numberText(points[0].value) + " تا " + numberText(points[points.length - 1].value) + " تتر"}>
         <defs>
           <linearGradient id="position-equity-gradient" x1="0" x2="0" y1="0" y2="1">
-            <stop offset="0" stopColor={rising ? "#34d399" : "#fb7185"} stopOpacity=".2" />
-            <stop offset="1" stopColor={rising ? "#34d399" : "#fb7185"} stopOpacity="0" />
+            <stop offset="0" stopColor="#3b82f6" stopOpacity=".2" />
+            <stop offset="1" stopColor="#3b82f6" stopOpacity="0" />
           </linearGradient>
         </defs>
         {[38, 83, 128, 173].map((y) =>
           <line key={y} x1="16" x2="624" y1={y} y2={y} stroke="currentColor" opacity=".13" strokeDasharray="4 7" />
         )}
         <polygon points={fill} fill="url(#position-equity-gradient)" />
-        <polyline points={line} fill="none" stroke={rising ? "#34d399" : "#fb7185"}
+        <polyline points={line} fill="none" stroke="#3b82f6"
           strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
         <circle cx={coords[coords.length - 1].x} cy={coords[coords.length - 1].y}
-          r="4.5" stroke="#111827" strokeWidth="2" fill={rising ? "#34d399" : "#fb7185"} />
+          r="4.5" stroke="#111827" strokeWidth="2" fill="#60a5fa" />
       </svg>
       <div className="position-equity-chart__axis">
         <span>{points[0].timestamp || "شروع بازه"}</span>
