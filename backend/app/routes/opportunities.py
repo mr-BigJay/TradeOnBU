@@ -13,8 +13,13 @@ from app.domain.setup_lifecycle import (
     PENDING_ENTRY,
     POSITION_CLOSED,
     POSITION_OPEN,
+    DISPLAY_ICT_CONFIRMED_BLOCKED_RR,
+    ICT_CONFIRMED_LONG,
+    ICT_CONFIRMED_SHORT,
     READY_LONG,
     READY_SHORT,
+    REASON_AUTO_PAPER_DISABLED,
+    REASON_ICT_CONFIRMED_BLOCKED_RR,
     WAIT_LONG,
     WAIT_SHORT,
 )
@@ -30,6 +35,8 @@ _PERSIAN_STATUS: dict[str, str] = {
     WAIT_SHORT: "در انتظار تأیید — SHORT",
     READY_LONG: "آماده اجرای Paper — LONG",
     READY_SHORT: "آماده اجرای Paper — SHORT",
+    ICT_CONFIRMED_LONG: "تأیید ICT کامل — R:R خالص ناکافی (LONG)",
+    ICT_CONFIRMED_SHORT: "تأیید ICT کامل — R:R خالص ناکافی (SHORT)",
     PENDING_ENTRY: "سفارش Paper ثبت شد؛ در انتظار برخورد قیمت",
     POSITION_OPEN: "پوزیشن Paper باز",
     POSITION_CLOSED: "پوزیشن بسته شد",
@@ -40,6 +47,7 @@ _PERSIAN_STATUS: dict[str, str] = {
 _REJECTION_FA: dict[str, str] = {
     "missing_confirmations": "در انتظار تأییدهای ICT (MSS، sweep، POI و …)",
     "net_rr_below_min": "نسبت ریسک به بازده خالص کافی نیست (حداقل ۱:۲)",
+    "ict_confirmed_blocked_by_net_rr": DISPLAY_ICT_CONFIRMED_BLOCKED_RR,
     "auto_paper_disabled": "ورود خودکار Paper غیرفعال است",
     "wallet_not_initialized": "موجودی Paper اولیه تنظیم نشده",
     "missing_market_data": "داده بازار ناقص — اجرا متوقف",
@@ -82,6 +90,11 @@ def _serialize_setup(row: AiProposedSetup, live_price: float | None = None) -> d
         "last_monitor_at_tehran": format_tehran(row.last_monitor_at),
         "rejection_reason": row.last_rejection_reason,
         "rejection_label_fa": _REJECTION_FA.get(row.last_rejection_reason or "", row.last_rejection_reason),
+        "display_status": (row.last_validation_result or {}).get("display_status"),
+        "ict_confirmed": (row.last_validation_result or {}).get("ict_confirmed"),
+        "order_block_reason": (row.last_validation_result or {}).get("order_skipped_reason"),
+        "revision_history": (row.objective_notes or {}).get("revision_history") or [],
+        "lifecycle_history": (row.objective_notes or {}).get("lifecycle_history") or [],
         "run_id": row.run_id,
     }
 

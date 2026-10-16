@@ -18,6 +18,7 @@ from app.domain.setup_lifecycle import (
 )
 from app.models import AiAnalysisRun, AiProposedSetup
 from app.services.conditional_setup import apply_conditional_plan_to_setup_row, parse_conditional_plan
+from app.services.conditional_revision import apply_conditional_revision_to_setup_row
 from app.services.market_data import KlineBundle, MarketDataService
 from app.services.ai_trader_report import _has_conditional_plan
 
@@ -811,9 +812,10 @@ async def _persist_conditional_setup(
             return None, meta
         _store_original_forecast(dup)
         _append_conditional_revision(dup, source_run_id=run_id, structured=structured, plan=plan)
-        apply_conditional_plan_to_setup_row(
+        impact = apply_conditional_revision_to_setup_row(
             dup, plan=plan, run_id=run_id, structured=structured, created_at=dup.created_at
         )
+        meta["revision_impact"] = impact.value
         dup.expires_at = datetime.fromisoformat(plan["expires_at"])
         dup.status = "open"
         dup.thesis_fa = structured.get("trade_reason") or structured.get("structure_summary") or dup.thesis_fa

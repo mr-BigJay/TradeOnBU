@@ -9,6 +9,8 @@ WAIT_LONG = "WAIT_LONG"
 WAIT_SHORT = "WAIT_SHORT"
 READY_LONG = "READY_LONG"
 READY_SHORT = "READY_SHORT"
+ICT_CONFIRMED_LONG = "ICT_CONFIRMED_LONG"
+ICT_CONFIRMED_SHORT = "ICT_CONFIRMED_SHORT"
 PENDING_ENTRY = "PENDING_ENTRY"
 POSITION_OPEN = "POSITION_OPEN"
 POSITION_CLOSED = "POSITION_CLOSED"
@@ -16,7 +18,16 @@ INVALIDATED = "INVALIDATED"
 EXPIRED = "EXPIRED"
 
 ACTIVE_MONITOR_STATES = frozenset(
-    {WAIT_LONG, WAIT_SHORT, READY_LONG, READY_SHORT, PENDING_ENTRY, POSITION_OPEN}
+    {
+        WAIT_LONG,
+        WAIT_SHORT,
+        READY_LONG,
+        READY_SHORT,
+        ICT_CONFIRMED_LONG,
+        ICT_CONFIRMED_SHORT,
+        PENDING_ENTRY,
+        POSITION_OPEN,
+    }
 )
 TERMINAL_STATES = frozenset({INVALIDATED, EXPIRED, POSITION_CLOSED, NO_TRADE})
 
@@ -26,6 +37,8 @@ SETUP_MODE_FLAT = "flat"
 
 # Machine-readable rejection / audit reason codes
 REASON_NET_RR_BELOW_MIN = "net_rr_below_min"
+REASON_ICT_CONFIRMED_BLOCKED_RR = "ict_confirmed_blocked_by_net_rr"
+DISPLAY_ICT_CONFIRMED_BLOCKED_RR = "ICT_CONFIRMED — BLOCKED_BY_NET_RR"
 REASON_MISSING_MARKET_DATA = "missing_market_data"
 REASON_STALE_MARKET_DATA = "stale_market_data"
 REASON_STRUCTURAL_INVALIDATION = "structural_invalidation"
@@ -48,6 +61,11 @@ def wait_state_for_direction(direction: str) -> str:
 def ready_state_for_direction(direction: str) -> str:
     d = direction.upper()
     return READY_LONG if d == "LONG" else READY_SHORT
+
+
+def ict_confirmed_state_for_direction(direction: str) -> str:
+    d = direction.upper()
+    return ICT_CONFIRMED_LONG if d == "LONG" else ICT_CONFIRMED_SHORT
 
 
 def direction_from_lifecycle(state: str) -> str | None:

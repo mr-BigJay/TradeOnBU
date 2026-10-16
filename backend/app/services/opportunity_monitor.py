@@ -16,18 +16,25 @@ from app.domain.setup_lifecycle import (
     PENDING_ENTRY,
     POSITION_CLOSED,
     POSITION_OPEN,
+    DISPLAY_ICT_CONFIRMED_BLOCKED_RR,
+    ICT_CONFIRMED_LONG,
+    ICT_CONFIRMED_SHORT,
     READY_LONG,
     READY_SHORT,
+    REASON_ICT_CONFIRMED_BLOCKED_RR,
     REASON_MISSING_CONFIRMATIONS,
     REASON_MISSING_MARKET_DATA,
     REASON_NET_RR_BELOW_MIN,
     REASON_SETUP_EXPIRED,
     REASON_STALE_MARKET_DATA,
+    REASON_AUTO_PAPER_DISABLED,
     REASON_STRUCTURAL_INVALIDATION,
     REASON_WALLET_NOT_INITIALIZED,
     WAIT_LONG,
     WAIT_SHORT,
+    ict_confirmed_state_for_direction,
     ready_state_for_direction,
+    wait_state_for_direction,
 )
 from app.domain.execution_order_policy import (
     reconcile_pending_ai_limit_order,
@@ -113,7 +120,15 @@ def _zone_bounds(setup: AiProposedSetup) -> tuple[float, float]:
 
 def _lifecycle_preserves_objective_confirmation(lifecycle: str | None) -> bool:
     lc = (lifecycle or "").upper()
-    return lc in (READY_LONG, READY_SHORT, PENDING_ENTRY, POSITION_OPEN, POSITION_CLOSED)
+    return lc in (
+        READY_LONG,
+        READY_SHORT,
+        ICT_CONFIRMED_LONG,
+        ICT_CONFIRMED_SHORT,
+        PENDING_ENTRY,
+        POSITION_OPEN,
+        POSITION_CLOSED,
+    )
 
 
 def _record_market_data_health(
@@ -323,6 +338,12 @@ async def _attempt_ready_paper_order(
     rr_ok, net_rr = await _net_rr_ok(session, setup)
     if not rr_ok:
         setup.last_rejection_reason = REASON_NET_RR_BELOW_MIN
+        setup.last_validation_result = {
+            "ok": False,
+            "reason": REASON_NET_RR_BELOW_MIN,
+            "net_rr": net_rr,
+            "ict_confirmed": True,
+        }
         return False
 
     validation = {
@@ -355,6 +376,15 @@ async def _attempt_ready_paper_order(
             )
             if not auto.get("created"):
                 setup.lifecycle_state = ready_state_for_direction(direction)
+                reason = auto.get("reason") or "auto_open_skipped"
+                if reason in ("auto_open_disabled", "auto_paper_disabled"):
+                    setup.last_rejection_reason = REASON_AUTO_PAPER_DISABLED
+                setup.last_validation_result = {
+                    "ok": True,
+                    "ready_for_paper": True,
+                    "order_skipped_reason": reason,
+                    "net_rr": net_rr,
+                }
                 return False
             setup.lifecycle_state = PENDING_ENTRY
             setup.last_validation_result = {
@@ -615,21 +645,73 @@ class OpportunityMonitorService:
                         "ok": False,
                         "reason": REASON_MISSING_CONFIRMATIONS,
                         "missing": progress_check.missing,
+                        "ict_confirmed": False,
                     }
                     continue
 
                 rr_ok, net_rr = await _net_rr_ok(session, setup)
                 if not rr_ok:
-                    setup.last_rejection_reason = REASON_NET_RR_BELOW_MIN
-                    setup.last_validation_result = {"ok": False, "reason": REASON_NET_RR_BELOW_MIN, "net_rr": net_rr}
+                    setup.lifecycle_state = ict_confirmed_state_for_direction(setup.direction)
+                    setup.last_rejection_reason = REASON_ICT_CONFIRMED_BLOCKED_RR
+                    setup.last_validation_result = {
+                        "ok": False,
+                        "reason": REASON_ICT_CONFIRMED_BLOCKED_RR,
+                        "display_status": DISPLAY_ICT_CONFIRMED_BLOCKED_RR,
+                        "net_rr": net_rr,
+                        "ict_confirmed": True,
+                        "missing": [],
+                    }
+                    await log_setup_event(
+                        session,
+                        setup_id=setup.setup_id,
+                        event_type="ict_confirmed_blocked_rr",
+                        payload={"net_rr": net_rr},
+                    )
                     continue
 
                 setup.lifecycle_state = ready_state_for_direction(setup.direction)
+                setup.last_rejection_reason = None
                 setup.last_validation_result = {"ok": True, "net_rr": net_rr, "promoted_at": now.isoformat()}
                 await log_setup_event(session, setup_id=setup.setup_id, event_type="promoted_ready", payload={"net_rr": net_rr})
                 summary["promoted"] += 1
 
+            if setup.lifecycle_state in (ICT_CONFIRMED_LONG, ICT_CONFIRMED_SHORT):
+                if not all_required_met(progress_check):
+                    setup.lifecycle_state = wait_state_for_direction(setup.direction)
+                    setup.last_rejection_reason = REASON_MISSING_CONFIRMATIONS
+                    continue
+                rr_ok, net_rr = await _net_rr_ok(session, setup)
+                if rr_ok:
+                    setup.lifecycle_state = ready_state_for_direction(setup.direction)
+                    setup.last_rejection_reason = None
+                    setup.last_validation_result = {"ok": True, "net_rr": net_rr, "promoted_at": now.isoformat()}
+                    summary["promoted"] += 1
+                else:
+                    setup.last_rejection_reason = REASON_ICT_CONFIRMED_BLOCKED_RR
+                    setup.last_validation_result = {
+                        "ok": False,
+                        "reason": REASON_ICT_CONFIRMED_BLOCKED_RR,
+                        "display_status": DISPLAY_ICT_CONFIRMED_BLOCKED_RR,
+                        "net_rr": net_rr,
+                        "ict_confirmed": True,
+                        "missing": [],
+                    }
+
             if setup.lifecycle_state in (READY_LONG, READY_SHORT):
+                if all_required_met(progress_check):
+                    rr_ok, net_rr = await _net_rr_ok(session, setup)
+                    if not rr_ok:
+                        setup.lifecycle_state = ict_confirmed_state_for_direction(setup.direction)
+                        setup.last_rejection_reason = REASON_ICT_CONFIRMED_BLOCKED_RR
+                        setup.last_validation_result = {
+                            "ok": False,
+                            "reason": REASON_ICT_CONFIRMED_BLOCKED_RR,
+                            "display_status": DISPLAY_ICT_CONFIRMED_BLOCKED_RR,
+                            "net_rr": net_rr,
+                            "ict_confirmed": True,
+                            "missing": [],
+                        }
+                        continue
                 if await _monitor_ready_structural_invalidation_before_order(
                     session, setup, bundle, now_ms, now, summary
                 ):
