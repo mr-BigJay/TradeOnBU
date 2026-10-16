@@ -50,7 +50,8 @@ async def test_fresh_cursor_uses_recent_window_only():
     )
     assert plan.mode == "recent_window"
     assert plan.needs_pagination is False
-    assert plan.from_ms > boundary - 50 * STEP
+    assert plan.from_ms == max(0, setup.monitor_cursor_ms - 48 * STEP)
+    assert plan.from_ms > boundary
 
     recent = KlineBundle(
         closed=_series(now_ms - 200 * STEP, 200),
@@ -69,6 +70,24 @@ async def test_fresh_cursor_uses_recent_window_only():
     assert meta["fetch_mode"] == "recent_window"
     covers, _ = setup_history_covers_cursor(plan=plan, closed_bars=bundle.closed, now_ms=now_ms)
     assert covers is True
+
+
+@pytest.mark.asyncio
+async def test_lag_150_uses_extended_window_from_cursor():
+    now_ms = 15_000 * STEP
+    cursor = now_ms - 150 * STEP
+    boundary = now_ms - 576 * STEP
+    plan = live_monitor_fetch_plan(
+        setup_id="lag150",
+        boundary_ms=boundary,
+        cursor_ms=cursor,
+        now_ms=now_ms,
+    )
+    assert plan.mode == "extended_window"
+    assert plan.needs_pagination is False
+    assert plan.max_bars == 150 + 48 + 15
+    assert plan.from_ms == cursor - 48 * STEP
+    assert plan.from_ms > boundary
 
 
 @pytest.mark.asyncio
@@ -229,14 +248,17 @@ async def test_monitor_restart_no_duplicate_confirmation_cursor():
     from unittest.mock import patch
 
     from app.db import SessionLocal, init_db
+    from app.domain.candle_utils import candle_close_ms
     from app.domain.setup_lifecycle import WAIT_LONG
     from app.models import AiProposedSetup
     from app.services.opportunity_monitor import OpportunityMonitorService
 
     await init_db()
-    now = datetime(2026, 10, 16, 12, 0, tzinfo=timezone.utc)
-    now_ms = int(now.timestamp() * 1000)
-    boundary = now_ms - 10 * STEP
+    boundary = 10_000 * STEP
+    last_open = boundary + 11 * STEP
+    cursor = last_open
+    now_ms = candle_close_ms(_candle(last_open), "5m") + 10_000
+    now = datetime.fromtimestamp(now_ms / 1000, tz=timezone.utc)
     async with SessionLocal() as session:
         setup = AiProposedSetup(
             setup_id="restart-1",
@@ -247,7 +269,7 @@ async def test_monitor_restart_no_duplicate_confirmation_cursor():
             lifecycle_state=WAIT_LONG,
             monitoring_enabled=True,
             monitor_from_ms=boundary,
-            monitor_cursor_ms=boundary + 4 * STEP,
+            monitor_cursor_ms=cursor,
             entry_price=100.0,
             entry_zone_low=99.0,
             entry_zone_high=101.0,
@@ -270,6 +292,7 @@ async def test_monitor_restart_no_duplicate_confirmation_cursor():
         ts_before = setup.confirmation_state["confirmation_timestamps"].copy()
 
         closed = _series(boundary, 12)
+        assert candle_close_ms(closed[-1], "5m") <= now_ms
         bundle = KlineBundle(
             closed=closed,
             forming=None,
@@ -281,8 +304,9 @@ async def test_monitor_restart_no_duplicate_confirmation_cursor():
         mon = OpportunityMonitorService()
         mon.market.fetch_kline_bundle = AsyncMock(return_value=bundle)  # type: ignore[method-assign]
         mon.market.fetch_historical_closed = AsyncMock(return_value=bundle)  # type: ignore[method-assign]
-        with patch("app.services.opportunity_monitor.is_market_data_fresh", return_value=(True, 5, 600)):
-            await mon.monitor_setups(session, symbol="BTCUSDT")
+        with patch("app.services.opportunity_monitor._utc_now", return_value=now):
+            with patch("app.services.opportunity_monitor.is_market_data_fresh", return_value=(True, 5, 600)):
+                await mon.monitor_setups(session, symbol="BTCUSDT")
         await session.refresh(setup)
         assert setup.confirmation_state["confirmation_timestamps"] == ts_before
         assert setup.monitor_cursor_ms == cursor_before

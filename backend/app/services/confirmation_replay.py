@@ -156,22 +156,79 @@ def _tokens_true_on_bar(
     return hits
 
 
+_ICT_MIN_WINDOW_BARS = 13  # liquidity_sweep / mss lookback (12) + evaluating bar
+
+
+def _synthesize_partial_5m_from_1m(partial_1m: list[Candle]) -> Candle:
+    first = partial_1m[0]
+    return Candle(
+        time_ms=first.time_ms,
+        open=first.open,
+        high=max(c.high for c in partial_1m),
+        low=min(c.low for c in partial_1m),
+        close=partial_1m[-1].close,
+        volume=sum((c.volume or 0.0) for c in partial_1m),
+    )
+
+
+def _ict_window_at_1m_close(
+    *,
+    closed_5m: list[Candle],
+    bar_5m: Candle,
+    closed_1m: list[Candle],
+    eval_1m_ms: int,
+) -> list[Candle]:
+    """5m ICT window available at a closed 1m instant (no future 1m/5m)."""
+    prior_5m = sorted([b for b in closed_5m if b.time_ms < bar_5m.time_ms], key=lambda c: c.time_ms)[-47:]
+    partial_1m = sorted(
+        [c for c in closed_1m if bar_5m.time_ms <= c.time_ms <= eval_1m_ms],
+        key=lambda c: c.time_ms,
+    )
+    if not partial_1m:
+        return prior_5m[-48:]
+    synth = _synthesize_partial_5m_from_1m(partial_1m)
+    return (prior_5m + [synth])[-48:]
+
+
 def _first_token_hit_ms_on_1m(
     *,
     direction: str,
     token: str,
-    intrabar_sorted: list[Candle],
+    closed_5m: list[Candle],
+    bar_5m: Candle,
+    closed_1m: list[Candle],
     zone_lo: float,
     zone_hi: float,
     structured: dict[str, Any],
+    now_ms: int,
 ) -> int | None:
-    for c in intrabar_sorted:
-        prior = [x for x in intrabar_sorted if x.time_ms <= c.time_ms]
-        if _tokens_true_on_bar(
+    from app.services.ict_confirmation_engine import _token_on_bar
+
+    close_5m = candle_close_ms(bar_5m, "5m")
+    for c in sorted(
+        [x for x in closed_1m if bar_5m.time_ms <= x.time_ms < close_5m],
+        key=lambda x: x.time_ms,
+    ):
+        if now_ms < candle_close_ms(c, "1m"):
+            continue
+        window = _ict_window_at_1m_close(
+            closed_5m=closed_5m,
+            bar_5m=bar_5m,
+            closed_1m=closed_1m,
+            eval_1m_ms=c.time_ms,
+        )
+        if token in ("entry_zone_touch", "order_block_retest"):
+            window_for_tok = [c]
+            bar = c
+        else:
+            if len(window) < _ICT_MIN_WINDOW_BARS:
+                continue
+            window_for_tok = window
+            bar = window[-1]
+        if _token_on_bar(
+            token,
             direction=direction,
-            sequence=[token],
-            bar=c,
-            window=prior,
+            window=window_for_tok,
             zone_lo=zone_lo,
             zone_hi=zone_hi,
             structured=structured,
@@ -186,6 +243,7 @@ def chronology_provable_on_1m(
     sequence: list[str],
     hits_on_5m: list[str],
     bar_5m: Candle,
+    closed_5m: list[Candle],
     closed_1m: list[Candle],
     zone_lo: float,
     zone_hi: float,
@@ -208,7 +266,19 @@ def chronology_provable_on_1m(
         if now_ms < candle_close_ms(c, "1m"):
             return False, "1m_bar_not_closed_at_eval_time"
 
-    intrabar = [slot_map[t] for t in expected_opens]
+    window_5m = [c for c in closed_5m if c.time_ms <= bar_5m.time_ms][-48:]
+    hits_at_5m_close = _tokens_true_on_bar(
+        direction=direction,
+        sequence=sequence,
+        bar=bar_5m,
+        window=window_5m,
+        zone_lo=zone_lo,
+        zone_hi=zone_hi,
+        structured=structured,
+    )
+    if sorted(hits_on_5m) != sorted(hits_at_5m_close):
+        return False, "5m_hits_inconsistent_with_close_window"
+
     ordered_hits = [t for t in sequence if t in hits_on_5m]
     if len(ordered_hits) < 2:
         return False, "single_token_on_5m"
@@ -218,10 +288,13 @@ def chronology_provable_on_1m(
         ms = _first_token_hit_ms_on_1m(
             direction=direction,
             token=tok,
-            intrabar_sorted=intrabar,
+            closed_5m=closed_5m,
+            bar_5m=bar_5m,
+            closed_1m=closed_1m,
             zone_lo=zone_lo,
             zone_hi=zone_hi,
             structured=structured,
+            now_ms=now_ms,
         )
         if ms is None:
             return False, f"token_{tok}_not_observed_on_1m"
@@ -271,6 +344,7 @@ def detect_same_5m_multi_token_candidates(
             sequence=sequence,
             hits_on_5m=hits,
             bar_5m=bar,
+            closed_5m=closed_5m,
             closed_1m=closed_1m,
             zone_lo=zone_lo,
             zone_hi=zone_hi,

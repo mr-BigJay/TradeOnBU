@@ -55,7 +55,11 @@ def live_monitor_fetch_plan(
     effective_cursor = cursor_ms if cursor_ms >= 0 else boundary_ms - step
     lag_bars = max(0, (now_ms - effective_cursor) // step)
     bars_needed = lag_bars + STRUCTURAL_CONTEXT_BARS + CLOSE_BUFFER_BARS
-    from_ms = max(0, min(boundary_ms, effective_cursor) - context_ms)
+    # Cursor-anchored backfill: scenario boundary gates confirmations only, not re-download of processed life.
+    if effective_cursor >= boundary_ms:
+        from_ms = max(0, effective_cursor - context_ms)
+    else:
+        from_ms = max(0, boundary_ms - context_ms)
 
     exceeds = bars_needed > MONITOR_PAGINATED_MAX_BARS
     capped_needed = min(bars_needed, MONITOR_PAGINATED_MAX_BARS)

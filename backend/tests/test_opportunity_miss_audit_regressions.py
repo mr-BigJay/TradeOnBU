@@ -161,6 +161,7 @@ def test_chronology_false_when_1m_incomplete():
         sequence=["entry_zone_touch", "mss"],
         hits_on_5m=["entry_zone_touch", "mss"],
         bar_5m=bar5,
+        closed_5m=[bar5],
         closed_1m=[_candle(1_000_000), _candle(1_060_000)],
         zone_lo=99.0,
         zone_hi=101.0,
