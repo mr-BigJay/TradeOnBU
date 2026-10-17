@@ -22,6 +22,7 @@ from app.services.chart_media import chart_artifact_meta, chart_path_for_run
 from app.services.chart_renderer import ChartRenderError, render_ict_chart_png
 from app.services.execution_model import ExecutionModel
 from app.services.siwc.credentials import get_access_token
+from app.services.siwc.model_profiles import get_model_profile, resolve_model_selection
 from app.services.siwc.responses_client import AnalysisResponse, OpenAIResponsesError, stream_analysis_response
 from app.services.ai_trader_instructions import ICT_TRADER_INSTRUCTIONS
 from app.services.ai_trader_report import finalize_user_report, prepare_structured_for_user_report
@@ -337,15 +338,9 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
     settings = get_effective_settings()
     symbol = settings.default_symbol
     draft = _RunDraft()
-    model = model_override or settings.ai_analysis_model
-    if model != settings.ai_analysis_model:
-        draft.error_code = "model_mismatch"
-        draft.error_detail = f"Only {settings.ai_analysis_model} is permitted for ICT analysis"
-        draft.completed_at = datetime.now(timezone.utc)
-        return draft
-
     async with SessionLocal() as session:
-        token, _, err = await get_access_token(session)
+        token, cred, err = await get_access_token(session)
+        preferred_model = cred.preferred_model if cred and get_model_profile(cred.preferred_model) else None
         await session.commit()
 
     if err or not token:
@@ -353,6 +348,19 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
         draft.error_detail = "ChatGPT plan not connected"
         draft.completed_at = datetime.now(timezone.utc)
         return draft
+
+    requested_model = model_override or preferred_model or settings.ai_analysis_model
+    profile = get_model_profile(requested_model)
+    if profile is None:
+        draft.error_code = "model_not_supported"
+        draft.error_detail = f"Model {requested_model} is not an allowed ICT analysis model"
+        draft.completed_at = datetime.now(timezone.utc)
+        return draft
+    model, reasoning_effort = resolve_model_selection(
+        model_override or preferred_model,
+        settings.ai_analysis_model,
+        settings.ai_reasoning_effort,
+    )
 
     draft.model_slug = model
     try:
@@ -377,7 +385,7 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
                 "memory": memory,
                 "requested_inference": {
                     "model": model,
-                    "reasoning_effort": "max",
+                    "reasoning_effort": reasoning_effort,
                     "trigger": trigger,
                 },
             },
@@ -388,7 +396,7 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
             model=model,
             instructions=INSTRUCTIONS,
             user_input=user_payload,
-            reasoning_effort=settings.ai_reasoning_effort,
+            reasoning_effort=reasoning_effort,
             timeout=settings.ai_response_timeout_seconds,
         )
         structured = _extract_json(analysis.text)

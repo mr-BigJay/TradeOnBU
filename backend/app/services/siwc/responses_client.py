@@ -55,17 +55,22 @@ def _extract_response_meta(response_obj: dict[str, Any]) -> tuple[str | None, st
 
 
 def _ensure_no_reasoning_downgrade(requested: str, response_obj: dict[str, Any]) -> None:
-    """Fail closed if API signals a lower reasoning effort than requested."""
-    if requested.lower() != "max":
-        return
+    """Fail closed if the API reports a different effort from the one requested."""
     reasoning = response_obj.get("reasoning") if response_obj else None
-    if isinstance(reasoning, dict):
-        effort = str(reasoning.get("effort") or "").lower()
-        if effort and effort != "max":
-            raise OpenAIResponsesError(
-                "reasoning_downgraded",
-                f"Requested reasoning effort max but response reported effort={effort}",
-            )
+    if not isinstance(reasoning, dict):
+        return
+    actual = str(reasoning.get("effort") or "").lower()
+    if not actual or actual == requested.lower():
+        return
+    if requested.lower() == "max":
+        raise OpenAIResponsesError(
+            "reasoning_downgraded",
+            f"Requested reasoning effort max but response reported effort={actual}",
+        )
+    raise OpenAIResponsesError(
+        "reasoning_effort_mismatch",
+        f"Requested reasoning effort {requested.lower()} but response reported effort={actual}",
+    )
 
 
 async def stream_analysis_response(
@@ -78,14 +83,14 @@ async def stream_analysis_response(
     timeout: float = 600.0,
 ) -> AnalysisResponse:
     effort = (reasoning_effort or "max").lower()
-    if effort != "max":
-        raise OpenAIResponsesError("invalid_reasoning_effort", f"Only reasoning effort max is allowed, got {effort}")
+    if effort not in {"none", "low", "medium", "high", "xhigh", "max"}:
+        raise OpenAIResponsesError("invalid_reasoning_effort", f"Unsupported reasoning effort: {effort}")
 
     payload: dict[str, Any] = {
         "model": model,
         "instructions": instructions,
         "input": [{"role": "user", "content": user_input}],
-        "reasoning": {"effort": "max"},
+        "reasoning": {"effort": effort},
         "store": False,
         "stream": True,
     }
@@ -104,7 +109,7 @@ async def stream_analysis_response(
                 code = "http_error"
                 lower = detail.lower()
                 if "reasoning" in lower and ("unsupported" in lower or "invalid" in lower or "not available" in lower):
-                    code = "reasoning_max_unavailable"
+                    code = "reasoning_effort_unavailable"
                 raise OpenAIResponsesError(code, detail)
             async for line in resp.aiter_lines():
                 if not line or not line.startswith("data: "):
@@ -130,7 +135,7 @@ async def stream_analysis_response(
                     raise OpenAIResponsesError(code, msg)
                 elif et == "response.completed":
                     response_obj = event.get("response") or {}
-                    _ensure_no_reasoning_downgrade("max", response_obj)
+                    _ensure_no_reasoning_downgrade(effort, response_obj)
                     resp_model, resp_id, meta = _extract_response_meta(response_obj)
                     confirmed_effort: str | None = None
                     reasoning = response_obj.get("reasoning") if response_obj else None
@@ -144,7 +149,7 @@ async def stream_analysis_response(
                     return AnalysisResponse(
                         text="".join(text_parts),
                         requested_model=model,
-                        requested_reasoning_effort="max",
+                        requested_reasoning_effort=effort,
                         response_model=resp_model,
                         confirmed_reasoning_effort=confirmed_effort,
                         response_id=resp_id,

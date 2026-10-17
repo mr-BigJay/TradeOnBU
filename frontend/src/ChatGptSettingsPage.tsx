@@ -15,6 +15,8 @@ type Status = {
   interval_minutes: number;
   ai_analysis_model?: string;
   ai_reasoning_effort?: string;
+  ai_model_options?: Array<{ model: string; label: string; reasoning_effort: string; description: string }>;
+  preferred_model?: string | null;
   unattended_consent?: boolean;
   hourly_enabled?: boolean;
 };
@@ -78,6 +80,8 @@ export function ChatGptSettingsPage() {
   const [consent, setConsent] = useState(false);
   const [scheduleEnabled, setScheduleEnabled] = useState(false);
   const [intervalMin, setIntervalMin] = useState(60);
+  const [selectedModel, setSelectedModel] = useState("gpt-6.1-sol");
+  const [availableModels, setAvailableModels] = useState<string[] | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
 
   const patchDraft = useCallback((patch: Partial<ConnectDraft>) => {
@@ -87,9 +91,23 @@ export function ChatGptSettingsPage() {
   const refresh = useCallback(async () => {
     const s = await apiFetch("/api/gui/chatgpt/status");
     setStatus(s);
+    setSelectedModel(s.ai_analysis_model || "gpt-6.1-sol");
     setConsent(!!s.unattended_consent);
     setScheduleEnabled(!!s.hourly_enabled);
     setIntervalMin(s.interval_minutes || 60);
+    if (s.connected && s.plan_usage_authorized) {
+      try {
+        const modelData = await apiFetch("/api/gui/chatgpt/models");
+        const ids = (modelData.models || [])
+          .map((model: { slug?: string }) => model.slug)
+          .filter((slug: unknown): slug is string => typeof slug === "string");
+        setAvailableModels(ids);
+      } catch {
+        setAvailableModels(null);
+      }
+    } else {
+      setAvailableModels(null);
+    }
   }, []);
 
   useEffect(() => {
@@ -185,6 +203,26 @@ export function ChatGptSettingsPage() {
     }
   }
 
+  async function saveModel() {
+    if (!connected) {
+      toast("ابتدا اتصال SIWC را برقرار کنید.", true);
+      return;
+    }
+    setBusy("model");
+    try {
+      const data = await apiFetch("/api/gui/chatgpt/model", {
+        method: "PUT",
+        body: JSON.stringify({ model: selectedModel }),
+      });
+      toast(`مدل ذخیره شد: ${data.model} · reasoning: ${String(data.reasoning_effort).toUpperCase()}`);
+      await refresh();
+    } catch (e) {
+      toast(e instanceof ApiError ? e.message : String(e), true);
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function saveSchedule() {
     if (scheduleEnabled && !consent) {
       toast("رضایت تحلیل خودکار را فعال کنید.", true);
@@ -203,6 +241,20 @@ export function ChatGptSettingsPage() {
   }
 
   const connected = status?.connected && status?.plan_usage_authorized;
+  const modelOptions = status?.ai_model_options || [
+    {
+      model: "gpt-6.1-sol",
+      label: "GPT-6.1 Sol · Max",
+      reasoning_effort: "max",
+      description: "مدل فعلی با سطح استدلال حداکثری.",
+    },
+    {
+      model: "gpt-6-luna",
+      label: "GPT-6 Luna · High",
+      reasoning_effort: "high",
+      description: "مدل اقتصادی‌تر در API رسمی؛ دسترسی و سهمیه SIWC به حساب شما بستگی دارد.",
+    },
+  ];
 
   return (
     <div className="page">
@@ -321,12 +373,46 @@ export function ChatGptSettingsPage() {
           saveSchedule();
         }}
       >
-        <h3 className="section-title">تحلیل خودکار (پیش‌فرض هر ۶۰ دقیقه)</h3>
-        {status?.ai_analysis_model && (
+        <h3 className="section-title">تحلیل خودکار و مدل</h3>
+        <p className="hint">تنظیم مدل مستقل از زمان‌بندی ذخیره می‌شود. تغییر مدل، تحلیل خودکار را اجرا نمی‌کند.</p>
+        <label>
+          مدل تحلیل هوش مصنوعی
+          <select
+            value={selectedModel}
+            onChange={(e) => setSelectedModel(e.target.value)}
+            disabled={!connected || !!busy}
+          >
+            {modelOptions.map((option) => {
+              const isCurrent = option.model === status?.ai_analysis_model;
+              const available = isCurrent || (availableModels !== null && availableModels.includes(option.model));
+              return (
+                <option key={option.model} value={option.model} disabled={!available}>
+                  {option.label}{available ? "" : " · در SIWC تأیید نشده"}
+                </option>
+              );
+            })}
+          </select>
+        </label>
+        <p className="hint">
+          {modelOptions.find((option) => option.model === selectedModel)?.description}
+        </p>
+        {connected && availableModels === null && (
+          <p className="hint">فهرست مدل‌های مجاز دریافت نشد؛ برای بررسی اتصال، «تست اتصال» را بزنید.</p>
+        )}
+        {connected && availableModels !== null && !availableModels.includes("gpt-6-luna") && selectedModel !== "gpt-6-luna" && (
           <p className="hint">
-            مدل: {status.ai_analysis_model} · reasoning: {(status.ai_reasoning_effort || "max").toUpperCase()}
+            مدل GPT-6 Luna در فهرست فعلی اتصال SIWC نیست؛ از طریق این اتصال هنوز قابل انتخاب نیست.
+            قیمت API رسمی تضمین‌کننده دسترسی با سهمیه ChatGPT نیست.
           </p>
         )}
+        <button
+          type="button"
+          className="secondary btn-block"
+          onClick={saveModel}
+          disabled={!connected || !!busy || selectedModel === status?.ai_analysis_model || (availableModels !== null && !availableModels.includes(selectedModel))}
+        >
+          {busy === "model" ? "در حال ذخیره مدل…" : "ذخیره مدل تحلیل"}
+        </button>
         <label className="toggle-row">
           <input type="checkbox" checked={consent} onChange={(e) => setConsent(e.target.checked)} />
           <span>اجازه استفاده از ChatGPT در پس‌زمینه</span>
