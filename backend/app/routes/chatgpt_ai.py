@@ -39,6 +39,7 @@ from app.services.chart_media import chart_path_for_run, resolve_chart_path
 from app.services.siwc.responses_client import list_models
 from app.services.openai_api_models import ApiModelAccessError, api_model_accessible
 from app.services.settings_store import get_plain, get_secret, set_plain, set_secret
+from app.services.ai_api_reasoning import effective_luna_api_effort
 from app.services.siwc.model_profiles import (
     get_model_profile,
     list_model_profiles,
@@ -85,6 +86,10 @@ class ProviderBody(BaseModel):
     provider: str = Field(pattern="^(siwc|openai_api)$")
 
 
+class ApiReasoningBody(BaseModel):
+    effort: str = Field(pattern="^(high|max)$")
+
+
 class ModelSelectionBody(BaseModel):
     model: str = Field(min_length=1, max_length=64)
 
@@ -111,7 +116,10 @@ async def status(session: AsyncSession = Depends(get_db), _=Depends(require_dash
     plan_ok = api_configured if is_api else siwc_plan_ok
     sched_ok, sched_reason = await scheduling_allowed(session)
     if is_api:
-        selected_model, selected_effort = "gpt-6-luna", "high"
+        selected_model = "gpt-6-luna"
+        selected_effort = effective_luna_api_effort(
+            await get_plain(session, "ai", "api_reasoning_effort", "high")
+        )
     else:
         selected_model, selected_effort = resolve_model_selection(
             cred.preferred_model if cred else None,
@@ -320,6 +328,20 @@ async def select_provider(
     return {"ok": True, "provider": body.provider}
 
 
+@router.put("/api/reasoning")
+async def save_api_reasoning(
+    body: ApiReasoningBody,
+    session: AsyncSession = Depends(get_db),
+    _=Depends(require_dashboard_access),
+):
+    provider = await get_plain(session, "ai", "provider", get_effective_settings().ai_provider)
+    if provider != "openai_api":
+        raise HTTPException(409, "api_provider_not_selected")
+    await set_plain(session, "ai", "api_reasoning_effort", body.effort)
+    await session.commit()
+    return {"ok": True, "model": "gpt-6-luna", "reasoning_effort": body.effort}
+
+
 @router.post("/api/test")
 async def test_paid_api(session: AsyncSession = Depends(get_db), _=Depends(require_dashboard_access)):
     settings = get_effective_settings()
@@ -335,7 +357,8 @@ async def test_paid_api(session: AsyncSession = Depends(get_db), _=Depends(requi
         raise HTTPException(502, str(exc)) from exc
     if not available:
         raise HTTPException(422, "gpt_6_luna_unavailable")
-    return {"ok": True, "provider": "openai_api", "model": "gpt-6-luna", "reasoning_effort": "high"}
+    effort = effective_luna_api_effort(await get_plain(session, "ai", "api_reasoning_effort", "high"))
+    return {"ok": True, "provider": "openai_api", "model": "gpt-6-luna", "reasoning_effort": effort}
 
 
 @router.put("/model")
@@ -346,7 +369,7 @@ async def put_model(
 ):
     provider = await get_plain(session, "ai", "provider", get_effective_settings().ai_provider)
     if provider == "openai_api":
-        raise HTTPException(409, "api_model_locked_to_gpt_6_luna_high")
+        raise HTTPException(409, "api_model_locked_to_gpt_6_luna")
     _, profile = await _save_model_preference(session, body.model)
     await session.commit()
     return {"ok": True, "model": profile["model"], "reasoning_effort": profile["reasoning_effort"]}
@@ -368,7 +391,7 @@ async def put_settings(body: SettingsBody, session: AsyncSession = Depends(get_d
         raise HTTPException(400, "Explicit unattended ChatGPT usage consent is required to enable scheduling")
     if body.preferred_model is not None:
         if provider == "openai_api":
-            raise HTTPException(409, "api_model_locked_to_gpt_6_luna_high")
+            raise HTTPException(409, "api_model_locked_to_gpt_6_luna")
         await _save_model_preference(session, body.preferred_model)
     cfg = await get_or_create_settings(session, apply_legacy_restore=False)
     cfg.enabled = body.enabled
