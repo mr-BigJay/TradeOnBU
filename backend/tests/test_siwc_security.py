@@ -451,3 +451,77 @@ async def test_should_run_scheduled_respects_interval(session):
     session.add(cred)
     await session.commit()
     assert await should_run_scheduled(session) is False
+
+
+def test_high_reasoning_effort_must_match_response():
+    from app.services.siwc.responses_client import _ensure_no_reasoning_downgrade
+
+    _ensure_no_reasoning_downgrade("high", {"reasoning": {"effort": "high"}})
+    with pytest.raises(OpenAIResponsesError) as exc:
+        _ensure_no_reasoning_downgrade("high", {"reasoning": {"effort": "max"}})
+    assert exc.value.code == "reasoning_effort_mismatch"
+
+
+@pytest.mark.asyncio
+async def test_model_selection_rejects_unknown_model(client):
+    response = await client.put("/api/gui/chatgpt/model", json={"model": "gpt-6-luna-max"})
+    assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_model_selection_requires_siwc_catalog_access(session, client):
+    credential = ChatGptCredential(
+        id=1,
+        client_id="oaiapp_test",
+        access_token_enc="encrypted-token",
+        scopes_json=["chatgpt.tokens.use.direct"],
+        preferred_model=None,
+    )
+    session.add(credential)
+    await session.commit()
+
+    with patch(
+        "app.routes.chatgpt_ai.get_access_token",
+        AsyncMock(return_value=("token", credential, None)),
+    ):
+        with patch(
+            "app.routes.chatgpt_ai.list_models",
+            AsyncMock(return_value=[{"slug": "gpt-6.1-sol", "display_name": "GPT-6.1 Sol"}]),
+        ):
+            response = await client.put("/api/gui/chatgpt/model", json={"model": "gpt-6-luna"})
+
+    assert response.status_code == 422
+    await session.refresh(credential)
+    assert credential.preferred_model is None
+
+
+@pytest.mark.asyncio
+async def test_model_selection_persists_luna_when_available(session, client):
+    credential = ChatGptCredential(
+        id=1,
+        client_id="oaiapp_test",
+        access_token_enc="encrypted-token",
+        scopes_json=["chatgpt.tokens.use.direct"],
+        preferred_model=None,
+    )
+    session.add(credential)
+    await session.commit()
+
+    with patch(
+        "app.routes.chatgpt_ai.get_access_token",
+        AsyncMock(return_value=("token", credential, None)),
+    ):
+        with patch(
+            "app.routes.chatgpt_ai.list_models",
+            AsyncMock(return_value=[
+                {"slug": "gpt-6.1-sol", "display_name": "GPT-6.1 Sol"},
+                {"slug": "gpt-6-luna", "display_name": "GPT-6 Luna"},
+            ]),
+        ):
+            response = await client.put("/api/gui/chatgpt/model", json={"model": "gpt-6-luna"})
+
+    assert response.status_code == 200
+    assert response.json()["model"] == "gpt-6-luna"
+    assert response.json()["reasoning_effort"] == "high"
+    await session.refresh(credential)
+    assert credential.preferred_model == "gpt-6-luna"

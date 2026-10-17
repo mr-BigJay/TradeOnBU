@@ -37,6 +37,11 @@ from app.services.siwc.oauth import (
 )
 from app.services.chart_media import chart_path_for_run, resolve_chart_path
 from app.services.siwc.responses_client import list_models
+from app.services.siwc.model_profiles import (
+    get_model_profile,
+    list_model_profiles,
+    resolve_model_selection,
+)
 from app.domain.tehran_time import format_tehran
 from app.services.ai_trader_report import structured_for_user_display
 
@@ -70,6 +75,10 @@ class SettingsBody(BaseModel):
     preferred_model: str | None = None
 
 
+class ModelSelectionBody(BaseModel):
+    model: str = Field(min_length=1, max_length=64)
+
+
 class ConnectCompleteBody(BaseModel):
     connect_token: str = Field(min_length=16, max_length=64)
     connect_secret: str = Field(min_length=16, max_length=128)
@@ -85,6 +94,12 @@ async def status(session: AsyncSession = Depends(get_db), _=Depends(require_dash
     connected = bool(cred and cred.client_id and cred.access_token_enc)
     plan_ok = bool(cred and has_plan_scope(cred.scopes_json or []))
     sched_ok, sched_reason = await scheduling_allowed(session)
+    effective = get_effective_settings()
+    selected_model, selected_effort = resolve_model_selection(
+        cred.preferred_model if cred else None,
+        effective.ai_analysis_model,
+        effective.ai_reasoning_effort,
+    )
     return {
         "connected": connected,
         "plan_usage_authorized": plan_ok,
@@ -109,8 +124,9 @@ async def status(session: AsyncSession = Depends(get_db), _=Depends(require_dash
         "connect_complete_url": "/api/gui/chatgpt/connect/complete",
         "connect_complete_public_url": "/api/public/siwc/connect/complete",
         "paper_only": True,
-        "ai_analysis_model": get_effective_settings().ai_analysis_model,
-        "ai_reasoning_effort": get_effective_settings().ai_reasoning_effort,
+        "ai_analysis_model": selected_model,
+        "ai_reasoning_effort": selected_effort,
+        "ai_model_options": list_model_profiles(),
         "schedule_default_minutes": DEFAULT_AI_INTERVAL_MINUTES,
         "schedule_min_minutes": MIN_AI_INTERVAL_MINUTES,
         "schedule_max_minutes": MAX_AI_INTERVAL_MINUTES,
@@ -209,6 +225,50 @@ async def models(session: AsyncSession = Depends(get_db), _=Depends(require_dash
     return {"models": await list_models(token)}
 
 
+async def _save_model_preference(session: AsyncSession, model: str) -> tuple[object, dict[str, str]]:
+    profile = get_model_profile(model)
+    if profile is None:
+        raise HTTPException(422, "unsupported_model")
+
+    token, cred, err = await get_access_token(session)
+    if err or not token or not cred:
+        raise HTTPException(400, err or "not_connected")
+
+    effective = get_effective_settings()
+    current_model, _ = resolve_model_selection(
+        cred.preferred_model,
+        effective.ai_analysis_model,
+        effective.ai_reasoning_effort,
+    )
+    if model != current_model:
+        try:
+            available_models = await list_models(token)
+        except Exception as exc:
+            raise HTTPException(502, f"Could not verify model availability: {exc}") from exc
+        available_slugs = {
+            str(item.get("slug") or "").strip()
+            for item in available_models
+            if isinstance(item, dict)
+        }
+        if model not in available_slugs:
+            raise HTTPException(422, f"model_not_available_via_siwc:{model}")
+
+    cred.preferred_model = model
+    await session.flush()
+    return cred, profile
+
+
+@router.put("/model")
+async def put_model(
+    body: ModelSelectionBody,
+    session: AsyncSession = Depends(get_db),
+    _=Depends(require_dashboard_access),
+):
+    _, profile = await _save_model_preference(session, body.model)
+    await session.commit()
+    return {"ok": True, "model": profile["model"], "reasoning_effort": profile["reasoning_effort"]}
+
+
 @router.put("/settings")
 async def put_settings(body: SettingsBody, session: AsyncSession = Depends(get_db), _=Depends(require_dashboard_access)):
     cred = await get_credential_row(session)
@@ -216,6 +276,8 @@ async def put_settings(body: SettingsBody, session: AsyncSession = Depends(get_d
         raise HTTPException(400, "Connect ChatGPT before enabling scheduling")
     if body.enabled and not body.unattended_consent:
         raise HTTPException(400, "Explicit unattended ChatGPT usage consent is required to enable scheduling")
+    if body.preferred_model is not None:
+        await _save_model_preference(session, body.preferred_model)
     cfg = await get_or_create_settings(session, apply_legacy_restore=False)
     cfg.enabled = body.enabled
     prev_interval = cfg.interval_minutes
@@ -238,8 +300,6 @@ async def put_settings(body: SettingsBody, session: AsyncSession = Depends(get_d
         cfg.unattended_consent = False
         cfg.unattended_consent_at = None
         cfg.enabled = False
-    if cred and body.preferred_model:
-        cred.preferred_model = body.preferred_model
     await session.commit()
     return {"ok": True}
 
