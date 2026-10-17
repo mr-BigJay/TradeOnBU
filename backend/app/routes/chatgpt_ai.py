@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_effective_settings
 from app.db import get_db
-from app.models import AiAnalysisRun, AiAnalysisSettings, SiwcConnectSession
+from app.models import AiAnalysisRun, AiAnalysisSettings, ChatGptCredential, SiwcConnectSession
 from app.routes.auth import require_dashboard_access
 from app.services.ai_analysis_scheduler import (
     DEFAULT_AI_INTERVAL_MINUTES,
@@ -225,7 +225,7 @@ async def models(session: AsyncSession = Depends(get_db), _=Depends(require_dash
     return {"models": await list_models(token)}
 
 
-async def _save_model_preference(session: AsyncSession, model: str) -> tuple[object, dict[str, str]]:
+async def _save_model_preference(session: AsyncSession, model: str) -> tuple[ChatGptCredential, dict[str, str]]:
     profile = get_model_profile(model)
     if profile is None:
         raise HTTPException(422, "unsupported_model")

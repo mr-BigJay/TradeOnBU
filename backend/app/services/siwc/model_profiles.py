@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Any
-
 DEFAULT_MODEL = "gpt-6.1-sol"
 REASONING_EFFORTS = frozenset({"none", "low", "medium", "high", "xhigh", "max"})
 

@@ -525,3 +525,63 @@ async def test_model_selection_persists_luna_when_available(session, client):
     assert response.json()["reasoning_effort"] == "high"
     await session.refresh(credential)
     assert credential.preferred_model == "gpt-6-luna"
+
+
+@pytest.mark.asyncio
+async def test_stream_analysis_response_sends_selected_high_effort():
+    from app.services.siwc.responses_client import stream_analysis_response
+
+    lines = [
+        'data: {"type":"response.output_text.delta","delta":"OK"}',
+        'data: {"type":"response.completed","response":{"id":"resp_luna_test","model":"gpt-6-luna","status":"completed","reasoning":{"effort":"high"},"usage":{"input_tokens":1,"output_tokens":1}}}',
+    ]
+
+    class FakeResp:
+        status_code = 200
+
+        async def aiter_lines(self):
+            for line in lines:
+                yield line
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            pass
+
+    class StreamCM:
+        async def __aenter__(self):
+            return FakeResp()
+
+        async def __aexit__(self, *_):
+            pass
+
+    class FakeClient:
+        payload = None
+
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def stream(self, *_args, **kwargs):
+            FakeClient.payload = kwargs.get("json")
+            return StreamCM()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            pass
+
+    with patch("app.services.siwc.responses_client.httpx.AsyncClient", FakeClient):
+        result = await stream_analysis_response(
+            "test-token",
+            model="gpt-6-luna",
+            instructions="test",
+            user_input="test",
+            reasoning_effort="high",
+        )
+
+    assert FakeClient.payload["reasoning"]["effort"] == "high"
+    assert result.requested_model == "gpt-6-luna"
+    assert result.requested_reasoning_effort == "high"
+    assert result.confirmed_reasoning_effort == "high"

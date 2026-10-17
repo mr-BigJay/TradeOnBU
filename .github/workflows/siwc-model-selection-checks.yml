@@ -1,0 +1,66 @@
+name: SIWC Model Selection Checks
+
+on:
+  pull_request:
+    paths:
+      - "backend/app/routes/chatgpt_ai.py"
+      - "backend/app/services/ai_ict_analysis.py"
+      - "backend/app/services/siwc/**"
+      - "backend/tests/test_siwc_security.py"
+      - "backend/tests/test_ai_model_profiles.py"
+      - "frontend/src/ChatGptSettingsPage.tsx"
+      - "frontend/package.json"
+      - "frontend/package-lock.json"
+      - ".github/workflows/siwc-model-selection-checks.yml"
+  push:
+    branches:
+      - feat/switch-gpt-6-luna-model
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install backend dependencies
+        run: pip install -r requirements.txt
+      - name: Prepare isolated test database directory
+        run: mkdir -p data
+      - name: Full backend regression
+        env:
+          SKIP_CONFIG_GUARD: "1"
+          DISABLE_APP_BACKGROUND: "1"
+          DATABASE_URL: sqlite+aiosqlite:///./data/test_tradeonbu.db
+        run: python3 -m pytest -q
+
+  frontend:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install pinned dependencies
+        run: npm ci
+      - name: TypeScript typecheck
+        run: npx tsc --noEmit
+      - name: Build frontend
+        run: npm run build
+      - name: React/Vitest tests
+        run: npm test
