@@ -109,7 +109,9 @@ async def test_limit_fill_only_after_order_creation_time():
                     interval="5m",
                 )
                 with patch.object(mon.market, "fetch_kline_bundle", AsyncMock(return_value=bundle5)):
-                    await mon.monitor_setups(session, symbol="BTCUSDT")
+                    ticker_ms = int(promote_at.timestamp() * 1000)
+                    with patch.object(mon.market, "fetch_ticker", AsyncMock(return_value=(100.25, ticker_ms))):
+                        await mon.monitor_setups(session, symbol="BTCUSDT")
         await session.commit()
         pos = (await session.execute(select(SimPosition).where(SimPosition.ai_setup_id == setup_id))).scalar_one()
         assert pos.status == "pending_entry"

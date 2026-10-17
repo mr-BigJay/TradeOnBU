@@ -161,6 +161,8 @@ def emit_scenario_evidence(timeline: ScenarioTimeline) -> None:
 
 class ScriptedMarket:
     def __init__(self) -> None:
+        self.ticker_price: float | None = None
+        self.ticker_time_ms: int | None = None
         self.closed_5m: list[Candle] = []
         self.closed_1m: list[Candle] = []
         self.catalog_5m: list[Candle] = []
@@ -202,7 +204,9 @@ class ScriptedMarket:
         if not candles:
             raise AssertionError("ScriptedMarket.fetch_ticker needs scripted closed candles")
         last = candles[-1]
-        return float(last.close), int(last.time_ms)
+        price = float(self.ticker_price if self.ticker_price is not None else last.close)
+        ts = int(self.ticker_time_ms if self.ticker_time_ms is not None else last.time_ms)
+        return price, ts
 
     async def fetch_historical_closed(
         self,
@@ -254,6 +258,8 @@ async def run_opportunity_monitor(
 ) -> dict[str, Any]:
     import datetime as real_datetime
 
+    if market.ticker_time_ms is None:
+        market.ticker_time_ms = now_ms
     mon = OpportunityMonitorService(market=market)  # type: ignore[arg-type]
     now_dt = ms_to_dt(now_ms)
     with patch("app.services.opportunity_monitor._utc_now", return_value=now_dt):

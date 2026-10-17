@@ -48,6 +48,15 @@ _PERSIAN_STATUS: dict[str, str] = {
 _REJECTION_FA: dict[str, str] = {
     "missing_confirmations": "در انتظار تأییدهای ICT (MSS، sweep، POI و …)",
     "net_rr_below_min": "نسبت ریسک به بازده خالص کافی نیست (حداقل ۱:۲)",
+    "net_rr_below_min_at_execution_price": "R:R خالص در قیمت اجرای واقعی زیر حد مجاز",
+    "entry_too_far_from_live": "فاصله قیمت از POI برای ورود منطقی نیست (بدون تعقیب)",
+    "max_concurrent_auto_paper": "فقط یک سفارش/پوزیشن خودکار هم‌زمان مجاز است",
+    "daily_auto_paper_cap_tehran": "سقف دو سفارش خودکار در روز (تهران) پر شده",
+    "low_fill_probability": "احتمال Fill واقع‌بینانه کافی نیست (فیلتر ورود)",
+    "low_win_probability": "کیفیت/احتمال موفقیت پس از Fill کافی نیست (فیلتر Win)",
+    "live_price_unavailable": "قیمت زنده معتبر نیست — سفارش ثبت نشد",
+    "live_price_stale": "قیمت زنده منقضی شده — سفارش ثبت نشد",
+    "live_price_unreliable_no_timestamp": "زمان‌مهر ticker نامعتبر — سفارش ثبت نشد",
     "ict_confirmed_blocked_by_net_rr": DISPLAY_ICT_CONFIRMED_BLOCKED_RR,
     "auto_paper_disabled": "ورود خودکار Paper غیرفعال است",
     "wallet_not_initialized": "موجودی Paper اولیه تنظیم نشده",
@@ -148,7 +157,132 @@ def _serialize_no_trade_run(row: AiAnalysisRun) -> dict:
 async def opportunities_summary(session: AsyncSession = Depends(get_db), _=Depends(require_dashboard_access)):
     """Real counts for dashboard summary cards (server-side, not limited to 200 rows)."""
     counts = await opp_list.fetch_summary_counts(session)
-    return {"counts": counts}
+    from app.services.paper_execution_metrics import build_execution_metrics
+
+    exec_kpi = await build_execution_metrics(session, period="30d")
+    return {
+        "counts": counts,
+        "execution_kpi": {
+            "executed_auto_paper": exec_kpi.get("executed_auto_paper"),
+            "monitoring": {
+                "ready_or_beyond_candidates": exec_kpi.get("monitoring", {}).get("ready_or_beyond_candidates"),
+                "skip_reason_counts": exec_kpi.get("monitoring", {}).get("skip_reason_counts"),
+            },
+            "data_quality_note": exec_kpi.get("data_quality_note"),
+        },
+    }
+
+
+@router.get("/execution-metrics")
+async def execution_metrics(
+    session: AsyncSession = Depends(get_db),
+    _=Depends(require_dashboard_access),
+    period: str = Query("30d", description="today|7d|30d"),
+):
+    from app.services.paper_execution_metrics import build_execution_metrics
+
+    if period not in ("today", "7d", "30d"):
+        raise HTTPException(status_code=400, detail="invalid period")
+    return await build_execution_metrics(session, period=period)
+
+
+@router.get("/selection-calibration")
+async def selection_calibration(
+    session: AsyncSession = Depends(get_db),
+    _=Depends(require_dashboard_access),
+):
+    """Calibration status for dual fill/win filters (no fabricated rates)."""
+    from app.domain.paper_execution_policy import (
+        MIN_CALIBRATION_CLOSED_SAMPLES,
+        MIN_CALIBRATION_ORDER_SAMPLES,
+        TARGET_FILL_RATE,
+        TARGET_WIN_RATE,
+    )
+    from app.services.paper_opportunity_calibration import (
+        fill_calibration_for_bucket,
+        win_calibration_for_bucket,
+    )
+
+    samples: list[dict] = []
+    for direction, order_type, bps in (
+        ("LONG", "market", 10.0),
+        ("LONG", "limit", 40.0),
+        ("SHORT", "market", 10.0),
+        ("SHORT", "limit", 40.0),
+    ):
+        fill_cal = await fill_calibration_for_bucket(
+            session, direction=direction, order_type=order_type, distance_bps=bps
+        )
+        win_cal = await win_calibration_for_bucket(
+            session, direction=direction, order_type=order_type, distance_bps=bps
+        )
+        samples.append(
+            {
+                "bucket": fill_cal.bucket,
+                "fill": {
+                    "status": fill_cal.status,
+                    "orders_sample": fill_cal.orders_sample,
+                    "filled_count": fill_cal.filled_count,
+                    "rate": fill_cal.fill_rate,
+                    "ci_low": fill_cal.ci_low,
+                    "ci_high": fill_cal.ci_high,
+                    "walk_forward_oos_rate": fill_cal.walk_forward_oos_rate,
+                    "walk_forward_oos_n": fill_cal.walk_forward_oos_n,
+                    "target": fill_cal.target,
+                },
+                "win": {
+                    "status": win_cal.status,
+                    "filled_sample": win_cal.filled_sample,
+                    "closed_sample": win_cal.closed_sample,
+                    "win_count": win_cal.win_count,
+                    "rate": win_cal.win_rate,
+                    "ci_low": win_cal.ci_low,
+                    "ci_high": win_cal.ci_high,
+                    "walk_forward_oos_rate": win_cal.walk_forward_oos_rate,
+                    "walk_forward_oos_n": win_cal.walk_forward_oos_n,
+                    "target": win_cal.target,
+                },
+            }
+        )
+    any_fill_cal = any(s["fill"]["status"] == "calibrated" for s in samples)
+    any_win_cal = any(s["win"]["status"] == "calibrated" for s in samples)
+    return {
+        "fill_calibration_mode": "calibrated" if any_fill_cal else "uncalibrated",
+        "win_calibration_mode": "calibrated" if any_win_cal else "uncalibrated",
+        "min_order_samples": MIN_CALIBRATION_ORDER_SAMPLES,
+        "min_closed_samples": MIN_CALIBRATION_CLOSED_SAMPLES,
+        "targets": {"fill_rate": TARGET_FILL_RATE, "win_rate": TARGET_WIN_RATE},
+        "buckets": samples,
+        "display_note_fa": "شاخص‌های structural feasibility/quality احتمال واقعی نیستند.",
+    }
+
+
+@router.get("/entry-policy-compare")
+async def entry_policy_compare(
+    session: AsyncSession = Depends(get_db),
+    _=Depends(require_dashboard_access),
+    symbol: str = "BTCUSDT",
+    limit: int = Query(300, ge=10, le=2000),
+):
+    """Entry-mode policy comparison on stored promotion snapshots — not a profit backtest."""
+    from app.services.paper_entry_policy_compare import compare_entry_policies_on_history
+
+    return await compare_entry_policies_on_history(session, symbol=symbol, limit=limit)
+
+
+@router.get("/execution-backtest")
+async def execution_backtest_legacy_alias(
+    session: AsyncSession = Depends(get_db),
+    _=Depends(require_dashboard_access),
+    symbol: str = "BTCUSDT",
+    limit: int = Query(300, ge=10, le=2000),
+):
+    """Deprecated alias for ``/entry-policy-compare``."""
+    from app.services.paper_entry_policy_compare import compare_entry_policies_on_history
+
+    body = await compare_entry_policies_on_history(session, symbol=symbol, limit=limit)
+    body["deprecated_endpoint"] = "use /api/gui/opportunities/entry-policy-compare"
+    return body
 
 
 @router.get("/items")

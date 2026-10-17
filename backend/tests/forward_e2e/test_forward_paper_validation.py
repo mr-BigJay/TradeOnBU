@@ -88,6 +88,8 @@ async def test_success_long_full_pipeline(forward_session):
     market = ScriptedMarket()
     market.closed_5m = closed_only_before(now_ms, closed_5m, "5m")
     market.catalog_5m = closed_5m
+    market.ticker_price = 100.25
+    market.ticker_time_ms = now_ms
     summary = await run_opportunity_monitor(session, market, now_ms=now_ms)
     await session.commit()
 
@@ -149,6 +151,8 @@ async def test_success_short_full_pipeline(forward_session):
     market = ScriptedMarket()
     market.closed_5m = closed_only_before(now_ms, closed_5m, "5m")
     market.catalog_5m = closed_5m
+    market.ticker_price = 99.5
+    market.ticker_time_ms = now_ms
     summary = await run_opportunity_monitor(session, market, now_ms=now_ms)
     await session.commit()
     setup = (await session.execute(select(AiProposedSetup).where(AiProposedSetup.setup_id == setup_id))).scalar_one()
@@ -159,6 +163,7 @@ async def test_success_short_full_pipeline(forward_session):
     pos = (await session.execute(select(SimPosition).where(SimPosition.ai_setup_id == setup_id))).scalar_one()
     order_ms = int(pos.monitor_from_ms)
     assert pos.status == "pending_entry"
+    assert pos.order_type == "limit"
 
     fill = await fill_pending_limit_order(session, market, setup_id=setup_id, closed_5m=closed_5m)
     assert fill.fill_bar_open_ms > order_ms

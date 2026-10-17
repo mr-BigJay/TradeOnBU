@@ -22,6 +22,8 @@ class OrderRequest:
     stop_loss: float
     take_profit: float
     ai_setup_id: str | None = None
+    order_extra: dict[str, Any] | None = None
+    min_net_rr: float | None = None
 
 
 @dataclass

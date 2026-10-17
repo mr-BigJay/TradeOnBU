@@ -132,14 +132,34 @@ class SimPositionService:
             raise PositionServiceError("موجودی آزاد کافی نیست")
 
         order_type = req.order_type.lower()
+        market_raw: float | None = None
         entry_for_risk = req.entry_price
         if order_type == "market":
-            mkt, _ = await self.market.fetch_ticker(req.symbol or "BTCUSDT")
-            entry_for_risk = mkt
-            if req.direction == "LONG" and not (req.stop_loss < mkt < req.take_profit):
+            market_raw, _ = await self.market.fetch_ticker(req.symbol or "BTCUSDT")
+            entry_for_risk = market_raw
+            if req.direction == "LONG" and not (req.stop_loss < market_raw < req.take_profit):
                 raise PositionServiceError("سطوح LONG با قیمت بازار سازگار نیست")
-            if req.direction == "SHORT" and not (req.take_profit < mkt < req.stop_loss):
+            if req.direction == "SHORT" and not (req.take_profit < market_raw < req.stop_loss):
                 raise PositionServiceError("سطوح SHORT با قیمت بازار سازگار نیست")
+        elif entry_for_risk is None:
+            raise PositionServiceError("قیمت ورود برای لیمیت لازم است")
+
+        if req.min_net_rr is not None:
+            from app.services.execution_model_sim import net_rr_for_entry
+
+            rr_entry = float(entry_for_risk)  # type: ignore[arg-type]
+            ok_rr, net_rr = net_rr_for_entry(
+                settings,
+                direction=req.direction,
+                entry=rr_entry,
+                sl=req.stop_loss,
+                tp=req.take_profit,
+                order_type=order_type,
+                min_net_rr=float(req.min_net_rr),
+            )
+            if not ok_rr:
+                raise PositionServiceError(f"net_rr_below_min:{net_rr:.3f}")
+
         if entry_for_risk is not None:
             await self._enforce_max_risk(session, settings, req, entry_for_risk)
 
@@ -166,6 +186,8 @@ class SimPositionService:
             entry_is_maker=order_type == "limit",
         )
         session.add(pos)
+        if req.order_extra:
+            pos.extra = {**(pos.extra or {}), **req.order_extra}
         await session.flush()
 
         await wallet.append_ledger(
@@ -180,8 +202,8 @@ class SimPositionService:
         await _log_event(session, pos, "ORDER_CREATED", None, pos.status, {"order_type": order_type})
 
         if order_type == "market":
-            price, _ = await self.market.fetch_ticker(pos.symbol)
-            await self._fill_entry(session, pos, settings, price, transition_suffix="market_open")
+            fill_raw = market_raw if market_raw is not None else (await self.market.fetch_ticker(pos.symbol))[0]
+            await self._fill_entry(session, pos, settings, fill_raw, transition_suffix="market_open")
 
         if commit:
             await session.commit()
@@ -275,6 +297,10 @@ class SimPositionService:
         await _log_event(session, pos, "ORDER_CANCELLED", pos.status, "cancelled")
         pos.status = "cancelled"
         pos.closed_at = datetime.now(timezone.utc)
+        if (pos.extra or {}).get("auto_paper"):
+            from app.services.paper_execution_budget import release_auto_paper_active_slot
+
+            await release_auto_paper_active_slot(session)
         if commit:
             await session.commit()
         return ExecutionResult(True, public_id, "لغو شد", {})
@@ -413,6 +439,9 @@ class SimPositionService:
                     "net_pnl_usdt": net,
                 },
             )
+            from app.services.paper_execution_budget import release_auto_paper_active_slot
+
+            await release_auto_paper_active_slot(session)
         from app.services.position.equity_service import record_equity_snapshot
 
         await record_equity_snapshot(session, self)

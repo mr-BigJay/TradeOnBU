@@ -332,12 +332,101 @@ async def _monitor_pending_structural_invalidation(
     setup.last_monitor_at = now
 
 
+async def _process_ready_paper_queue(
+    session: AsyncSession,
+    setup_ids: list[str],
+    *,
+    now: datetime,
+    summary: dict[str, Any],
+    live_price: float | None,
+    ticker_time_ms: int | None,
+    market: MarketDataService | None,
+) -> None:
+    """Pick the single best eligible READY setup; do not execute first-in-list."""
+    if not setup_ids:
+        return
+    from app.services.paper_auto_trading import preview_auto_paper_entry
+    from app.services.paper_opportunity_ranking import pick_best_candidate
+
+    seen: set[str] = set()
+    ordered_ids: list[str] = []
+    for sid in setup_ids:
+        if sid not in seen:
+            seen.add(sid)
+            ordered_ids.append(sid)
+
+    candidates: list[tuple[AiProposedSetup, Any]] = []
+    for sid in ordered_ids:
+        setup = (
+            await session.execute(select(AiProposedSetup).where(AiProposedSetup.setup_id == sid))
+        ).scalar_one_or_none()
+        if setup is None:
+            continue
+        if (setup.lifecycle_state or "").upper() not in (READY_LONG, READY_SHORT):
+            continue
+        validation = {
+            "ai_decision": setup.direction,
+            "acceptable_rr": True,
+            "objective_ready": True,
+        }
+        structured = dict(setup.structured_snapshot or {})
+        structured["decision"] = setup.direction
+        preview = await preview_auto_paper_entry(
+            session,
+            setup=setup,
+            validation=validation,
+            structured=structured,
+            symbol=setup.symbol,
+            require_ai_flags=False,
+            live_price=live_price,
+            ticker_time_ms=ticker_time_ms,
+            now=now,
+        )
+        if preview.get("eligible") and preview.get("rank"):
+            from app.services.paper_opportunity_ranking import RankBreakdown
+
+            rb = preview["rank"]
+            breakdown = RankBreakdown(
+                total=float(rb["total"]),
+                fill_feasibility=float(rb["fill_feasibility"]),
+                ict_quality=float(rb["ict_quality"]),
+                net_rr=float(rb["net_rr"]),
+                historical_edge=float(rb.get("historical_edge") or 0),
+                components=rb.get("components") or {},
+            )
+            candidates.append((setup, breakdown))
+
+    picked = pick_best_candidate(candidates)
+    if picked is None:
+        summary["ready_selection"] = {"attempted": False, "candidates": len(ordered_ids)}
+        return
+    best_setup, rank = picked
+    summary["ready_selection"] = {
+        "attempted": True,
+        "setup_id": best_setup.setup_id,
+        "rank_total": rank.total,
+        "candidates_ranked": len(candidates),
+    }
+    await _attempt_ready_paper_order(
+        session,
+        best_setup,
+        now=now,
+        summary=summary,
+        live_price=live_price,
+        ticker_time_ms=ticker_time_ms,
+        market=market,
+    )
+
+
 async def _attempt_ready_paper_order(
     session: AsyncSession,
     setup: AiProposedSetup,
     *,
     now: datetime,
     summary: dict[str, Any],
+    live_price: float | None = None,
+    ticker_time_ms: int | None = None,
+    market: MarketDataService | None = None,
 ) -> bool:
     """Create paper order while READY; transition to PENDING_ENTRY only on success (atomic savepoint)."""
     from app.services.conditional_revision import objective_confirmations_satisfied
@@ -405,6 +494,10 @@ async def _attempt_ready_paper_order(
                 symbol=setup.symbol,
                 commit=False,
                 require_ai_flags=False,
+                live_price=live_price,
+                ticker_time_ms=ticker_time_ms,
+                now=now,
+                market=market,
             )
             if not auto.get("created"):
                 setup.lifecycle_state = ready_state_for_direction(direction)
@@ -418,11 +511,24 @@ async def _attempt_ready_paper_order(
                     "net_rr": net_rr,
                 }
                 return False
-            setup.lifecycle_state = PENDING_ENTRY
+            from app.services.paper_auto_trading import sync_setup_lifecycle_after_auto_order
+            from app.services.position.position_service import SimPositionService
+
+            svc = SimPositionService(market=market)
+            pos = None
+            pid = auto.get("position_id")
+            if pid:
+                pos = await svc.get_position_by_public_id(session, str(pid))
+            if pos is not None:
+                await sync_setup_lifecycle_after_auto_order(session, setup, pos)
+            else:
+                setup.lifecycle_state = PENDING_ENTRY
             setup.last_validation_result = {
                 "ok": True,
                 "net_rr": net_rr,
                 "order_created_at": now.isoformat(),
+                "order_type": auto.get("order_type"),
+                "live_price_at_ready": live_price,
             }
             append_timeline_event(setup, "paper_order_created", net_rr=net_rr, at_ms=int(now.timestamp() * 1000))
             await log_setup_event(
@@ -530,6 +636,16 @@ class OpportunityMonitorService:
         )
         setups = list(result.scalars().all())
         summary: dict[str, Any] = {"checked": len(setups), "promoted": 0, "invalidated": 0, "expired": 0, "orders": 0}
+        ready_paper_queue: list[str] = []
+
+        ticker_time_ms: int | None = None
+        try:
+            live_price, ticker_time_ms = await self.market.fetch_ticker(symbol)
+        except Exception:
+            live_price = None
+            ticker_time_ms = None
+        summary["live_price"] = live_price
+        summary["ticker_time_ms"] = ticker_time_ms
 
         bundle, fetch_meta = await fetch_monitor_5m_bundle(self.market, symbol, setups, now_ms=now_ms)
         kline_limit = fetch_meta.get("aggregate_limit", 120)
@@ -710,7 +826,7 @@ class OpportunityMonitorService:
                         session, setup, bundle, now_ms, now, summary
                     ):
                         continue
-                    await _attempt_ready_paper_order(session, setup, now=now, summary=summary)
+                    ready_paper_queue.append(setup.setup_id)
                 continue
 
             zone_lo, zone_hi = _zone_bounds(setup)
@@ -810,7 +926,12 @@ class OpportunityMonitorService:
 
                 setup.lifecycle_state = ready_state_for_direction(setup.direction)
                 setup.last_rejection_reason = None
-                setup.last_validation_result = {"ok": True, "net_rr": net_rr, "promoted_at": now.isoformat()}
+                setup.last_validation_result = {
+                    "ok": True,
+                    "net_rr": net_rr,
+                    "promoted_at": now.isoformat(),
+                    "live_price_at_ready": live_price,
+                }
                 append_timeline_event(setup, "promoted_ready", net_rr=net_rr, at_ms=now_ms)
                 await log_setup_event(session, setup_id=setup.setup_id, event_type="promoted_ready", payload={"net_rr": net_rr})
                 summary["promoted"] += 1
@@ -824,7 +945,12 @@ class OpportunityMonitorService:
                 if rr_ok:
                     setup.lifecycle_state = ready_state_for_direction(setup.direction)
                     setup.last_rejection_reason = None
-                    setup.last_validation_result = {"ok": True, "net_rr": net_rr, "promoted_at": now.isoformat()}
+                    setup.last_validation_result = {
+                        "ok": True,
+                        "net_rr": net_rr,
+                        "promoted_at": now.isoformat(),
+                        "live_price_at_ready": live_price,
+                    }
                     summary["promoted"] += 1
                 else:
                     setup.last_rejection_reason = REASON_ICT_CONFIRMED_BLOCKED_RR
@@ -878,7 +1004,17 @@ class OpportunityMonitorService:
                     session, setup, bundle, now_ms, now, summary
                 ):
                     continue
-                await _attempt_ready_paper_order(session, setup, now=now, summary=summary)
+                ready_paper_queue.append(setup.setup_id)
+
+        await _process_ready_paper_queue(
+            session,
+            ready_paper_queue,
+            now=now,
+            summary=summary,
+            live_price=live_price,
+            ticker_time_ms=ticker_time_ms,
+            market=self.market,
+        )
 
         await session.flush()
         return summary
