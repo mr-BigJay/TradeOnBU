@@ -338,29 +338,47 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
     settings = get_effective_settings()
     symbol = settings.default_symbol
     draft = _RunDraft()
-    async with SessionLocal() as session:
-        token, cred, err = await get_access_token(session)
-        preferred_model = cred.preferred_model if cred and get_model_profile(cred.preferred_model) else None
-        await session.commit()
+    if settings.ai_provider == "openai_api":
+        # Paid API requires no OAuth/Subscription Sharing credentials.
+        token = settings.openai_api_key.strip()
+        if not token:
+            draft.error_code = "openai_api_key_missing"
+            draft.error_detail = "OpenAI API key is not configured on the server"
+            draft.completed_at = datetime.now(timezone.utc)
+            return draft
+        # Explicit Luna / High default for paid API, independent of SIWC preference.
+        requested_model = model_override or "gpt-6-luna"
+        profile = get_model_profile(requested_model)
+        if profile is None:
+            draft.error_code = "model_not_supported"
+            draft.error_detail = "Unsupported API model override"
+            draft.completed_at = datetime.now(timezone.utc)
+            return draft
+        model, reasoning_effort = profile["model"], profile["reasoning_effort"]
+    else:
+        async with SessionLocal() as session:
+            token, cred, err = await get_access_token(session)
+            preferred_model = cred.preferred_model if cred and get_model_profile(cred.preferred_model) else None
+            await session.commit()
 
-    if err or not token:
-        draft.error_code = err or "not_connected"
-        draft.error_detail = "ChatGPT plan not connected"
-        draft.completed_at = datetime.now(timezone.utc)
-        return draft
+        if err or not token:
+            draft.error_code = err or "not_connected"
+            draft.error_detail = "ChatGPT plan not connected"
+            draft.completed_at = datetime.now(timezone.utc)
+            return draft
 
-    requested_model = model_override or preferred_model or settings.ai_analysis_model
-    profile = get_model_profile(requested_model)
-    if profile is None:
-        draft.error_code = "model_not_supported"
-        draft.error_detail = f"Model {requested_model} is not an allowed ICT analysis model"
-        draft.completed_at = datetime.now(timezone.utc)
-        return draft
-    model, reasoning_effort = resolve_model_selection(
-        model_override or preferred_model,
-        settings.ai_analysis_model,
-        settings.ai_reasoning_effort,
-    )
+        requested_model = model_override or preferred_model or settings.ai_analysis_model
+        profile = get_model_profile(requested_model)
+        if profile is None:
+            draft.error_code = "model_not_supported"
+            draft.error_detail = f"Model {requested_model} is not an allowed ICT analysis model"
+            draft.completed_at = datetime.now(timezone.utc)
+            return draft
+        model, reasoning_effort = resolve_model_selection(
+            model_override or preferred_model,
+            settings.ai_analysis_model,
+            settings.ai_reasoning_effort,
+        )
 
     draft.model_slug = model
     try:
@@ -414,6 +432,7 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
             draft.error_detail = ",".join(safety["warnings"])
 
         inference_meta = {
+            "provider": settings.ai_provider,
             "requested_model": analysis.requested_model,
             "requested_reasoning_effort": analysis.requested_reasoning_effort,
             "confirmed_reasoning_effort": analysis.confirmed_reasoning_effort,

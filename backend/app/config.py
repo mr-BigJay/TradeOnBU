@@ -40,6 +40,9 @@ class Settings(BaseSettings):
 
     market_data_stale_seconds: int = 120
 
+    # Source: siwc (ChatGPT subscription) or openai_api (paid API).
+    ai_provider: str = "siwc"
+    openai_api_key: str = ""
     ai_analysis_model: str = "gpt-6.1-sol"
     ai_reasoning_effort: str = "max"
     ai_response_timeout_seconds: float = 600.0
@@ -57,6 +60,14 @@ class Settings(BaseSettings):
     admin_api_key: str = ""
     cors_allowed_origins: str = "http://127.0.0.1:8000,http://localhost:8000,http://localhost:5173"
     rate_limit_per_minute: int = 120
+
+    @field_validator("ai_provider")
+    @classmethod
+    def _check_ai_provider(cls, value: str) -> str:
+        value = str(value or "siwc").strip().lower()
+        if value not in {"siwc", "openai_api"}:
+            raise ValueError("AI_PROVIDER must be 'siwc' or 'openai_api'")
+        return value
 
     @field_validator("telegram_allowed_user_ids", mode="before")
     @classmethod

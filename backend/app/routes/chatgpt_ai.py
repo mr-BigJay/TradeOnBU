@@ -37,6 +37,7 @@ from app.services.siwc.oauth import (
 )
 from app.services.chart_media import chart_path_for_run, resolve_chart_path
 from app.services.siwc.responses_client import list_models
+from app.services.openai_api_models import ApiModelAccessError, api_model_accessible
 from app.services.siwc.model_profiles import (
     get_model_profile,
     list_model_profiles,
@@ -91,18 +92,28 @@ class ConnectCompleteBody(BaseModel):
 async def status(session: AsyncSession = Depends(get_db), _=Depends(require_dashboard_access)):
     cred = await get_credential_row(session)
     cfg = await get_or_create_settings(session, autocommit_migration=True)
-    connected = bool(cred and cred.client_id and cred.access_token_enc)
-    plan_ok = bool(cred and has_plan_scope(cred.scopes_json or []))
-    sched_ok, sched_reason = await scheduling_allowed(session)
     effective = get_effective_settings()
-    selected_model, selected_effort = resolve_model_selection(
-        cred.preferred_model if cred else None,
-        effective.ai_analysis_model,
-        effective.ai_reasoning_effort,
-    )
+    siwc_connected = bool(cred and cred.client_id and cred.access_token_enc)
+    siwc_plan_ok = bool(cred and has_plan_scope(cred.scopes_json or []))
+    api_configured = bool(effective.openai_api_key.strip())
+    is_api = effective.ai_provider == "openai_api"
+    connected = api_configured if is_api else siwc_connected
+    plan_ok = api_configured if is_api else siwc_plan_ok
+    sched_ok, sched_reason = await scheduling_allowed(session)
+    if is_api:
+        selected_model, selected_effort = "gpt-6-luna", "high"
+    else:
+        selected_model, selected_effort = resolve_model_selection(
+            cred.preferred_model if cred else None,
+            effective.ai_analysis_model,
+            effective.ai_reasoning_effort,
+        )
     return {
         "connected": connected,
         "plan_usage_authorized": plan_ok,
+        "ai_provider": effective.ai_provider,
+        "api_key_configured": api_configured,
+        "siwc_connected": siwc_connected,
         "email": cred.email if cred else None,
         "client_id_masked": (cred.client_id[:8] + "…") if cred and cred.client_id else None,
         "preferred_model": cred.preferred_model if cred else None,
@@ -219,6 +230,8 @@ async def disconnect_route(session: AsyncSession = Depends(get_db), _=Depends(re
 
 @router.get("/models")
 async def models(session: AsyncSession = Depends(get_db), _=Depends(require_dashboard_access)):
+    if get_effective_settings().ai_provider == "openai_api":
+        return {"models": [{"slug": "gpt-6-luna", "display_name": "GPT-6 Luna"}]}
     token, _, err = await get_access_token(session)
     if err or not token:
         raise HTTPException(400, err or "not_connected")
@@ -258,12 +271,30 @@ async def _save_model_preference(session: AsyncSession, model: str) -> tuple[Cha
     return cred, profile
 
 
+@router.post("/api/test")
+async def test_paid_api(_=Depends(require_dashboard_access)):
+    settings = get_effective_settings()
+    if settings.ai_provider != "openai_api":
+        raise HTTPException(400, "openai_api_not_selected")
+    if not settings.openai_api_key.strip():
+        raise HTTPException(400, "openai_api_key_missing")
+    try:
+        available = await api_model_accessible(settings.openai_api_key, "gpt-6-luna")
+    except ApiModelAccessError as exc:
+        raise HTTPException(502, str(exc)) from exc
+    if not available:
+        raise HTTPException(422, "gpt_6_luna_unavailable")
+    return {"ok": True, "provider": "openai_api", "model": "gpt-6-luna", "reasoning_effort": "high"}
+
+
 @router.put("/model")
 async def put_model(
     body: ModelSelectionBody,
     session: AsyncSession = Depends(get_db),
     _=Depends(require_dashboard_access),
 ):
+    if get_effective_settings().ai_provider == "openai_api":
+        raise HTTPException(409, "api_model_locked_to_gpt_6_luna_high")
     _, profile = await _save_model_preference(session, body.model)
     await session.commit()
     return {"ok": True, "model": profile["model"], "reasoning_effort": profile["reasoning_effort"]}
@@ -271,12 +302,19 @@ async def put_model(
 
 @router.put("/settings")
 async def put_settings(body: SettingsBody, session: AsyncSession = Depends(get_db), _=Depends(require_dashboard_access)):
-    cred = await get_credential_row(session)
-    if body.enabled and not (cred and cred.access_token_enc):
-        raise HTTPException(400, "Connect ChatGPT before enabling scheduling")
+    effective = get_effective_settings()
+    if effective.ai_provider == "openai_api":
+        if body.enabled and not effective.openai_api_key.strip():
+            raise HTTPException(400, "Configure OPENAI_API_KEY before enabling scheduling")
+    else:
+        cred = await get_credential_row(session)
+        if body.enabled and not (cred and cred.access_token_enc):
+            raise HTTPException(400, "Connect ChatGPT before enabling scheduling")
     if body.enabled and not body.unattended_consent:
         raise HTTPException(400, "Explicit unattended ChatGPT usage consent is required to enable scheduling")
     if body.preferred_model is not None:
+        if effective.ai_provider == "openai_api":
+            raise HTTPException(409, "api_model_locked_to_gpt_6_luna_high")
         await _save_model_preference(session, body.preferred_model)
     cfg = await get_or_create_settings(session, apply_legacy_restore=False)
     cfg.enabled = body.enabled

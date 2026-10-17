@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_effective_settings
 from app.db import SessionLocal
 from app.models import AiAnalysisSettings, SystemState
 from app.services.siwc.credentials import get_credential_row
@@ -154,6 +155,11 @@ async def scheduling_allowed(
         return False, "unattended_consent_required"
     if not cfg.enabled:
         return False, "scheduling_disabled"
+    settings = get_effective_settings()
+    if settings.ai_provider == "openai_api":
+        if not settings.openai_api_key.strip():
+            return False, "openai_api_key_missing"
+        return True, None
     cred = await get_credential_row(session)
     if not cred or not cred.access_token_enc:
         return False, "not_connected"

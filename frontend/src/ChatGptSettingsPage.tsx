@@ -8,6 +8,8 @@ const DRAFT_KEY = "tradeonbu_siwc_connect_draft";
 type Status = {
   connected: boolean;
   plan_usage_authorized: boolean;
+  ai_provider?: "siwc" | "openai_api";
+  api_key_configured?: boolean;
   email?: string;
   scheduling_active: boolean;
   next_run_at?: string;
@@ -95,7 +97,9 @@ export function ChatGptSettingsPage() {
     setConsent(!!s.unattended_consent);
     setScheduleEnabled(!!s.hourly_enabled);
     setIntervalMin(s.interval_minutes || 60);
-    if (s.connected && s.plan_usage_authorized) {
+    if (s.ai_provider === "openai_api") {
+      setAvailableModels(["gpt-6-luna"]);
+    } else if (s.connected && s.plan_usage_authorized) {
       try {
         const modelData = await apiFetch("/api/gui/chatgpt/models");
         const ids = (modelData.models || [])
@@ -192,9 +196,14 @@ export function ChatGptSettingsPage() {
   async function testConnection() {
     setBusy("test");
     try {
-      const data = await apiFetch("/api/gui/chatgpt/connect/test", { method: "POST" });
-      const names = (data.sample_models || []).map((m: { id?: string }) => m.id || m).join(", ");
-      toast(`تست موفق — ${data.model_count} مدل${names ? `: ${names}` : ""}.`);
+      if (status?.ai_provider === "openai_api") {
+        const data = await apiFetch("/api/gui/chatgpt/api/test", { method: "POST" });
+        toast(`اتصال API معتبر است: ${data.model} / ${data.reasoning_effort}`);
+      } else {
+        const data = await apiFetch("/api/gui/chatgpt/connect/test", { method: "POST" });
+        const names = (data.sample_models || []).map((m: { id?: string }) => m.id || m).join(", ");
+        toast(`تست موفق — ${data.model_count} مدل${names ? `: ${names}` : ""}.`);
+      }
       await refresh();
     } catch (e) {
       toast(e instanceof ApiError ? e.message : String(e), true);
@@ -259,35 +268,42 @@ export function ChatGptSettingsPage() {
   return (
     <div className="page">
       <header className="page-header">
-        <h1>ChatGPT Plus</h1>
-        <p className="hint">اتصال رسمی SIWC · بدون API key</p>
+        <h1>تنظیمات تحلیل هوش مصنوعی</h1>
+        <p className="hint">{status?.ai_provider === "openai_api" ? "OpenAI API · مستقل از سهمیه ChatGPT" : "اتصال SIWC · اشتراک ChatGPT"}</p>
       </header>
 
       {msg && <p className={`toast ${msgError ? "toast-error" : "toast-ok"}`}>{msg}</p>}
 
       <div className="card status-card">
-        <span className={`status-pill ${connected ? "on" : "off"}`}>{connected ? "متصل" : "قطع"}</span>
-        {status?.email && <p className="status-email">{status.email}</p>}
+        <span className={`status-pill ${connected ? "on" : "off"}`}>{connected ? "پیکربندی شده" : "قطع"}</span>
+        {status?.ai_provider === "openai_api" ? (
+          <p className="hint">کلید API فقط در .env سرور قرار دارد و اینجا نمایش داده نمی‌شود. مدل: GPT-6 Luna / High.</p>
+        ) : status?.email ? <p className="status-email">{status.email}</p> : null}
         <div className="stack-btns">
-          <button
+          {status?.ai_provider !== "openai_api" && <button
             type="button"
             className="secondary btn-block"
             onClick={() => apiFetch("/api/gui/chatgpt/disconnect", { method: "POST" }).then(refresh)}
           >
             قطع اتصال
-          </button>
+          </button>}
           <button
             type="button"
             className="btn-primary btn-block"
             onClick={testConnection}
             disabled={!!busy || !status?.connected}
           >
-            {busy === "test" ? "در حال تست…" : "تست اتصال"}
+            {busy === "test" ? "در حال تست…" : status?.ai_provider === "openai_api" ? "تست کلید API و Luna" : "تست اتصال"}
           </button>
         </div>
       </div>
 
-      <div className="card connect-panel">
+      {status?.ai_provider === "openai_api" ? (
+        <div className="card connect-panel">
+          <h3 className="section-title">اتصال API فعال</h3>
+          <p className="hint">از طریق /opt/tradeonbu/.env مقدار AI_PROVIDER=openai_api و OPENAI_API_KEY را روی VPS تنظیم کنید؛ هیچ کلیدی را در این صفحه یا GitHub وارد نکنید.</p>
+        </div>
+      ) : <div className="card connect-panel">
         <h3 className="section-title">پارامترهای OAuth</h3>
         <p className="hint">
           «تولید خودکار» یک جلسه ۱۵ دقیقه‌ای روی سرور می‌سازد. می‌توانید مقادیر را دستی ویرایش یا از helper کپی کنید؛
@@ -364,7 +380,7 @@ export function ChatGptSettingsPage() {
         >
           {busy === "complete" ? "در حال اتصال…" : "تکمیل اتصال"}
         </button>
-      </div>
+      </div>}
 
       <form
         className="card form-stack"
@@ -377,10 +393,11 @@ export function ChatGptSettingsPage() {
         <p className="hint">تنظیم مدل مستقل از زمان‌بندی ذخیره می‌شود. تغییر مدل، تحلیل خودکار را اجرا نمی‌کند.</p>
         <label>
           مدل تحلیل هوش مصنوعی
+          {status?.ai_provider === "openai_api" && <p className="hint">در حالت API مدل روی Luna / High ثابت است و هزینه بر اساس مصرف محاسبه می‌شود.</p>}
           <select
             value={selectedModel}
             onChange={(e) => setSelectedModel(e.target.value)}
-            disabled={!connected || !!busy}
+            disabled={!connected || !!busy || status?.ai_provider === "openai_api"}
           >
             {modelOptions.map((option) => {
               const isCurrent = option.model === status?.ai_analysis_model;
@@ -409,13 +426,13 @@ export function ChatGptSettingsPage() {
           type="button"
           className="secondary btn-block"
           onClick={saveModel}
-          disabled={!connected || !!busy || selectedModel === status?.ai_analysis_model || (availableModels !== null && !availableModels.includes(selectedModel))}
+          disabled={!connected || !!busy || status?.ai_provider === "openai_api" || selectedModel === status?.ai_analysis_model || (availableModels !== null && !availableModels.includes(selectedModel))}
         >
           {busy === "model" ? "در حال ذخیره مدل…" : "ذخیره مدل تحلیل"}
         </button>
         <label className="toggle-row">
           <input type="checkbox" checked={consent} onChange={(e) => setConsent(e.target.checked)} />
-          <span>اجازه استفاده از ChatGPT در پس‌زمینه</span>
+          <span>اجازه تحلیل خودکار در پس‌زمینه (در حالت API دارای هزینه)</span>
         </label>
         <label className="toggle-row">
           <input
