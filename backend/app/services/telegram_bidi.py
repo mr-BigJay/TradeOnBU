@@ -8,8 +8,24 @@ PDI = "\u2069"  # PDI — pop directional isolate
 
 _PERSIAN_RE = re.compile(r"[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]")
 
-# Exact English labels from trader report (order: longest first for prefix match).
+# English legacy and Persian report headings (longest labels first).
 _REPORT_LABELS: tuple[str, ...] = (
+    "ریسک به بازده پیشنهادی (R:R):",
+    "حد ضرر پیشنهادی (SL):",
+    "هدف اول پیشنهادی (TP1):",
+    "بررسی ستاپ قبلی:",
+    "دلایل تحلیل ICT:",
+    "تأیید لازم:",
+    "ابطال سناریو:",
+    "تأیید ورود:",
+    "روند بازار:",
+    "محدوده ورود:",
+    "جهت احتمالی:",
+    "دلایل عدم ورود:",
+    "در انتظار:",
+    "تصمیم:",
+    "قیمت:",
+    "ورود:",
     "Confirmation required:",
     "ICT Reason:",
     "Invalidation:",

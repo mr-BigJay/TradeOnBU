@@ -22,18 +22,18 @@ def format_ai_chart_caption(
     decision_u = (decision or "NO_TRADE").upper()
     lines = [
         f"TradeOnBU · {symbol} · {interval}",
-        f"Decision: {decision_u}",
+        f"تصمیم: {decision_u}",
     ]
     if live_price and live_price > 0:
-        lines.append(f"Live: {live_price:,.2f}")
+        lines.append(f"قیمت لحظه‌ای: {live_price:,.2f}")
     if trade_levels and decision_u in ("LONG", "SHORT"):
-        for key, label in (("entry", "Entry"), ("stop_loss", "SL"), ("take_profit", "TP")):
+        for key, label in (("entry", "ورود"), ("stop_loss", "حد ضرر (SL)"), ("take_profit", "حد سود (TP)")):
             val = trade_levels.get(key)
             if val is not None and val > 0:
                 lines.append(f"{label}: {val:,.2f}")
     if analyzed_at:
-        lines.append(f"Analysis (Tehran): {format_tehran(analyzed_at)}")
-    lines.append("Paper only — no live orders.")
+        lines.append(f"زمان تحلیل (تهران): {format_tehran(analyzed_at)}")
+    lines.append("فقط معاملات آزمایشی؛ هیچ سفارش واقعی ثبت نمی‌شود.")
     text = "\n".join(lines)
     return text[:max_len]
 
@@ -50,14 +50,14 @@ def build_ai_telegram_header(
 
     if trade_like and not approved:
         return (
-            "تحلیل ICT — INVALID / NOT APPROVED / NO TRADE (Paper)\n"
-            f"AI suggestion: {decision_u} — rejected by backend validator.\n"
-            f"Reasons: {', '.join(reasons) if reasons else 'validation_failed'}\n"
-            "Levels below are NOT actionable. Paper only — do not trade.\n\n"
+            "تحلیل ICT — سیگنال تأیید نشده (معامله آزمایشی)\n"
+            f"پیشنهاد مدل: {decision_u}؛ اعتبارسنجی سامانه آن را رد کرده است.\n"
+            f"دلایل: {', '.join(reasons) if reasons else 'عدم تأیید اعتبارسنجی'}\n"
+            "سطوح زیر قابل اقدام نیستند. هیچ سفارش واقعی ثبت نمی‌شود.\n\n"
         )
     if decision_u == "NO_TRADE" or not trade_like:
-        return "تحلیل ICT — NO TRADE (Paper)\n\n"
-    return f"تحلیل ICT — VALID / validator APPROVED {decision_u} (Paper)\n\n"
+        return "تحلیل ICT — عدم ورود (معامله آزمایشی)\n\n"
+    return f"تحلیل ICT — تأیید شده: {decision_u} (معامله آزمایشی)\n\n"
 
 
 def split_ai_telegram_report_messages(

@@ -70,9 +70,35 @@ INTERNAL CONTEXT (memory, lifecycle, tracking):
 
 USER REPORT: TradeOnBU builds report from your JSON. Leave `report_fa` empty.
 
-previous_setups_review_fa — max 2 lines, example:
-Previous setup: LONG 83250
-Result: Not triggered
+### MANDATORY PERSIAN (FA-IR) OUTPUT RULE
+Write EVERY user-facing narrative value in fluent Persian (فارسی ایران), not English.
+This includes ALL text fields: market_bias, ict_liquidity, ict_structure,
+ict_displacement, ict_fvg, ict_order_block, entry_confirmation,
+confirmation_required, conditional_invalidation, invalidation_condition,
+trade_reason, no_trade_reasons, waiting_for, tp_liquidity_target,
+invalidation_structure_note, previous_setups_review_fa,
+previous_setup_line, previous_result_line, proposed_setup.thesis_fa,
+and any other natural-language explanations. Do not use English sentences.
+Do not sacrifice precise ICT reasoning: explain structure, liquidity, POI,
+invalidation and confidence in detailed natural Persian.
+
+Keep JSON field names, fixed enum values, directions (LONG/SHORT/WAIT/NO_TRADE),
+ICT acronyms (MSS, BOS, SSL, BSL, FVG, OB, POI), market symbols, timeframes,
+numeric prices, percentages and risk/reward ratios EXACTLY as required.
+Persian strings may include those short technical acronyms and numeric values.
+
+Correct examples:
+market_bias: "نزولی؛ ساختار 4H و 1H فشار فروش را تأیید می‌کند."
+ict_liquidity: "نقدینگی فروش (SSL) زیر کف 81373 جمع‌آوری شد."
+confirmation_required: "برای ورود، واکنش قیمت به POI و تأیید MSS در 5m لازم است."
+conditional_invalidation: "در صورت شکست سطح ابطال ساختاری، این سناریو نامعتبر است."
+previous_setups_review_fa: "ستاپ قبلی: SHORT در 81467.5؛ نتیجه: پوزیشن کاغذی باز است."
+proposed_setup.thesis_fa: "پس از جمع‌آوری نقدینگی و تغییر ساختار، ورود مشروط بررسی شود."
+Always leave report_fa an empty string; the server assembles the Persian report.
+
+previous_setups_review_fa — max 2 lines, Persian example:
+ستاپ قبلی: LONG در 83250
+نتیجه: ورود فعال نشد
 
 Required JSON (single ```json block):
 
@@ -116,4 +142,6 @@ proposed_setup { new_setup, continue_setup_id, distinct_new_setup, thesis_fa, ex
 chart_overlays { liquidity_levels[], fvg_zones[], bos, mss }.
 
 Persistence: new_setup=true for new trades; continue_setup_id to revise. decision matches LONG/SHORT when proposing levels.
+
+REMINDER: All explanatory prose must be Persian (فارسی); JSON keys and fixed ICT/trade codes must remain unchanged.
 """

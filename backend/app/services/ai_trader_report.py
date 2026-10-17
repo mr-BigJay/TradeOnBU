@@ -196,6 +196,16 @@ def _truncate_words(text: str, max_words: int = MAX_REPORT_WORDS) -> str:
     return " ".join(words[:max_words]) + "…"
 
 
+def _format_decision(code: str) -> str:
+    normalized = code.upper().replace("_", " ").strip()
+    return {
+        "LONG": "لانگ (LONG)",
+        "SHORT": "شورت (SHORT)",
+        "WAIT": "انتظار (WAIT)",
+        "NO TRADE": "عدم ورود (NO_TRADE)",
+    }.get(normalized, code)
+
+
 def _format_bias(data: dict[str, Any]) -> str:
     raw = data.get("market_bias") or data.get("bias") or ""
     cleaned = sanitize_trader_text(_s(raw))
@@ -203,9 +213,11 @@ def _format_bias(data: dict[str, Any]) -> str:
         return "—"
     low = cleaned.lower()
     if "bull" in low:
-        return "Bullish"
+        return "صعودی"
     if "bear" in low:
-        return "Bearish"
+        return "نزولی"
+    if low in {"neutral", "range", "sideways", "ranging"}:
+        return "خنثی / رنج"
     return cleaned[:80]
 
 
@@ -215,39 +227,39 @@ def build_trader_report_fa(data: dict[str, Any], *, symbol: str = "BTCUSDT") -> 
     price = data.get("current_price") or data.get("reference_price")
 
     lines: list[str] = [
-        f"{symbol} ICT Analysis",
+        f"تحلیل ICT برای {symbol}",
         "",
-        "Price:",
+        "قیمت:",
         _s(price) or "—",
         "",
-        "Bias:",
+        "روند بازار:",
         _format_bias(data),
         "",
-        "Decision:",
-        final_decision,
+        "تصمیم:",
+        _format_decision(final_decision),
         "",
     ]
 
     if trade_decision in ("LONG", "SHORT"):
         lines.extend(
             [
-                "Setup:",
-                trade_decision,
+                "ستاپ:",
+                _format_decision(trade_decision),
                 "",
-                "Entry:",
+                "ورود:",
                 _entry_zone(data) or "—",
                 "",
-                "SL:",
+                "حد ضرر (SL):",
                 _s(data.get("stop_loss")) or "—",
                 "",
-                "TP1:",
+                "هدف اول (TP1):",
                 _s(data.get("take_profit")) or "—",
                 "",
             ]
         )
         if data.get("take_profit_2") is not None:
-            lines.extend(["TP2:", _s(data.get("take_profit_2")), ""])
-        lines.extend(["RR:", _s(data.get("risk_reward")) or "—", ""])
+            lines.extend(["هدف دوم (TP2):", _s(data.get("take_profit_2")), ""])
+        lines.extend(["ریسک به بازده (R:R):", _s(data.get("risk_reward")) or "—", ""])
 
         bullets = [
             data.get("ict_liquidity") or data.get("liquidity"),
@@ -256,7 +268,7 @@ def build_trader_report_fa(data: dict[str, Any], *, symbol: str = "BTCUSDT") -> 
             data.get("ict_fvg") or data.get("fvg"),
             data.get("ict_order_block") or data.get("order_blocks"),
         ]
-        lines.extend(["ICT Reason:", ""])
+        lines.extend(["دلایل تحلیل ICT:", ""])
         for val in bullets:
             text = sanitize_trader_text(_s(val))
             if text and not _contains_forbidden(text):
@@ -265,11 +277,11 @@ def build_trader_report_fa(data: dict[str, Any], *, symbol: str = "BTCUSDT") -> 
 
         confirm = sanitize_trader_text(_s(data.get("entry_confirmation") or data.get("entry_trigger")))
         if confirm and not _contains_forbidden(confirm):
-            lines.extend(["Entry Confirmation:", confirm, ""])
+            lines.extend(["تأیید ورود:", confirm, ""])
 
         inv = sanitize_trader_text(_s(data.get("invalidation_condition") or data.get("invalidation")))
         if inv and not _contains_forbidden(inv):
-            lines.extend(["Invalidation:", inv, ""])
+            lines.extend(["ابطال سناریو:", inv, ""])
 
     elif _has_conditional_plan(data):
         pot = _s(data.get("potential_direction")).upper()
@@ -277,12 +289,12 @@ def build_trader_report_fa(data: dict[str, Any], *, symbol: str = "BTCUSDT") -> 
             pot = "—"
         lines.extend(
             [
-                "Conditional Setup:",
+                "سناریوی مشروط:",
                 "",
-                "Potential Direction:",
-                pot,
+                "جهت احتمالی:",
+                _format_decision(pot) if pot != "—" else pot,
                 "",
-                "Entry Zone:",
+                "محدوده ورود:",
                 _entry_zone(data, conditional=True) or "—",
                 "",
             ]
@@ -291,18 +303,18 @@ def build_trader_report_fa(data: dict[str, Any], *, symbol: str = "BTCUSDT") -> 
             _s(data.get("confirmation_required") or data.get("entry_confirmation"))
         )
         if confirm and not _contains_forbidden(confirm):
-            lines.extend(["Confirmation required:", confirm, ""])
+            lines.extend(["تأیید لازم:", confirm, ""])
         inv = sanitize_trader_text(
             _s(data.get("conditional_invalidation") or data.get("invalidation_condition") or data.get("invalidation"))
         )
         if inv and not _contains_forbidden(inv):
-            lines.extend(["Invalidation:", inv, ""])
+            lines.extend(["ابطال سناریو:", inv, ""])
         if data.get("stop_loss") is not None:
-            lines.extend(["Planned SL:", _s(data.get("stop_loss")), ""])
+            lines.extend(["حد ضرر پیشنهادی (SL):", _s(data.get("stop_loss")), ""])
         if data.get("take_profit") is not None:
-            lines.extend(["Planned TP1:", _s(data.get("take_profit")), ""])
+            lines.extend(["هدف اول پیشنهادی (TP1):", _s(data.get("take_profit")), ""])
         if data.get("risk_reward"):
-            lines.extend(["Planned RR:", _s(data.get("risk_reward")), ""])
+            lines.extend(["ریسک به بازده پیشنهادی (R:R):", _s(data.get("risk_reward")), ""])
 
         bullets = [
             data.get("ict_liquidity") or data.get("liquidity"),
@@ -311,7 +323,7 @@ def build_trader_report_fa(data: dict[str, Any], *, symbol: str = "BTCUSDT") -> 
             data.get("ict_fvg") or data.get("fvg"),
             data.get("ict_order_block") or data.get("order_blocks"),
         ]
-        lines.extend(["ICT Reason:", ""])
+        lines.extend(["دلایل تحلیل ICT:", ""])
         for val in bullets:
             text = sanitize_trader_text(_s(val))
             if text and not _contains_forbidden(text):
@@ -321,7 +333,7 @@ def build_trader_report_fa(data: dict[str, Any], *, symbol: str = "BTCUSDT") -> 
     elif "NO" in trade_decision:
         reasons = data.get("no_trade_reasons") or []
         if isinstance(reasons, list) and reasons:
-            lines.append("Reason:")
+            lines.append("دلایل عدم ورود:")
             for r in reasons[:3]:
                 t = sanitize_trader_text(_s(r))
                 if t and not _contains_forbidden(t):
@@ -329,7 +341,7 @@ def build_trader_report_fa(data: dict[str, Any], *, symbol: str = "BTCUSDT") -> 
             lines.append("")
         waiting = data.get("waiting_for") or []
         if isinstance(waiting, list) and waiting:
-            lines.append("Waiting for:")
+            lines.append("در انتظار:")
             for w in waiting[:5]:
                 t = sanitize_trader_text(_s(w))
                 if t and not _contains_forbidden(t):
@@ -338,7 +350,7 @@ def build_trader_report_fa(data: dict[str, Any], *, symbol: str = "BTCUSDT") -> 
 
     prev = sanitize_trader_text(_s(data.get("previous_setups_review_fa")))
     if prev and not _contains_forbidden(prev):
-        lines.extend(["Previous Setup Review:", prev, ""])
+        lines.extend(["بررسی ستاپ قبلی:", prev, ""])
 
     report = drop_forbidden_lines("\n".join(lines).strip())
     report = _truncate_words(sanitize_trader_text(report))
