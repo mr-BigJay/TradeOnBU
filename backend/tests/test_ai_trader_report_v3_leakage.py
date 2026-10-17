@@ -63,8 +63,8 @@ def test_mock_audit_model_response_produces_clean_report():
     report = finalize_user_report(contaminated, symbol="BTCUSDT", live=83505.0)
     _assert_clean(report)
     assert is_report_clean(report)
-    assert report.startswith("BTCUSDT ICT Analysis")
-    assert "Decision:" in report
+    assert report.startswith("تحلیل ICT برای BTCUSDT")
+    assert "تصمیم:" in report
     assert "LONG" in report
     assert "83200 - 83300" in report
     assert "Previous setup: LONG 83250" in report
@@ -82,4 +82,4 @@ def test_no_trade_max_three_reasons_in_report():
     }
     report = finalize_user_report(data, symbol="BTCUSDT", live=100)
     _assert_clean(report)
-    assert report.count("- a") + report.count("- b") + report.count("- c") <= 3 or "Reason:" in report
+    assert report.count("- a") + report.count("- b") + report.count("- c") <= 3 or "دلایل عدم ورود:" in report
