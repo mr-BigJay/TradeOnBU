@@ -22,6 +22,7 @@ from app.services.chart_media import chart_artifact_meta, chart_path_for_run
 from app.services.chart_renderer import ChartRenderError, render_ict_chart_png
 from app.services.execution_model import ExecutionModel
 from app.services.siwc.credentials import get_access_token
+from app.services.settings_store import get_plain, get_secret
 from app.services.siwc.model_profiles import get_model_profile, resolve_model_selection
 from app.services.siwc.responses_client import AnalysisResponse, OpenAIResponsesError, stream_analysis_response
 from app.services.ai_trader_instructions import ICT_TRADER_INSTRUCTIONS
@@ -338,9 +339,12 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
     settings = get_effective_settings()
     symbol = settings.default_symbol
     draft = _RunDraft()
-    if settings.ai_provider == "openai_api":
+    async with SessionLocal() as session:
+        provider = await get_plain(session, "ai", "provider", settings.ai_provider)
+        stored_key = await get_secret(session, "ai", "openai_api_key")
+    if provider == "openai_api":
         # Paid API requires no OAuth/Subscription Sharing credentials.
-        token = settings.openai_api_key.strip()
+        token = stored_key or settings.openai_api_key.strip()
         if not token:
             draft.error_code = "openai_api_key_missing"
             draft.error_detail = "OpenAI API key is not configured on the server"
@@ -432,7 +436,7 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
             draft.error_detail = ",".join(safety["warnings"])
 
         inference_meta = {
-            "provider": settings.ai_provider,
+            "provider": provider,
             "requested_model": analysis.requested_model,
             "requested_reasoning_effort": analysis.requested_reasoning_effort,
             "confirmed_reasoning_effort": analysis.confirmed_reasoning_effort,

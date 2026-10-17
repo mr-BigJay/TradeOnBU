@@ -38,6 +38,7 @@ from app.services.siwc.oauth import (
 from app.services.chart_media import chart_path_for_run, resolve_chart_path
 from app.services.siwc.responses_client import list_models
 from app.services.openai_api_models import ApiModelAccessError, api_model_accessible
+from app.services.settings_store import get_plain, get_secret, set_plain, set_secret
 from app.services.siwc.model_profiles import (
     get_model_profile,
     list_model_profiles,
@@ -76,6 +77,14 @@ class SettingsBody(BaseModel):
     preferred_model: str | None = None
 
 
+class ApiKeyBody(BaseModel):
+    api_key: str = Field(min_length=20, max_length=300)
+
+
+class ProviderBody(BaseModel):
+    provider: str = Field(pattern="^(siwc|openai_api)$")
+
+
 class ModelSelectionBody(BaseModel):
     model: str = Field(min_length=1, max_length=64)
 
@@ -95,8 +104,9 @@ async def status(session: AsyncSession = Depends(get_db), _=Depends(require_dash
     effective = get_effective_settings()
     siwc_connected = bool(cred and cred.client_id and cred.access_token_enc)
     siwc_plan_ok = bool(cred and has_plan_scope(cred.scopes_json or []))
-    api_configured = bool(effective.openai_api_key.strip())
-    is_api = effective.ai_provider == "openai_api"
+    api_configured = bool(effective.openai_api_key.strip() or await get_secret(session, "ai", "openai_api_key"))
+    selected_provider = await get_plain(session, "ai", "provider", effective.ai_provider)
+    is_api = selected_provider == "openai_api"
     connected = api_configured if is_api else siwc_connected
     plan_ok = api_configured if is_api else siwc_plan_ok
     sched_ok, sched_reason = await scheduling_allowed(session)
@@ -111,7 +121,7 @@ async def status(session: AsyncSession = Depends(get_db), _=Depends(require_dash
     return {
         "connected": connected,
         "plan_usage_authorized": plan_ok,
-        "ai_provider": effective.ai_provider,
+        "ai_provider": selected_provider,
         "api_key_configured": api_configured,
         "siwc_connected": siwc_connected,
         "email": cred.email if cred else None,
@@ -230,7 +240,9 @@ async def disconnect_route(session: AsyncSession = Depends(get_db), _=Depends(re
 
 @router.get("/models")
 async def models(session: AsyncSession = Depends(get_db), _=Depends(require_dashboard_access)):
-    if get_effective_settings().ai_provider == "openai_api":
+    effective = get_effective_settings()
+    provider = await get_plain(session, "ai", "provider", effective.ai_provider)
+    if provider == "openai_api":
         return {"models": [{"slug": "gpt-6-luna", "display_name": "GPT-6 Luna"}]}
     token, _, err = await get_access_token(session)
     if err or not token:
@@ -271,15 +283,54 @@ async def _save_model_preference(session: AsyncSession, model: str) -> tuple[Cha
     return cred, profile
 
 
+@router.put("/api/key")
+async def save_api_key(
+    body: ApiKeyBody,
+    session: AsyncSession = Depends(get_db),
+    _=Depends(require_dashboard_access),
+):
+    key = body.api_key.strip()
+    if not key.startswith("sk-"):
+        raise HTTPException(422, "invalid_api_key_format")
+    await set_secret(session, "ai", "openai_api_key", key)
+    await session.commit()
+    return {"ok": True, "api_key_configured": True}
+
+
+@router.delete("/api/key")
+async def remove_api_key(session: AsyncSession = Depends(get_db), _=Depends(require_dashboard_access)):
+    await set_secret(session, "ai", "openai_api_key", "")
+    # Removing a dashboard-managed key should never trigger a fallback to SIWC.
+    await session.commit()
+    return {"ok": True}
+
+
+@router.put("/provider")
+async def select_provider(
+    body: ProviderBody,
+    session: AsyncSession = Depends(get_db),
+    _=Depends(require_dashboard_access),
+):
+    if body.provider == "openai_api":
+        key = await get_secret(session, "ai", "openai_api_key") or get_effective_settings().openai_api_key.strip()
+        if not key:
+            raise HTTPException(400, "openai_api_key_missing")
+    await set_plain(session, "ai", "provider", body.provider)
+    await session.commit()
+    return {"ok": True, "provider": body.provider}
+
+
 @router.post("/api/test")
-async def test_paid_api(_=Depends(require_dashboard_access)):
+async def test_paid_api(session: AsyncSession = Depends(get_db), _=Depends(require_dashboard_access)):
     settings = get_effective_settings()
-    if settings.ai_provider != "openai_api":
+    provider = await get_plain(session, "ai", "provider", settings.ai_provider)
+    if provider != "openai_api":
         raise HTTPException(400, "openai_api_not_selected")
-    if not settings.openai_api_key.strip():
+    key = await get_secret(session, "ai", "openai_api_key") or settings.openai_api_key.strip()
+    if not key:
         raise HTTPException(400, "openai_api_key_missing")
     try:
-        available = await api_model_accessible(settings.openai_api_key, "gpt-6-luna")
+        available = await api_model_accessible(key, "gpt-6-luna")
     except ApiModelAccessError as exc:
         raise HTTPException(502, str(exc)) from exc
     if not available:
@@ -293,7 +344,8 @@ async def put_model(
     session: AsyncSession = Depends(get_db),
     _=Depends(require_dashboard_access),
 ):
-    if get_effective_settings().ai_provider == "openai_api":
+    provider = await get_plain(session, "ai", "provider", get_effective_settings().ai_provider)
+    if provider == "openai_api":
         raise HTTPException(409, "api_model_locked_to_gpt_6_luna_high")
     _, profile = await _save_model_preference(session, body.model)
     await session.commit()
@@ -303,8 +355,10 @@ async def put_model(
 @router.put("/settings")
 async def put_settings(body: SettingsBody, session: AsyncSession = Depends(get_db), _=Depends(require_dashboard_access)):
     effective = get_effective_settings()
-    if effective.ai_provider == "openai_api":
-        if body.enabled and not effective.openai_api_key.strip():
+    provider = await get_plain(session, "ai", "provider", effective.ai_provider)
+    api_key = await get_secret(session, "ai", "openai_api_key") or effective.openai_api_key.strip()
+    if provider == "openai_api":
+        if body.enabled and not api_key:
             raise HTTPException(400, "Configure OPENAI_API_KEY before enabling scheduling")
     else:
         cred = await get_credential_row(session)
@@ -313,7 +367,7 @@ async def put_settings(body: SettingsBody, session: AsyncSession = Depends(get_d
     if body.enabled and not body.unattended_consent:
         raise HTTPException(400, "Explicit unattended ChatGPT usage consent is required to enable scheduling")
     if body.preferred_model is not None:
-        if effective.ai_provider == "openai_api":
+        if provider == "openai_api":
             raise HTTPException(409, "api_model_locked_to_gpt_6_luna_high")
         await _save_model_preference(session, body.preferred_model)
     cfg = await get_or_create_settings(session, apply_legacy_restore=False)

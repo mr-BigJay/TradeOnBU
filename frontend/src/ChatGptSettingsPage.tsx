@@ -85,6 +85,8 @@ export function ChatGptSettingsPage() {
   const [selectedModel, setSelectedModel] = useState("gpt-6.1-sol");
   const [availableModels, setAvailableModels] = useState<string[] | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [providerChoice, setProviderChoice] = useState<"siwc" | "openai_api">("siwc");
+  const [newApiKey, setNewApiKey] = useState("");
 
   const patchDraft = useCallback((patch: Partial<ConnectDraft>) => {
     setDraft((prev) => ({ ...prev, ...patch }));
@@ -93,6 +95,7 @@ export function ChatGptSettingsPage() {
   const refresh = useCallback(async () => {
     const s = await apiFetch("/api/gui/chatgpt/status");
     setStatus(s);
+    setProviderChoice(s.ai_provider || "siwc");
     setSelectedModel(s.ai_analysis_model || "gpt-6.1-sol");
     setConsent(!!s.unattended_consent);
     setScheduleEnabled(!!s.hourly_enabled);
@@ -232,6 +235,55 @@ export function ChatGptSettingsPage() {
     }
   }
 
+  async function saveApiKey() {
+    if (!newApiKey.trim()) return;
+    setBusy("api-key");
+    try {
+      await apiFetch("/api/gui/chatgpt/api/key", {
+        method: "PUT",
+        body: JSON.stringify({ api_key: newApiKey.trim() }),
+      });
+      setNewApiKey("");
+      toast("کلید API به‌صورت رمزنگاری‌شده روی سرور ذخیره شد.");
+      await refresh();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e), true);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function saveProvider() {
+    setBusy("provider");
+    try {
+      await apiFetch("/api/gui/chatgpt/provider", {
+        method: "PUT",
+        body: JSON.stringify({ provider: providerChoice }),
+      });
+      toast("منبع تحلیل تغییر کرد.");
+      await refresh();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e), true);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function removeApiKey() {
+    if (!window.confirm("کلید API ذخیره‌شده حذف شود؟")) return;
+    setBusy("api-key");
+    try {
+      await apiFetch("/api/gui/chatgpt/api/key", { method: "DELETE" });
+      setNewApiKey("");
+      toast("کلید API ذخیره‌شده حذف شد.");
+      await refresh();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e), true);
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function saveSchedule() {
     if (scheduleEnabled && !consent) {
       toast("رضایت تحلیل خودکار را فعال کنید.", true);
@@ -298,10 +350,38 @@ export function ChatGptSettingsPage() {
         </div>
       </div>
 
+      <div className="card form-stack">
+        <h3 className="section-title">مدیریت اتصال هوش مصنوعی</h3>
+        <label>
+          منبع تحلیل
+          <select value={providerChoice} onChange={(e) => setProviderChoice(e.target.value as "siwc" | "openai_api")} disabled={!!busy}>
+            <option value="siwc">ChatGPT SIWC</option>
+            <option value="openai_api">OpenAI API · GPT-6 Luna / High</option>
+          </select>
+        </label>
+        <button type="button" className="secondary btn-block" onClick={saveProvider} disabled={!!busy || providerChoice === status?.ai_provider}>
+          ذخیره منبع تحلیل
+        </button>
+        <label>
+          API Key جدید (فقط هنگام ثبت)
+          <input type="password" value={newApiKey} autoComplete="new-password"
+            onChange={(e) => setNewApiKey(e.target.value)} placeholder="sk-proj-…" />
+        </label>
+        <p className="hint">کلید فقط برای ارسال رمزنگاری‌شده به سرور استفاده می‌شود و در مرورگر ذخیره نمی‌شود. وضعیت: {status?.api_key_configured ? "ثبت‌شده" : "ثبت‌نشده"}</p>
+        <div className="row-btns">
+          <button type="button" className="btn-primary" onClick={saveApiKey} disabled={!!busy || !newApiKey.trim()}>
+            {busy === "api-key" ? "در حال ذخیره…" : "ذخیره API Key"}
+          </button>
+          <button type="button" className="secondary" onClick={removeApiKey} disabled={!!busy || !status?.api_key_configured}>
+            حذف کلید
+          </button>
+        </div>
+      </div>
+
       {status?.ai_provider === "openai_api" ? (
         <div className="card connect-panel">
           <h3 className="section-title">اتصال API فعال</h3>
-          <p className="hint">از طریق /opt/tradeonbu/.env مقدار AI_PROVIDER=openai_api و OPENAI_API_KEY را روی VPS تنظیم کنید؛ هیچ کلیدی را در این صفحه یا GitHub وارد نکنید.</p>
+          <p className="hint">کلید و منبع تحلیل را می‌توانی از فرم بالای همین صفحه ذخیره کنی؛ نیازی به ویرایش .env نیست.</p>
         </div>
       ) : <div className="card connect-panel">
         <h3 className="section-title">پارامترهای OAuth</h3>
