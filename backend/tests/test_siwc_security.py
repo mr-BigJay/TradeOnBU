@@ -507,10 +507,7 @@ async def test_model_selection_persists_luna_when_available(session, client):
     session.add(credential)
     await session.commit()
 
-    with patch(
-        "app.routes.chatgpt_ai.get_access_token",
-        AsyncMock(return_value=("token", credential, None)),
-    ):
+    with patch("app.services.siwc.credentials.decrypt_value", return_value="token"):
         with patch(
             "app.routes.chatgpt_ai.list_models",
             AsyncMock(return_value=[

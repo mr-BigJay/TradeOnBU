@@ -340,7 +340,7 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
     draft = _RunDraft()
     async with SessionLocal() as session:
         token, cred, err = await get_access_token(session)
-        preferred_model = cred.preferred_model if cred else None
+        preferred_model = cred.preferred_model if cred and get_model_profile(cred.preferred_model) else None
         await session.commit()
 
     if err or not token:
