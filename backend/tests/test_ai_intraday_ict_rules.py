@@ -28,7 +28,7 @@ def test_conditional_setup_rendered_when_immediate_entry_not_valid():
     assert "83100 - 83200" in report
     assert "تأیید لازم:" in report
     assert "MSS" in report
-    assert "Invalidation:" in report
+    assert "ابطال سناریو:" in report
 
 
 def test_instructions_require_conditional_plan_not_only_no_trade():
