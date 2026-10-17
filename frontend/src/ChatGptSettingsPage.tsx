@@ -83,6 +83,7 @@ export function ChatGptSettingsPage() {
   const [scheduleEnabled, setScheduleEnabled] = useState(false);
   const [intervalMin, setIntervalMin] = useState(60);
   const [selectedModel, setSelectedModel] = useState("gpt-6.1-sol");
+  const [apiReasoning, setApiReasoning] = useState<"high" | "max">("high");
   const [availableModels, setAvailableModels] = useState<string[] | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [providerChoice, setProviderChoice] = useState<"siwc" | "openai_api">("siwc");
@@ -97,6 +98,7 @@ export function ChatGptSettingsPage() {
     setStatus(s);
     setProviderChoice(s.ai_provider || "siwc");
     setSelectedModel(s.ai_analysis_model || "gpt-6.1-sol");
+    setApiReasoning(s.ai_provider === "openai_api" && s.ai_reasoning_effort === "max" ? "max" : "high");
     setConsent(!!s.unattended_consent);
     setScheduleEnabled(!!s.hourly_enabled);
     setIntervalMin(s.interval_minutes || 60);
@@ -235,6 +237,26 @@ export function ChatGptSettingsPage() {
     }
   }
 
+  async function saveApiReasoning() {
+    if (status?.ai_provider !== "openai_api") {
+      toast("ابتدا OpenAI API را به‌عنوان منبع تحلیل انتخاب کنید.", true);
+      return;
+    }
+    setBusy("api-reasoning");
+    try {
+      const result = await apiFetch("/api/gui/chatgpt/api/reasoning", {
+        method: "PUT",
+        body: JSON.stringify({ effort: apiReasoning }),
+      });
+      toast(`تنظیم استدلال ذخیره شد: ${result.model} / ${String(result.reasoning_effort).toUpperCase()}. از تحلیل بعدی اعمال می‌شود.`);
+      await refresh();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e), true);
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function saveApiKey() {
     if (!newApiKey.trim()) return;
     setBusy("api-key");
@@ -329,7 +351,7 @@ export function ChatGptSettingsPage() {
       <div className="card status-card">
         <span className={`status-pill ${connected ? "on" : "off"}`}>{connected ? "پیکربندی شده" : "قطع"}</span>
         {status?.ai_provider === "openai_api" ? (
-          <p className="hint">کلید API فقط در .env سرور قرار دارد و اینجا نمایش داده نمی‌شود. مدل: GPT-6 Luna / High.</p>
+          <p className="hint">کلید API در سرور محفوظ است و اینجا نمایش داده نمی‌شود. مدل: GPT-6 Luna / {status?.ai_reasoning_effort?.toUpperCase() || "HIGH"}.</p>
         ) : status?.email ? <p className="status-email">{status.email}</p> : null}
         <div className="stack-btns">
           {status?.ai_provider !== "openai_api" && <button
@@ -356,7 +378,7 @@ export function ChatGptSettingsPage() {
           منبع تحلیل
           <select value={providerChoice} onChange={(e) => setProviderChoice(e.target.value as "siwc" | "openai_api")} disabled={!!busy}>
             <option value="siwc">ChatGPT SIWC</option>
-            <option value="openai_api">OpenAI API · GPT-6 Luna / High</option>
+            <option value="openai_api">OpenAI API · GPT-6 Luna (High / Max)</option>
           </select>
         </label>
         <button type="button" className="secondary btn-block" onClick={saveProvider} disabled={!!busy || providerChoice === status?.ai_provider}>
@@ -473,7 +495,7 @@ export function ChatGptSettingsPage() {
         <p className="hint">تنظیم مدل مستقل از زمان‌بندی ذخیره می‌شود. تغییر مدل، تحلیل خودکار را اجرا نمی‌کند.</p>
         <label>
           مدل تحلیل هوش مصنوعی
-          {status?.ai_provider === "openai_api" && <p className="hint">در حالت API مدل روی Luna / High ثابت است و هزینه بر اساس مصرف محاسبه می‌شود.</p>}
+          {status?.ai_provider === "openai_api" && <p className="hint">در حالت API مدل Luna ثابت است؛ سطح استدلال را از انتخاب‌گر High / Max تغییر دهید.</p>}
           <select
             value={selectedModel}
             onChange={(e) => setSelectedModel(e.target.value)}
@@ -493,10 +515,10 @@ export function ChatGptSettingsPage() {
         <p className="hint">
           {modelOptions.find((option) => option.model === selectedModel)?.description}
         </p>
-        {connected && availableModels === null && (
+        {connected && status?.ai_provider !== "openai_api" && availableModels === null && (
           <p className="hint">فهرست مدل‌های مجاز دریافت نشد؛ برای بررسی اتصال، «تست اتصال» را بزنید.</p>
         )}
-        {connected && availableModels !== null && !availableModels.includes("gpt-6-luna") && selectedModel !== "gpt-6-luna" && (
+        {connected && status?.ai_provider !== "openai_api" && availableModels !== null && !availableModels.includes("gpt-6-luna") && selectedModel !== "gpt-6-luna" && (
           <p className="hint">
             مدل GPT-6 Luna در فهرست فعلی اتصال SIWC نیست؛ از طریق این اتصال هنوز قابل انتخاب نیست.
             قیمت API رسمی تضمین‌کننده دسترسی با سهمیه ChatGPT نیست.
@@ -510,6 +532,33 @@ export function ChatGptSettingsPage() {
         >
           {busy === "model" ? "در حال ذخیره مدل…" : "ذخیره مدل تحلیل"}
         </button>
+        {status?.ai_provider === "openai_api" && (
+          <div className="form-stack">
+            <label>
+              سطح استدلال GPT-6 Luna
+              <select
+                value={apiReasoning}
+                onChange={(e) => setApiReasoning(e.target.value as "high" | "max")}
+                disabled={!connected || !!busy}
+              >
+                <option value="high">Luna / High · اقتصادی (پیش‌فرض)</option>
+                <option value="max">Luna / Max · استدلال بیشتر، هزینه متغیر</option>
+              </select>
+            </label>
+            <p className="hint">
+              Max ممکن است توکن استدلال بیشتر و هزینه بالاتری مصرف کند.
+              این تغییر از تحلیل بعدی اعمال می‌شود؛ ذخیره آن تحلیل جدیدی اجرا نمی‌کند.
+            </p>
+            <button
+              type="button"
+              className="secondary btn-block"
+              onClick={saveApiReasoning}
+              disabled={!connected || !!busy || apiReasoning === status?.ai_reasoning_effort}
+            >
+              {busy === "api-reasoning" ? "در حال ذخیره…" : "ذخیره سطح استدلال Luna"}
+            </button>
+          </div>
+        )}
         <label className="toggle-row">
           <input type="checkbox" checked={consent} onChange={(e) => setConsent(e.target.checked)} />
           <span>اجازه تحلیل خودکار در پس‌زمینه (در حالت API دارای هزینه)</span>
