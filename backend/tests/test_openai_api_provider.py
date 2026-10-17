@@ -179,3 +179,114 @@ async def test_dashboard_api_key_never_downgrades_to_siwc(session, client, monke
     assert await scheduling_allowed(session, cfg) == (True, None)
     await client.delete("/api/gui/chatgpt/api/key")
     assert await scheduling_allowed(session, cfg) == (False, "openai_api_key_missing")
+
+
+@pytest.mark.asyncio
+async def test_luna_max_persists_and_status_and_connection_test_reflect_it(session, client, monkeypatch):
+    from app.services.settings_store import get_plain
+
+    monkeypatch.setenv("AI_PROVIDER", "openai_api")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-only")
+    get_settings.cache_clear()
+
+    response = await client.put("/api/gui/chatgpt/api/reasoning", json={"effort": "max"})
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "model": "gpt-6-luna", "reasoning_effort": "max"}
+    assert await get_plain(session, "ai", "api_reasoning_effort") == "max"
+
+    status = await client.get("/api/gui/chatgpt/status")
+    assert status.status_code == 200
+    assert status.json()["ai_analysis_model"] == "gpt-6-luna"
+    assert status.json()["ai_reasoning_effort"] == "max"
+
+    with patch("app.routes.chatgpt_ai.api_model_accessible", AsyncMock(return_value=True)) as probe:
+        checked = await client.post("/api/gui/chatgpt/api/test")
+    assert checked.status_code == 200
+    assert checked.json()["reasoning_effort"] == "max"
+    probe.assert_awaited_once_with("sk-test-only", "gpt-6-luna")
+
+    restored = await client.put("/api/gui/chatgpt/api/reasoning", json={"effort": "high"})
+    assert restored.status_code == 200
+    assert (await client.get("/api/gui/chatgpt/status")).json()["ai_reasoning_effort"] == "high"
+
+
+@pytest.mark.asyncio
+async def test_luna_max_sent_to_responses_without_using_siwc(session, client, monkeypatch):
+    from app.services.ai_ict_analysis import _execute_inference
+
+    monkeypatch.setenv("AI_PROVIDER", "openai_api")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-only")
+    get_settings.cache_clear()
+    saved = await client.put("/api/gui/chatgpt/api/reasoning", json={"effort": "max"})
+    assert saved.status_code == 200
+    captured = {}
+
+    async def inspect_request(access_token, **kwargs):
+        captured["token"] = access_token
+        captured.update(kwargs)
+        raise OpenAIResponsesError("test_stop", "stop after verifying request")
+
+    with patch("app.services.ai_ict_analysis.get_access_token", AsyncMock()) as siwc:
+        with patch(
+            "app.services.ai_ict_analysis.build_raw_market_payload",
+            AsyncMock(return_value=({"symbol": "BTCUSDT"}, 100.0, {"15m": []})),
+        ):
+            with patch(
+                "app.services.ai_ict_analysis.build_ai_memory_context",
+                AsyncMock(return_value={}),
+            ):
+                with patch(
+                    "app.services.ai_ict_analysis.stream_analysis_response",
+                    side_effect=inspect_request,
+                ):
+                    draft = await _execute_inference(run_id=123, trigger="scheduled", model_override=None)
+
+    siwc.assert_not_called()
+    assert captured["token"] == "sk-test-only"
+    assert captured["model"] == "gpt-6-luna"
+    assert captured["reasoning_effort"] == "max"
+    assert json.loads(captured["user_input"])["requested_inference"]["reasoning_effort"] == "max"
+    assert draft.error_code == "test_stop"
+
+
+@pytest.mark.asyncio
+async def test_api_reasoning_validation_rejects_unapproved_levels(session, client, monkeypatch):
+    from app.services.settings_store import get_plain
+
+    monkeypatch.setenv("AI_PROVIDER", "openai_api")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-only")
+    get_settings.cache_clear()
+
+    for invalid_effort in ["low", "xhigh", "none", "sol", "MAX"]:
+        response = await client.put("/api/gui/chatgpt/api/reasoning", json={"effort": invalid_effort})
+        assert response.status_code == 422
+    assert await get_plain(session, "ai", "api_reasoning_effort", "high") == "high"
+
+    assert (await client.put("/api/gui/chatgpt/provider", json={"provider": "siwc"})).status_code == 200
+    rejected = await client.put("/api/gui/chatgpt/api/reasoning", json={"effort": "max"})
+    assert rejected.status_code == 409
+    assert await get_plain(session, "ai", "api_reasoning_effort", "high") == "high"
+
+
+@pytest.mark.asyncio
+async def test_api_max_selection_independent_of_siwc(session, client, monkeypatch):
+    monkeypatch.setenv("AI_PROVIDER", "openai_api")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-only")
+    get_settings.cache_clear()
+
+    assert (await client.put("/api/gui/chatgpt/api/reasoning", json={"effort": "max"})).status_code == 200
+    assert (await client.put("/api/gui/chatgpt/provider", json={"provider": "siwc"})).status_code == 200
+    assert (await client.put("/api/gui/chatgpt/provider", json={"provider": "openai_api"})).status_code == 200
+
+    status = await client.get("/api/gui/chatgpt/status")
+    assert status.status_code == 200
+    assert status.json()["ai_reasoning_effort"] == "max"
+    assert status.json()["ai_analysis_model"] == "gpt-6-luna"
+
+
+def test_unknown_luna_api_effort_defaults_to_high():
+    from app.services.ai_api_reasoning import effective_luna_api_effort
+    assert effective_luna_api_effort(None) == "high"
+    assert effective_luna_api_effort("xhigh") == "high"
+    assert effective_luna_api_effort("high") == "high"
+    assert effective_luna_api_effort("max") == "max"
