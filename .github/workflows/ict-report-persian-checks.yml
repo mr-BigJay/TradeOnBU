@@ -1,0 +1,43 @@
+name: Persian ICT Report Regression
+
+on:
+  pull_request:
+    paths:
+      - "backend/app/services/ai_trader_instructions.py"
+      - "backend/app/services/ai_trader_report.py"
+      - "backend/app/services/ai_telegram_format.py"
+      - "backend/app/services/telegram_bidi.py"
+      - "backend/tests/test_ai_report_persian.py"
+      - "backend/tests/test_ai_trader_report_v2.py"
+      - "backend/tests/test_ai_trader_report_v3_leakage.py"
+      - ".github/workflows/ict-report-persian-checks.yml"
+  push:
+    branches:
+      - fix/ict-report-farsi
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Prepare isolated database
+        run: mkdir -p data
+      - name: Full backend regression
+        env:
+          SKIP_CONFIG_GUARD: "1"
+          DISABLE_APP_BACKGROUND: "1"
+          DATABASE_URL: sqlite+aiosqlite:///./data/test_tradeonbu.db
+        run: python -m pytest -q
