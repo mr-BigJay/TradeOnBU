@@ -165,7 +165,7 @@ def test_split_ai_telegram_report_preserves_full_long_body():
     assert all(len(p) <= 4096 for p in parts)
     assert "".join(parts).endswith("ف")
     assert body in "".join(parts)
-    assert parts[0].startswith("تحلیل ICT — NO TRADE")
+    assert parts[0].startswith("تحلیل ICT — عدم ورود")
 
 
 @pytest.mark.asyncio
@@ -191,4 +191,4 @@ async def test_telegram_ai_plain_payload_and_delivery():
                 msg_id = await TelegramNotifier().send_ai_report(text)
     assert msg_id == 99
     assert "parse_mode" not in captured["payload"]
-    assert "INVALID" in captured["payload"]["text"]
+    assert "سیگنال تأیید نشده" in captured["payload"]["text"]

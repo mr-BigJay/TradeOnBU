@@ -40,10 +40,10 @@ def test_build_report_decision_and_setup_first():
         "previous_setups_review_fa": "Previous setup:\nLONG 83250\nResult:\nNot triggered",
     }
     report = build_trader_report_fa(data)
-    assert report.startswith("BTCUSDT ICT Analysis")
-    decision_idx = report.index("Decision:")
-    setup_idx = report.index("Setup:")
-    entry_idx = report.index("Entry:")
+    assert report.startswith("تحلیل ICT برای BTCUSDT")
+    decision_idx = report.index("تصمیم:")
+    setup_idx = report.index("ستاپ:")
+    entry_idx = report.index("ورود:")
     assert decision_idx < setup_idx < entry_idx
     assert "83200 - 83300" in report
     assert "82900" in report
@@ -62,10 +62,10 @@ def test_build_report_no_trade_concise():
         "waiting_for": ["5m BOS + FVG"],
     }
     report = build_trader_report_fa(data)
-    assert "NO TRADE" in report
-    assert "Reason:" in report
-    assert "Waiting for:" in report
-    assert "Setup:" not in report or report.index("Decision:") < report.find("Setup:") if "Setup:" in report else True
+    assert "عدم ورود (NO_TRADE)" in report
+    assert "دلایل عدم ورود:" in report
+    assert "در انتظار:" in report
+    assert "ستاپ:" not in report or report.index("تصمیم:") < report.find("Setup:") if "ستاپ:" in report else True
 
 
 def test_sanitize_strips_internal_tokens():

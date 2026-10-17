@@ -87,10 +87,9 @@ def test_telegram_invalid_trade_label():
         report_fa="گزارش",
         validation={"ok": False, "reasons": ["net_rr_below_threshold"]},
     )
-    assert "INVALID" in msg
-    assert "NOT APPROVED" in msg
-    assert "NO TRADE" in msg
-    assert "NOT actionable" in msg
+    assert "سیگنال تأیید نشده" in msg
+    assert "اعتبارسنجی سامانه آن را رد کرده" in msg
+    assert "قابل اقدام نیستند" in msg
     assert "net_rr_below_threshold" in msg
     assert "*" not in msg
     assert "`" not in msg
