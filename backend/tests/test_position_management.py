@@ -847,5 +847,5 @@ def test_telegram_analysis_time_tehran():
         trade_levels={"entry": 100, "stop_loss": 90, "take_profit": 110},
         analyzed_at=dt,
     )
-    assert "Tehran" in cap
+    assert "تهران" in cap
     assert format_tehran(dt) in cap

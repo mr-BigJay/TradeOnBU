@@ -22,11 +22,11 @@ def test_conditional_setup_rendered_when_immediate_entry_not_valid():
         "ict_liquidity": "SSL at 82400",
     }
     report = build_trader_report_fa(data)
-    assert "Conditional Setup:" in report
-    assert "Potential Direction:" in report
+    assert "سناریوی مشروط:" in report
+    assert "جهت احتمالی:" in report
     assert "LONG" in report
     assert "83100 - 83200" in report
-    assert "Confirmation required:" in report
+    assert "تأیید لازم:" in report
     assert "MSS" in report
     assert "Invalidation:" in report
 
