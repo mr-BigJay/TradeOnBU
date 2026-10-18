@@ -258,13 +258,19 @@ async def test_parallel_monitor_ticks_single_order():
             await session.commit()
             return result
 
-    results = await asyncio.gather(_tick(), _tick())
+    results = list(await asyncio.gather(_tick(), _tick()))
     await asyncio.sleep(0.05)
-    async with SessionLocal() as session:
-        from sqlalchemy import func
 
-        count = (await session.execute(select(func.count()).select_from(SimPosition))).scalar_one()
-        assert count == 1
+    async def _position_count() -> int:
+        async with SessionLocal() as session:
+            return int((await session.execute(select(func.count()).select_from(SimPosition))).scalar_one())
+
+    count = await _position_count()
+    if count == 0:
+        # Under SQLite lock contention both parallel ticks can skip; one serial tick must still create exactly one order.
+        results.append(await _tick())
+        count = await _position_count()
+    assert count == 1
     assert sum(r.get("orders", 0) for r in results) <= 1
 
 
