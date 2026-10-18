@@ -1,0 +1,53 @@
+name: Price Forecast Checks
+
+on:
+  push:
+    branches:
+      - feature/ai-price-path-forecast
+  pull_request:
+    paths:
+      - "backend/app/services/price_forecast/**"
+      - "backend/app/routes/price_forecast.py"
+      - "backend/tests/test_price_forecast.py"
+      - "frontend/src/PriceForecastPage.tsx"
+      - "frontend/src/ForecastChart.tsx"
+      - ".github/workflows/price-forecast-checks.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - run: pip install -r requirements.txt
+      - run: mkdir -p data
+      - run: python3 -m pytest -q
+
+  frontend:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: npm run build

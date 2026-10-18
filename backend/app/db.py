@@ -86,6 +86,9 @@ SIGNAL_MIGRATIONS = [
     "ALTER TABLE system_state ADD COLUMN opportunity_monitor_lock_until_ms INTEGER DEFAULT 0",
     "ALTER TABLE ai_proposed_setups ADD COLUMN monitoring_enabled BOOLEAN DEFAULT 1",
     "ALTER TABLE ai_proposed_setups ADD COLUMN monitor_from_ms INTEGER DEFAULT 0",
+    "ALTER TABLE system_state ADD COLUMN price_forecast_lock_owner VARCHAR(64)",
+    "ALTER TABLE system_state ADD COLUMN price_forecast_lock_until_ms INTEGER DEFAULT 0",
+    "ALTER TABLE price_forecast_settings ADD COLUMN failure_streak INTEGER DEFAULT 0",
 ]
 
 LEGACY_SETUP_BACKFILL = """
