@@ -143,11 +143,58 @@ class SimPositionService:
         if entry_for_risk is not None:
             await self._enforce_max_risk(session, settings, req, entry_for_risk)
 
+        entry_for_tp_cap = entry_for_risk
+        if order_type == "limit" and req.entry_price is not None:
+            entry_for_tp_cap = float(req.entry_price)
+        if entry_for_tp_cap is None:
+            raise PositionServiceError("قیمت مرجع برای TP اجرایی در دسترس نیست")
+
+        from app.domain.execution_tp_cap import (
+            EXECUTION_MAX_REWARD_R_MULTIPLE,
+            apply_execution_take_profit_cap,
+            gross_reward_r_multiple,
+        )
+
+        tp_cap = apply_execution_take_profit_cap(
+            direction=req.direction,
+            entry=float(entry_for_tp_cap),
+            stop_loss=req.stop_loss,
+            take_profit_ai=req.take_profit,
+            take_profit_2_ai=req.take_profit_2,
+        )
+        execution_tp = tp_cap.execution_take_profit
+        if req.direction == "LONG" and not (req.stop_loss < entry_for_tp_cap < execution_tp):
+            raise PositionServiceError("TP اجرایی پس از محدودیت 3R با سطوح LONG ناسازگار است")
+        if req.direction == "SHORT" and not (execution_tp < entry_for_tp_cap < req.stop_loss):
+            raise PositionServiceError("TP اجرایی پس از محدودیت 3R با سطوح SHORT ناسازگار است")
+
         public_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc)
         monitor_from_ms = int(now.timestamp() * 1000)
 
         limit_price = req.entry_price if order_type == "limit" else None
+
+        order_extra = dict(req.order_extra or {})
+        order_extra.update(
+            {
+                "ai_original_take_profit": tp_cap.ai_take_profit,
+                "execution_take_profit": execution_tp,
+                "execution_tp_cap_max_rr": EXECUTION_MAX_REWARD_R_MULTIPLE,
+                "execution_tp_cap_applied_at": now.isoformat(),
+                "execution_tp_cap_capped": tp_cap.was_capped,
+                "execution_tp_cap_entry_ref": float(entry_for_tp_cap),
+                "execution_gross_rr": gross_reward_r_multiple(
+                    req.direction, float(entry_for_tp_cap), req.stop_loss, execution_tp
+                ),
+                "ai_gross_rr": gross_reward_r_multiple(
+                    req.direction, float(entry_for_tp_cap), req.stop_loss, tp_cap.ai_take_profit
+                ),
+            }
+        )
+        if tp_cap.ai_take_profit_2 is not None and tp_cap.execution_take_profit_2 is not None:
+            order_extra["ai_original_take_profit_2"] = tp_cap.ai_take_profit_2
+            order_extra["execution_take_profit_2"] = tp_cap.execution_take_profit_2
+            order_extra["execution_tp_cap_capped_tp2"] = tp_cap.was_capped_tp2
 
         pos = SimPosition(
             public_id=public_id,
@@ -160,10 +207,11 @@ class SimPositionService:
             limit_entry_price=limit_price,
             entry_price=limit_price,
             stop_loss=req.stop_loss,
-            take_profit=req.take_profit,
+            take_profit=execution_tp,
             ai_setup_id=req.ai_setup_id,
             monitor_from_ms=monitor_from_ms,
             entry_is_maker=order_type == "limit",
+            extra=order_extra,
         )
         session.add(pos)
         await session.flush()
@@ -177,7 +225,19 @@ class SimPositionService:
             note="رزرو مارجین",
             affects_balance=False,
         )
-        await _log_event(session, pos, "ORDER_CREATED", None, pos.status, {"order_type": order_type})
+        await _log_event(
+            session,
+            pos,
+            "ORDER_CREATED",
+            None,
+            pos.status,
+            {
+                "order_type": order_type,
+                "ai_original_take_profit": tp_cap.ai_take_profit,
+                "execution_take_profit": execution_tp,
+                "execution_tp_cap_capped": tp_cap.was_capped,
+            },
+        )
 
         if order_type == "market":
             price, _ = await self.market.fetch_ticker(pos.symbol)
@@ -455,6 +515,11 @@ class SimPositionService:
             "fill_price": pos.fill_price,
             "stop_loss": pos.stop_loss,
             "take_profit": pos.take_profit,
+            "execution_take_profit": pos.take_profit,
+            "ai_original_take_profit": (pos.extra or {}).get("ai_original_take_profit"),
+            "ai_original_take_profit_2": (pos.extra or {}).get("ai_original_take_profit_2"),
+            "execution_take_profit_2": (pos.extra or {}).get("execution_take_profit_2"),
+            "execution_tp_cap_capped": (pos.extra or {}).get("execution_tp_cap_capped"),
             "mark_price": mark_price,
             "ai_setup_id": pos.ai_setup_id,
             "quantity_btc": pos.quantity_btc,
