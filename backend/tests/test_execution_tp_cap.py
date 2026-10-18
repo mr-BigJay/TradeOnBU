@@ -9,7 +9,7 @@ from app.domain.execution_tp_cap import (
     apply_execution_take_profit_cap,
     gross_reward_r_multiple,
 )
-from app.models import SimPosition
+from app.models import SimPosition, SimPositionSettings
 from app.services.position.execution_adapters import OrderRequest
 from app.services.position.position_service import SimPositionService
 from app.services.position import wallet_service as wallet
@@ -105,6 +105,96 @@ async def test_create_order_applies_cap_once_and_preserves_ai_tp_in_extra():
         assert pos.extra["ai_original_take_profit"] == 82_000.0
         assert pos.extra["execution_tp_cap_applied_at"]
         assert pos.extra["execution_tp_cap_capped"] is True
+
+
+@pytest.mark.asyncio
+async def test_market_fill_recaps_tp_for_short_after_slippage():
+    await init_db()
+    market = EmptyCompleteMarket(mark_price=100.0)
+    svc = SimPositionService(market=market)
+    async with SessionLocal() as session:
+        await wallet.append_ledger(session, entry_type=wallet.LEDGER_INITIAL, amount_usdt=50_000.0)
+        settings = (await session.execute(select(SimPositionSettings))).scalar_one_or_none()
+        if settings is None:
+            settings = SimPositionSettings(id=1, slippage_bps=10.0)
+            session.add(settings)
+        else:
+            settings.slippage_bps = 10.0
+        await session.commit()
+    async with SessionLocal() as session:
+        result = await svc.create_order(
+            session,
+            OrderRequest(
+                symbol="BTCUSDT",
+                direction="SHORT",
+                margin_usdt=100.0,
+                leverage=10,
+                order_type="market",
+                entry_price=None,
+                stop_loss=105.0,
+                take_profit=80.0,
+            ),
+        )
+        assert result.success
+        pos = (
+            await session.execute(select(SimPosition).where(SimPosition.public_id == result.position_id))
+        ).scalar_one()
+        assert pos.status == "open"
+        assert pos.extra.get("execution_tp_cap_post_fill_applied") is True
+        assert pos.take_profit <= 85.0
+        rr = gross_reward_r_multiple("SHORT", float(pos.fill_price), 105.0, pos.take_profit)
+        assert rr <= EXECUTION_MAX_REWARD_R_MULTIPLE + 1e-6
+
+
+@pytest.mark.asyncio
+async def test_auto_paper_to_sim_position_caps_34_rr_integration():
+    from unittest.mock import patch
+
+    from app.services.paper_auto_trading import maybe_auto_open_paper_position
+    from tests.test_paper_auto_trading import _ict_clear_structured, _sample_setup, _wallet_and_settings
+
+    await init_db()
+    async with SessionLocal() as session:
+        await _wallet_and_settings(session, auto=True)
+        setup = _sample_setup(
+            entry_price=100.0,
+            stop_loss=95.0,
+            take_profit=117.0,
+            lifecycle_state="READY_LONG",
+        )
+        setup.structured_snapshot = {
+            **_ict_clear_structured(),
+            "take_profit_2": 120.0,
+        }
+        session.add(setup)
+        await session.flush()
+        validation = {"ai_decision": "LONG", "acceptable_rr": True}
+        structured = dict(setup.structured_snapshot or {})
+        with patch(
+            "app.services.conditional_revision.objective_confirmations_satisfied",
+            return_value=(True, None),
+        ):
+            meta = await maybe_auto_open_paper_position(
+                session,
+                run_id=77,
+                setup=setup,
+                validation=validation,
+                structured=structured,
+                symbol="BTCUSDT",
+                commit=True,
+                require_ai_flags=False,
+            )
+        assert meta["created"] is True
+        pos = (
+            await session.execute(select(SimPosition).where(SimPosition.ai_setup_id == setup.setup_id))
+        ).scalar_one()
+        assert pos.stop_loss == 95.0
+        assert pos.limit_entry_price == 100.0
+        assert pos.extra["ai_original_take_profit"] == 117.0
+        assert pos.take_profit == 115.0
+        assert pos.extra["ai_original_take_profit_2"] == 120.0
+        assert pos.extra.get("execution_take_profit_2_audit_only") is True
+        assert gross_reward_r_multiple("LONG", 100.0, 95.0, pos.take_profit) == pytest.approx(3.0)
 
 
 @pytest.mark.asyncio

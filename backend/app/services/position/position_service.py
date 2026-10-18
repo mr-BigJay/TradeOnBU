@@ -149,11 +149,8 @@ class SimPositionService:
         if entry_for_tp_cap is None:
             raise PositionServiceError("قیمت مرجع برای TP اجرایی در دسترس نیست")
 
-        from app.domain.execution_tp_cap import (
-            EXECUTION_MAX_REWARD_R_MULTIPLE,
-            apply_execution_take_profit_cap,
-            gross_reward_r_multiple,
-        )
+        from app.domain.execution_tp_cap import apply_execution_take_profit_cap
+        from app.services.execution_tp_cap_apply import build_execution_tp_extra
 
         tp_cap = apply_execution_take_profit_cap(
             direction=req.direction,
@@ -176,25 +173,14 @@ class SimPositionService:
 
         order_extra = dict(req.order_extra or {})
         order_extra.update(
-            {
-                "ai_original_take_profit": tp_cap.ai_take_profit,
-                "execution_take_profit": execution_tp,
-                "execution_tp_cap_max_rr": EXECUTION_MAX_REWARD_R_MULTIPLE,
-                "execution_tp_cap_applied_at": now.isoformat(),
-                "execution_tp_cap_capped": tp_cap.was_capped,
-                "execution_tp_cap_entry_ref": float(entry_for_tp_cap),
-                "execution_gross_rr": gross_reward_r_multiple(
-                    req.direction, float(entry_for_tp_cap), req.stop_loss, execution_tp
-                ),
-                "ai_gross_rr": gross_reward_r_multiple(
-                    req.direction, float(entry_for_tp_cap), req.stop_loss, tp_cap.ai_take_profit
-                ),
-            }
+            build_execution_tp_extra(
+                tp_cap=tp_cap,
+                entry_ref=float(entry_for_tp_cap),
+                direction=req.direction,
+                stop_loss=req.stop_loss,
+                now=now,
+            )
         )
-        if tp_cap.ai_take_profit_2 is not None and tp_cap.execution_take_profit_2 is not None:
-            order_extra["ai_original_take_profit_2"] = tp_cap.ai_take_profit_2
-            order_extra["execution_take_profit_2"] = tp_cap.execution_take_profit_2
-            order_extra["execution_tp_cap_capped_tp2"] = tp_cap.was_capped_tp2
 
         pos = SimPosition(
             public_id=public_id,
@@ -278,6 +264,10 @@ class SimPositionService:
         pos.opened_at = datetime.now(timezone.utc)
         pos.last_processed_candle_ms = pos.monitor_from_ms or 0
 
+        from app.services.execution_tp_cap_apply import apply_post_market_fill_execution_tp_cap
+
+        tp_tightened = apply_post_market_fill_execution_tp_cap(pos, fill_price=fill)
+
         await wallet.append_ledger(
             session,
             entry_type=wallet.LEDGER_OPEN_FEE,
@@ -291,7 +281,12 @@ class SimPositionService:
             "ENTRY_FILLED",
             "pending_entry",
             "open",
-            {"fill_price": fill, "open_fee": open_fee},
+            {
+                "fill_price": fill,
+                "open_fee": open_fee,
+                "execution_tp_post_fill_adjusted": tp_tightened,
+                "take_profit": pos.take_profit,
+            },
         )
         if (pos.extra or {}).get("auto_paper"):
             from app.services.paper_auto_trading import mark_setup_paper_fill
