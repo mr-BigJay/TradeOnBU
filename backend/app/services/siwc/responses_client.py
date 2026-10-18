@@ -10,9 +10,10 @@ OPENAI_RESPONSES = "https://api.openai.com/v1/responses"
 
 
 class OpenAIResponsesError(Exception):
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(self, code: str, message: str, *, partial: AnalysisResponse | None = None) -> None:
         super().__init__(message)
         self.code = code
+        self.partial = partial
 
 
 @dataclass
@@ -52,6 +53,31 @@ def _extract_response_meta(response_obj: dict[str, Any]) -> tuple[str | None, st
         "usage": response_obj.get("usage"),
     }
     return model, resp_id, meta
+
+
+def _partial_analysis_response(
+    *,
+    text_parts: list[str],
+    model: str,
+    effort: str,
+    response_obj: dict[str, Any],
+) -> AnalysisResponse | None:
+    if not text_parts and not (response_obj or {}).get("usage"):
+        return None
+    resp_model, resp_id, meta = _extract_response_meta(response_obj)
+    confirmed_effort: str | None = None
+    reasoning = response_obj.get("reasoning") if response_obj else None
+    if isinstance(reasoning, dict):
+        confirmed_effort = str(reasoning.get("effort") or "") or None
+    return AnalysisResponse(
+        text="".join(text_parts),
+        requested_model=model,
+        requested_reasoning_effort=effort,
+        response_model=resp_model,
+        confirmed_reasoning_effort=confirmed_effort,
+        response_id=resp_id,
+        response_metadata=meta,
+    )
 
 
 def _ensure_no_reasoning_downgrade(requested: str, response_obj: dict[str, Any]) -> None:
@@ -128,16 +154,24 @@ async def stream_analysis_response(
                 if et == "response.output_text.delta":
                     text_parts.append(event.get("delta") or "")
                 elif et == "response.incomplete":
-                    raise OpenAIResponsesError("response_incomplete", "Response incomplete")
+                    response_obj = event.get("response") or response_obj
+                    partial = _partial_analysis_response(
+                        text_parts=text_parts, model=model, effort=effort, response_obj=response_obj
+                    )
+                    raise OpenAIResponsesError("response_incomplete", "Response incomplete", partial=partial)
                 elif et == "response.failed":
-                    err = (event.get("response") or {}).get("error") or {}
+                    response_obj = event.get("response") or response_obj
+                    err = (response_obj or {}).get("error") or {}
                     code = err.get("code") or "response_failed"
                     msg = err.get("message") or "failed"
                     if "reasoning" in str(msg).lower():
                         code = "reasoning_max_unavailable"
-                    raise OpenAIResponsesError(code, msg)
+                    partial = _partial_analysis_response(
+                        text_parts=text_parts, model=model, effort=effort, response_obj=response_obj
+                    )
+                    raise OpenAIResponsesError(code, msg, partial=partial)
                 elif et == "response.completed":
-                    response_obj = event.get("response") or {}
+                    response_obj = event.get("response") or response_obj or {}
                     _ensure_no_reasoning_downgrade(effort, response_obj)
                     resp_model, resp_id, meta = _extract_response_meta(response_obj)
                     confirmed_effort: str | None = None
@@ -164,10 +198,20 @@ async def stream_analysis_response(
                     msg = err.get("message") or "error"
                     if "reasoning" in str(msg).lower():
                         code = "reasoning_max_unavailable"
-                    raise OpenAIResponsesError(code, msg)
+                    partial = _partial_analysis_response(
+                        text_parts=text_parts, model=model, effort=effort, response_obj=response_obj
+                    )
+                    raise OpenAIResponsesError(code, msg, partial=partial)
 
-    if text_parts:
-        raise OpenAIResponsesError("stream_interrupted", "Stream ended before response.completed")
+    if text_parts or (response_obj or {}).get("usage"):
+        partial = _partial_analysis_response(
+            text_parts=text_parts, model=model, effort=effort, response_obj=response_obj
+        )
+        raise OpenAIResponsesError(
+            "stream_interrupted",
+            "Stream ended before response.completed",
+            partial=partial,
+        )
     raise OpenAIResponsesError("incomplete", "Stream ended without response.completed")
 
 

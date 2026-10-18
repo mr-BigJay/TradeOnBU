@@ -308,6 +308,111 @@ async def test_chart_route_does_not_invoke_openai():
     mock_ai.assert_not_called()
 
 
+def test_trade_bucket_snapshot_and_subtract_avoids_double_count():
+    from app.services.price_forecast.bitunix_trade_ws import BitunixMicroDataCollector
+
+    col = BitunixMicroDataCollector(symbol="BTCUSDT")
+    col._trade_buckets[1000]["buy_volume"] = 5.0
+    col._trade_buckets[1000]["sell_volume"] = 1.0
+    col._trade_buckets[1000]["trade_count"] = 4
+    pending = col._snapshot_pending_buckets()
+    col._trade_buckets[1000]["buy_volume"] = 7.0
+    col._subtract_flushed(pending)
+    assert col._trade_buckets[1000]["buy_volume"] == pytest.approx(2.0)
+    assert col._trade_buckets[1000]["trade_count"] == pytest.approx(0.0)
+
+
+@pytest.mark.asyncio
+async def test_flush_trades_retry_after_failed_commit():
+    await init_db()
+    from app.services.price_forecast.bitunix_trade_ws import BitunixMicroDataCollector
+
+    col = BitunixMicroDataCollector(symbol="BTCUSDT")
+    col._trade_buckets[2000]["buy_volume"] = 3.0
+    col._trade_buckets[2000]["trade_count"] = 2
+
+    with patch("app.services.price_forecast.bitunix_trade_ws.upsert_trade_bucket", AsyncMock(side_effect=RuntimeError("db"))):
+        await col._flush_trades()
+    assert col._trade_buckets[2000]["buy_volume"] == pytest.approx(3.0)
+
+    await col._flush_trades()
+    async with SessionLocal() as session:
+        row = (await session.execute(select(MarketMicroRollup).where(MarketMicroRollup.bucket_start_ms == 2000))).scalar_one()
+        assert row.payload["buy_volume"] == pytest.approx(3.0)
+
+
+@pytest.mark.asyncio
+async def test_stale_live_price_rejected_before_openai():
+    await init_db()
+
+    async def fake_collect(session, *, symbol="BTCUSDT"):
+        from app.models import MarketDataSnapshot
+
+        snap = MarketDataSnapshot(
+            symbol=symbol,
+            payload={"live_price": {"price": 80_000.0, "stale": True, "receipt_time_ms": 1}},
+            freshness={"live_price": "stale"},
+        )
+        session.add(snap)
+        await session.flush()
+        return snap
+
+    with patch("app.services.price_forecast.run_service.collect_market_snapshot", fake_collect):
+        with patch("app.services.price_forecast.run_service.stream_analysis_response", AsyncMock()) as mock_ai:
+            with patch("app.services.price_forecast.run_service._resolve_openai_token", AsyncMock(return_value="sk-test")):
+                outcome = await execute_forecast_with_lock(trigger="manual", skip_enabled_check=True)
+    assert outcome.status == "failed"
+    mock_ai.assert_not_called()
+
+
+def test_horizon_expired_when_first_point_not_in_future():
+    from app.services.price_forecast.run_policy import assert_horizon_still_valid
+
+    anchor = datetime(2026, 6, 1, 10, 59, tzinfo=timezone.utc)
+    expected = next_six_hourly_closes(anchor)
+    with pytest.raises(ForecastValidationError):
+        assert_horizon_still_valid(expected, now=expected[0] + timedelta(seconds=1))
+
+
+@pytest.mark.asyncio
+async def test_openai_stream_error_keeps_partial_usage():
+    await init_db()
+    receipt_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+
+    async def fake_collect(session, *, symbol="BTCUSDT"):
+        from app.models import MarketDataSnapshot
+
+        snap = MarketDataSnapshot(
+            symbol=symbol,
+            payload={"live_price": {"price": 80_000.0, "receipt_time_ms": receipt_ms, "stale": False}},
+            freshness={"live_price": "ok"},
+        )
+        session.add(snap)
+        await session.flush()
+        return snap
+
+    partial = AnalysisResponse(
+        text='{"bad":true}',
+        requested_model="gpt-6-luna",
+        requested_reasoning_effort="low",
+        response_model="gpt-6-luna",
+        response_metadata={"usage": {"input_tokens": 50, "output_tokens": 10, "cached_input_tokens": 5}},
+    )
+
+    async def boom(*args, **kwargs):
+        raise OpenAIResponsesError("response_failed", "fail", partial=partial)
+
+    with patch("app.services.price_forecast.run_service.collect_market_snapshot", fake_collect):
+        with patch("app.services.price_forecast.run_service.stream_analysis_response", boom):
+            with patch("app.services.price_forecast.run_service._resolve_openai_token", AsyncMock(return_value="sk-test")):
+                outcome = await execute_forecast_with_lock(trigger="manual", skip_enabled_check=True)
+    assert outcome.status == "failed"
+    async with SessionLocal() as session:
+        run = (await session.execute(select(PriceForecastRun))).scalar_one()
+        assert run.input_tokens == 50
+        assert run.output_tokens == 10
+
+
 @pytest.mark.asyncio
 async def test_ict_instructions_unchanged():
     from app.services.ai_trader_instructions import ICT_TRADER_INSTRUCTIONS

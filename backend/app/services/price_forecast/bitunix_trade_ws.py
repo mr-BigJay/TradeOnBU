@@ -125,10 +125,33 @@ class BitunixMicroDataCollector:
         else:
             b["sell_volume"] += vol
 
+    def _snapshot_pending_buckets(self) -> dict[int, dict[str, float]]:
+        return {
+            bucket_ms: {
+                "buy_volume": float(stats["buy_volume"]),
+                "sell_volume": float(stats["sell_volume"]),
+                "trade_count": float(stats["trade_count"]),
+            }
+            for bucket_ms, stats in self._trade_buckets.items()
+        }
+
+    def _subtract_flushed(self, pending: dict[int, dict[str, float]]) -> None:
+        for bucket_ms, stats in pending.items():
+            live = self._trade_buckets.get(bucket_ms)
+            if live is None:
+                continue
+            live["buy_volume"] -= stats["buy_volume"]
+            live["sell_volume"] -= stats["sell_volume"]
+            live["trade_count"] -= stats["trade_count"]
+            if live["trade_count"] <= 0 and live["buy_volume"] <= 1e-12 and live["sell_volume"] <= 1e-12:
+                del self._trade_buckets[bucket_ms]
+
     async def _flush_trades(self) -> None:
         if not self._trade_buckets:
             return
-        pending = dict(self._trade_buckets)
+        pending = self._snapshot_pending_buckets()
+        if not pending:
+            return
         async with SessionLocal() as session:
             try:
                 for bucket_ms, stats in pending.items():
@@ -143,14 +166,8 @@ class BitunixMicroDataCollector:
                 await session.commit()
             except Exception:
                 await session.rollback()
-                for bucket_ms, stats in pending.items():
-                    cur = self._trade_buckets[bucket_ms]
-                    cur["buy_volume"] += stats["buy_volume"]
-                    cur["sell_volume"] += stats["sell_volume"]
-                    cur["trade_count"] += stats["trade_count"]
                 return
-        for bucket_ms in pending:
-            self._trade_buckets.pop(bucket_ms, None)
+        self._subtract_flushed(pending)
         self.last_flush_at_ms = int(time.time() * 1000)
 
     async def _snapshot_depth(self) -> None:

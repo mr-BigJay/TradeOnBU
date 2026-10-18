@@ -187,6 +187,16 @@ async def test_parallel_monitor_ticks_single_order():
     await init_db()
     import asyncio
 
+    from app.services.system_state import get_system_state
+
+    async with SessionLocal() as session:
+        st = await get_system_state(session)
+        st.opportunity_monitor_lock_owner = None
+        st.opportunity_monitor_lock_until_ms = 0
+        st.price_forecast_lock_owner = None
+        st.price_forecast_lock_until_ms = 0
+        await session.commit()
+
     created = datetime.now(timezone.utc) - timedelta(minutes=30)
     boundary = first_eligible_bar_open_ms(created, "5m")
     bundle = _build_bundle_from_boundary(boundary, [(98, 102, 100), (99.5, 100.5, 100.2)])

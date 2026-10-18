@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import get_effective_settings
+from app.config import get_effective_settings, get_settings
 from app.db import SessionLocal
 from app.models import PriceForecastPoint, PriceForecastRun, PriceForecastSettings
 from app.services.price_forecast.cost import estimate_forecast_cost_usd
@@ -18,6 +18,7 @@ from app.services.price_forecast.instructions import PRICE_FORECAST_INSTRUCTIONS
 from app.services.price_forecast.lock import acquire_price_forecast_lock, release_price_forecast_lock
 from app.services.price_forecast.market_collector import build_llm_market_summary, collect_market_snapshot
 from app.services.price_forecast.run_policy import (
+    assert_horizon_still_valid,
     is_displayable_forecast_run,
     schedule_backoff_after_failure,
     validate_forecast_config,
@@ -47,6 +48,18 @@ def _usage_tokens(meta: dict) -> tuple[int, int, int, int]:
     out = int(usage.get("output_tokens") or 0)
     reasoning = int(usage.get("reasoning_tokens") or usage.get("output_tokens_details", {}).get("reasoning_tokens") or 0)
     return inp, cached, out, reasoning
+
+
+def _assert_live_price_fresh(live: dict) -> None:
+    if live.get("status") == "unavailable" or live.get("price") is None:
+        raise ForecastValidationError("live_price_unavailable", "Live anchor price unavailable")
+    if live.get("stale"):
+        raise ForecastValidationError("live_price_stale", "Live anchor price is stale")
+    receipt_ms = live.get("receipt_time_ms")
+    if isinstance(receipt_ms, (int, float)) and receipt_ms > 0:
+        age_s = (time.time() * 1000 - float(receipt_ms)) / 1000.0
+        if age_s > float(get_settings().market_data_stale_seconds):
+            raise ForecastValidationError("live_price_stale", "Live anchor price receipt is too old")
 
 
 def _anchor_time_from_live(live: dict) -> datetime:
@@ -150,8 +163,7 @@ async def run_price_forecast(*, trigger: str, skip_enabled_check: bool = False) 
             run.market_snapshot_id = snap.id
 
             live = (snap.payload or {}).get("live_price") or {}
-            if live.get("status") == "unavailable" or live.get("price") is None:
-                raise ForecastValidationError("live_price_unavailable", "Live anchor price unavailable")
+            _assert_live_price_fresh(live)
             anchor = float(live["price"])
             if anchor <= 0:
                 raise ForecastValidationError("live_price_unavailable", "Live anchor price unavailable")
@@ -191,15 +203,21 @@ async def run_price_forecast(*, trigger: str, skip_enabled_check: bool = False) 
                 f"Market summary JSON:\n{user_input}"
             )
 
-            analysis = await stream_analysis_response(
-                token,
-                model=cfg.model or "gpt-6-luna",
-                instructions=PRICE_FORECAST_INSTRUCTIONS,
-                user_input=user_msg,
-                reasoning_effort=(cfg.reasoning_effort or "low"),
-                max_output_tokens=int(cfg.max_output_tokens or 1200),
-                timeout=180.0,
-            )
+            try:
+                analysis = await stream_analysis_response(
+                    token,
+                    model=cfg.model or "gpt-6-luna",
+                    instructions=PRICE_FORECAST_INSTRUCTIONS,
+                    user_input=user_msg,
+                    reasoning_effort=(cfg.reasoning_effort or "low"),
+                    max_output_tokens=int(cfg.max_output_tokens or 1200),
+                    timeout=180.0,
+                )
+            except OpenAIResponsesError as stream_exc:
+                if stream_exc.partial is not None:
+                    analysis = stream_exc.partial
+                raise
+            assert_horizon_still_valid(expected)
             parsed = extract_json_object(analysis.text)
             validated = validate_forecast_payload(parsed, anchor_price=anchor, expected_times=expected)
 
@@ -228,6 +246,8 @@ async def run_price_forecast(*, trigger: str, skip_enabled_check: bool = False) 
             return ForecastRunOutcome(status="ok", run=run)
 
     except (ForecastValidationError, OpenAIResponsesError, json.JSONDecodeError, ValueError) as exc:
+        if isinstance(exc, OpenAIResponsesError) and exc.partial is not None:
+            analysis = exc.partial
         code = getattr(exc, "code", None) or ("forecast_failed" if not isinstance(exc, ValueError) else str(exc))
         msg = str(getattr(exc, "message", exc))[:500]
         return await _finalize_failure(run_public, code=str(code), msg=msg, started=started, analysis=analysis)

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { createChart, IChartApi, ISeriesApi, LineStyle, UTCTimestamp } from "lightweight-charts";
 import { apiFetch } from "./api";
 
@@ -16,14 +16,32 @@ type ChartPayload = {
 };
 
 export function ForecastChart({ refreshKey = 0 }: { refreshKey?: number }) {
+  const wrapRef = useRef<HTMLDivElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const overlayRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candleRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const lineRef = useRef<ISeriesApi<"Line"> | null>(null);
+  const anchorTimeRef = useRef<string | null>(null);
   const [error, setError] = useState("");
   const [meta, setMeta] = useState<ChartPayload | null>(null);
   const [loading, setLoading] = useState(true);
+
+  const layoutFutureOverlay = useCallback(() => {
+    const overlay = overlayRef.current;
+    const chart = chartRef.current;
+    const wrap = wrapRef.current;
+    const anchorTime = anchorTimeRef.current;
+    if (!overlay || !chart || !wrap || !anchorTime) {
+      if (overlay) overlay.style.width = "0px";
+      return;
+    }
+    const anchorSec = Math.floor(new Date(anchorTime).getTime() / 1000) as UTCTimestamp;
+    const x = chart.timeScale().timeToCoordinate(anchorSec);
+    if (x == null) return;
+    overlay.style.left = `${x}px`;
+    overlay.style.width = `${Math.max(0, wrap.clientWidth - x)}px`;
+  }, []);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -55,30 +73,25 @@ export function ForecastChart({ refreshKey = 0 }: { refreshKey?: number }) {
     lineRef.current = forecastLine;
 
     const ro = new ResizeObserver(() => {
-      chart.applyOptions({ width: el.clientWidth });
+      const node = containerRef.current;
+      if (!node) return;
+      chart.applyOptions({ width: node.clientWidth });
       layoutFutureOverlay();
     });
     ro.observe(el);
-
-    function layoutFutureOverlay() {
-      const overlay = overlayRef.current;
-      const c = chartRef.current;
-      if (!overlay || !c || !meta?.anchor_time) return;
-      const anchorSec = Math.floor(new Date(meta.anchor_time).getTime() / 1000) as UTCTimestamp;
-      const x = c.timeScale().timeToCoordinate(anchorSec);
-      if (x == null) return;
-      overlay.style.left = `${x}px`;
-      overlay.style.width = `${Math.max(0, el.clientWidth - x)}px`;
-    }
-
-    (window as unknown as { __forecastLayout?: () => void }).__forecastLayout = layoutFutureOverlay;
 
     return () => {
       ro.disconnect();
       chart.remove();
       chartRef.current = null;
+      candleRef.current = null;
+      lineRef.current = null;
     };
-  }, []);
+  }, [layoutFutureOverlay]);
+
+  useEffect(() => {
+    layoutFutureOverlay();
+  }, [meta, layoutFutureOverlay]);
 
   useEffect(() => {
     let cancelled = false;
@@ -89,6 +102,7 @@ export function ForecastChart({ refreshKey = 0 }: { refreshKey?: number }) {
         const data = (await apiFetch("/api/gui/forecast/chart", {}, 30_000)) as ChartPayload;
         if (cancelled) return;
         setMeta(data);
+        anchorTimeRef.current = data.anchor_time;
         if (!candleRef.current || !lineRef.current || !chartRef.current) return;
 
         const candles = data.candles || [];
@@ -127,14 +141,16 @@ export function ForecastChart({ refreshKey = 0 }: { refreshKey?: number }) {
             from: firstT as UTCTimestamp,
             to: (lastT + 3600) as UTCTimestamp,
           });
-          (window as unknown as { __forecastLayout?: () => void }).__forecastLayout?.();
+          layoutFutureOverlay();
         } else {
+          anchorTimeRef.current = null;
           lineRef.current.setData([]);
           lineRef.current.setMarkers([]);
           chartRef.current.timeScale().fitContent();
+          layoutFutureOverlay();
         }
 
-        if (data.error && data.error !== "no_successful_forecast") {
+        if (data.error && data.error !== "no_successful_forecast" && data.error !== "no_active_forecast") {
           setError(data.error);
         }
       } catch (e) {
@@ -149,7 +165,7 @@ export function ForecastChart({ refreshKey = 0 }: { refreshKey?: number }) {
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [refreshKey]);
+  }, [refreshKey, layoutFutureOverlay]);
 
   return (
     <div className="card forecast-chart-card">
@@ -159,7 +175,7 @@ export function ForecastChart({ refreshKey = 0 }: { refreshKey?: number }) {
       {meta?.generated_at && (
         <p className="hint">آخرین پیش‌بینی: {new Date(meta.generated_at).toLocaleString("fa-IR")}</p>
       )}
-      <div className="forecast-chart-wrap">
+      <div className="forecast-chart-wrap" ref={wrapRef}>
         <div className="forecast-future-shade" ref={overlayRef} aria-hidden />
         <div className="chart-wrap" ref={containerRef} />
       </div>

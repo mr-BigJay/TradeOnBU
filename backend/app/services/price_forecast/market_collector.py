@@ -140,13 +140,15 @@ async def collect_market_snapshot(session: AsyncSession, *, symbol: str = "BTCUS
 
     try:
         quote = await market.fetch_live_price(symbol)
+        quote_stale = market.is_quote_stale(quote)
         payload["live_price"] = {
             "price": quote.price,
             "source": quote.source,
-            "stale": quote.stale,
+            "stale": bool(quote.stale or quote_stale),
             "receipt_time_ms": quote.receipt_time_ms,
+            "exchange_time_ms": quote.exchange_time_ms,
         }
-        freshness["live_price"] = "stale" if quote.stale else "ok"
+        freshness["live_price"] = "stale" if (quote.stale or quote_stale) else "ok"
     except Exception as exc:
         payload["live_price"] = {"status": "unavailable", "error": str(exc)[:200]}
         freshness["live_price"] = "unavailable"

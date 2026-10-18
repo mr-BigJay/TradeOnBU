@@ -31,6 +31,17 @@ def schedule_backoff_after_failure(cfg: PriceForecastSettings, *, now: datetime 
     return now + timedelta(minutes=minutes)
 
 
+def assert_horizon_still_valid(expected: list[datetime], *, now: datetime | None = None) -> None:
+    from app.services.price_forecast.validation import ForecastValidationError
+
+    now = now or datetime.now(timezone.utc)
+    if expected and expected[0] <= now:
+        raise ForecastValidationError(
+            "horizon_expired",
+            "Forecast hour boundary passed during inference; result discarded",
+        )
+
+
 def forecast_horizon_still_active(points: list[PriceForecastPoint], *, now: datetime | None = None) -> bool:
     if not points:
         return False
