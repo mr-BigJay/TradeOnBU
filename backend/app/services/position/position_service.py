@@ -261,10 +261,13 @@ class SimPositionService:
         if pos.transition_key:
             return pos.status == "open"
 
-        from app.services.execution_tp_cap_apply import compute_post_market_fill_execution_tp
+        from app.services.execution_tp_cap_apply import (
+            compute_post_fill_execution_tp,
+            execution_tp_cap_enabled,
+        )
 
-        cap_result = compute_post_market_fill_execution_tp(pos, fill_price=fill)
-        if not cap_result.geometry_ok:
+        cap_result = compute_post_fill_execution_tp(pos, fill_price=fill)
+        if execution_tp_cap_enabled(pos.extra) and not cap_result.geometry_ok:
             await self._reject_pending_fill_geometry(
                 session,
                 pos,

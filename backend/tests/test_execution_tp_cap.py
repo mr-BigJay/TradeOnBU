@@ -343,3 +343,193 @@ async def test_existing_position_row_unchanged_by_cap_logic():
         row = (await session.execute(select(SimPosition).where(SimPosition.public_id == "legacy-1"))).scalar_one()
         assert row.take_profit == tp_before == 150.0
         assert row.extra.get("ai_original_take_profit") is None
+
+
+@pytest.mark.asyncio
+async def test_limit_long_fill_recaps_tp_when_rr_exceeds_3_after_slippage():
+    from app.services.position.settings_service import get_or_create_settings
+
+    await init_db()
+    svc = SimPositionService(market=EmptyCompleteMarket(mark_price=100.0))
+    async with SessionLocal() as session:
+        await wallet.append_ledger(session, entry_type=wallet.LEDGER_INITIAL, amount_usdt=50_000.0)
+        settings = await get_or_create_settings(session)
+        settings.slippage_bps = 50.0
+        await session.commit()
+    async with SessionLocal() as session:
+        result = await svc.create_order(
+            session,
+            OrderRequest(
+                symbol="BTCUSDT",
+                direction="LONG",
+                margin_usdt=100.0,
+                leverage=10,
+                order_type="limit",
+                entry_price=100.0,
+                stop_loss=95.0,
+                take_profit=117.0,
+            ),
+        )
+        assert result.success
+        pos = (
+            await session.execute(select(SimPosition).where(SimPosition.public_id == result.position_id))
+        ).scalar_one()
+        assert pos.status == "pending_entry"
+        assert pos.take_profit == 115.0
+        settings = await get_or_create_settings(session)
+        ok = await svc._fill_entry(session, pos, settings, 100.0, transition_suffix="limit_test")
+        await session.commit()
+        assert ok is True
+        assert pos.status == "open"
+        assert pos.extra.get("execution_tp_cap_post_fill_applied") is True
+        rr = gross_reward_r_multiple("LONG", float(pos.fill_price), 95.0, pos.take_profit)
+        assert rr <= EXECUTION_MAX_REWARD_R_MULTIPLE + 1e-6
+        assert pos.take_profit < 115.0
+
+
+@pytest.mark.asyncio
+async def test_limit_short_fill_recaps_tp_after_fill():
+    from app.services.position.settings_service import get_or_create_settings
+
+    await init_db()
+    svc = SimPositionService(market=EmptyCompleteMarket(mark_price=100.0))
+    async with SessionLocal() as session:
+        await wallet.append_ledger(session, entry_type=wallet.LEDGER_INITIAL, amount_usdt=50_000.0)
+        settings = await get_or_create_settings(session)
+        settings.slippage_bps = 50.0
+        await session.commit()
+    async with SessionLocal() as session:
+        result = await svc.create_order(
+            session,
+            OrderRequest(
+                symbol="BTCUSDT",
+                direction="SHORT",
+                margin_usdt=100.0,
+                leverage=10,
+                order_type="limit",
+                entry_price=100.0,
+                stop_loss=105.0,
+                take_profit=80.0,
+            ),
+        )
+        assert result.success
+        pos = (
+            await session.execute(select(SimPosition).where(SimPosition.public_id == result.position_id))
+        ).scalar_one()
+        settings = await get_or_create_settings(session)
+        ok = await svc._fill_entry(session, pos, settings, 100.0, transition_suffix="limit_short")
+        await session.commit()
+        assert ok is True
+        assert pos.extra.get("execution_tp_cap_post_fill_applied") is True
+        rr = gross_reward_r_multiple("SHORT", float(pos.fill_price), 105.0, pos.take_profit)
+        assert rr <= EXECUTION_MAX_REWARD_R_MULTIPLE + 1e-6
+
+
+@pytest.mark.asyncio
+async def test_market_long_post_fill_rr_capped():
+    await init_db()
+    market = EmptyCompleteMarket(mark_price=100.0)
+    svc = SimPositionService(market=market)
+    async with SessionLocal() as session:
+        await wallet.append_ledger(session, entry_type=wallet.LEDGER_INITIAL, amount_usdt=50_000.0)
+        settings = (await session.execute(select(SimPositionSettings))).scalar_one_or_none()
+        if settings is None:
+            settings = SimPositionSettings(id=1, slippage_bps=20.0)
+            session.add(settings)
+        else:
+            settings.slippage_bps = 20.0
+        await session.commit()
+    async with SessionLocal() as session:
+        result = await svc.create_order(
+            session,
+            OrderRequest(
+                symbol="BTCUSDT",
+                direction="LONG",
+                margin_usdt=100.0,
+                leverage=10,
+                order_type="market",
+                entry_price=None,
+                stop_loss=95.0,
+                take_profit=117.0,
+            ),
+        )
+        assert result.success
+        pos = (
+            await session.execute(select(SimPosition).where(SimPosition.public_id == result.position_id))
+        ).scalar_one()
+        assert pos.status == "open"
+        assert pos.extra.get("execution_tp_cap_post_fill_applied") is True
+        rr = gross_reward_r_multiple("LONG", float(pos.fill_price), 95.0, pos.take_profit)
+        assert rr <= EXECUTION_MAX_REWARD_R_MULTIPLE + 1e-6
+
+
+@pytest.mark.asyncio
+async def test_legacy_pending_fill_no_post_cap_no_geometry_cancel():
+    from app.services.position.settings_service import get_or_create_settings
+
+    await init_db()
+    svc = SimPositionService(market=EmptyCompleteMarket(mark_price=100.0))
+    async with SessionLocal() as session:
+        await wallet.append_ledger(session, entry_type=wallet.LEDGER_INITIAL, amount_usdt=50_000.0)
+        settings = await get_or_create_settings(session)
+        settings.slippage_bps = 0.0
+        pos = SimPosition(
+            public_id="legacy-pending",
+            symbol="BTCUSDT",
+            direction="LONG",
+            status="pending_entry",
+            order_type="limit",
+            margin_usdt=50.0,
+            leverage=10,
+            limit_entry_price=100.0,
+            stop_loss=98.0,
+            take_profit=101.0,
+            extra={},
+        )
+        session.add(pos)
+        await wallet.append_ledger(
+            session,
+            entry_type=wallet.LEDGER_MARGIN_RESERVE,
+            amount_usdt=50.0,
+            reference_type="sim_position",
+            reference_id="legacy-pending",
+            affects_balance=False,
+        )
+        await session.flush()
+        ok = await svc._fill_entry(session, pos, settings, 102.0, transition_suffix="legacy")
+        await session.commit()
+        assert ok is True
+        assert pos.status == "open"
+        assert pos.take_profit == 101.0
+        assert pos.extra.get("execution_tp_cap_post_fill_applied") is None
+
+
+@pytest.mark.asyncio
+async def test_post_fill_cap_idempotent_via_fill_entry_twice_blocked():
+    from app.services.execution_tp_cap_apply import compute_post_fill_execution_tp
+
+    await init_db()
+    async with SessionLocal() as session:
+        pos = SimPosition(
+            public_id="idem-fill",
+            symbol="BTCUSDT",
+            direction="LONG",
+            status="open",
+            order_type="limit",
+            margin_usdt=50.0,
+            leverage=10,
+            fill_price=99.0,
+            stop_loss=95.0,
+            take_profit=112.0,
+            extra={
+                "execution_tp_cap_applied_at": "2026-01-01T00:00:00+00:00",
+                "ai_original_take_profit": 117.0,
+                "execution_tp_cap_post_fill_applied": True,
+                "execution_take_profit": 112.0,
+            },
+        )
+        tp_before = pos.take_profit
+        r = compute_post_fill_execution_tp(pos, fill_price=98.0)
+        assert r.applied is False
+        assert r.take_profit == tp_before
+        assert r.extra.get("execution_tp_cap_post_fill_applied") is True

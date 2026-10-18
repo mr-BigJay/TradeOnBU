@@ -1,4 +1,4 @@
-"""Apply / re-apply execution TP cap on persisted positions (create + post market fill)."""
+"""Apply / re-apply execution TP cap on persisted positions (create + post fill)."""
 
 from __future__ import annotations
 
@@ -10,6 +10,11 @@ from app.domain.execution_tp_cap import (
     apply_execution_take_profit_cap,
     gross_reward_r_multiple,
 )
+
+
+def execution_tp_cap_enabled(extra: dict[str, Any] | None) -> bool:
+    """New positions only — legacy rows without this metadata are never touched."""
+    return bool((extra or {}).get("execution_tp_cap_applied_at"))
 
 
 def ai_take_profit_2_from_payload(
@@ -91,41 +96,29 @@ class PostFillCapResult:
     tp_changed: bool
 
 
-def compute_post_market_fill_execution_tp(
+def compute_post_fill_execution_tp(
     pos,
     *,
     fill_price: float,
 ) -> PostFillCapResult:
     """
-    Re-cap execution TP (+ audit TP2) from actual fill. Idempotent when already applied.
-    Does not mutate pos — caller validates geometry and commits state.
+    Re-cap execution TP (+ audit TP2) from actual fill price (market or limit).
+    Legacy positions: no cap, no geometry-based cancel. Idempotent after first post-fill cap.
     """
     extra = dict(pos.extra or {})
     base_tp = float(pos.take_profit)
 
-    if not extra.get("execution_tp_cap_applied_at"):
-        ok, reason = levels_geometry_valid(pos.direction, fill_price, float(pos.stop_loss), base_tp)
+    if not execution_tp_cap_enabled(extra):
         return PostFillCapResult(
             applied=False,
             take_profit=base_tp,
             extra=extra,
-            geometry_ok=ok,
-            geometry_reason=reason,
+            geometry_ok=True,
+            geometry_reason=None,
             tp_changed=False,
         )
 
     if extra.get("execution_tp_cap_post_fill_applied"):
-        ok, reason = levels_geometry_valid(pos.direction, fill_price, float(pos.stop_loss), base_tp)
-        return PostFillCapResult(
-            applied=False,
-            take_profit=base_tp,
-            extra=extra,
-            geometry_ok=ok,
-            geometry_reason=reason,
-            tp_changed=False,
-        )
-
-    if (pos.order_type or "").lower() != "market":
         ok, reason = levels_geometry_valid(pos.direction, fill_price, float(pos.stop_loss), base_tp)
         return PostFillCapResult(
             applied=False,
@@ -180,13 +173,16 @@ def compute_post_market_fill_execution_tp(
     )
 
 
+# Back-compat alias
+compute_post_market_fill_execution_tp = compute_post_fill_execution_tp
+
+
 def apply_post_market_fill_execution_tp_cap(
     pos,
     *,
     fill_price: float,
 ) -> bool:
-    """Legacy helper: mutates pos when geometry valid. Prefer compute + validate in fill path."""
-    result = compute_post_market_fill_execution_tp(pos, fill_price=fill_price)
+    result = compute_post_fill_execution_tp(pos, fill_price=fill_price)
     if not result.geometry_ok:
         return False
     prev = float(pos.take_profit)
