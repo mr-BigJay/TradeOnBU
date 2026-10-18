@@ -62,6 +62,31 @@ describe("Position financial display", () => {
     expect(cancel).toHaveBeenCalledOnce();
   });
 
+  it("shows original AI target and capped executable target for new auto orders only", () => {
+    const capped = {
+      public_id: "new-position", symbol: "BTCUSDT", direction: "LONG",
+      status: "pending_entry", order_type: "limit", leverage: 10, margin_usdt: 50,
+      entry_price: 100, stop_loss: 95, take_profit: 115,
+      tp_execution_policy: {
+        ai_take_profit: 117, execution_take_profit: 115,
+        execution_gross_rr: 3, was_capped: true,
+      },
+    };
+    const { rerender } = render(<PositionTradeCard position={capped} onCancel={vi.fn()} onClose={vi.fn()} />);
+    expect(screen.getByText("TP مدل (تحلیلی)")).toBeInTheDocument();
+    expect(screen.getByText("حد سود اجرایی")).toBeInTheDocument();
+    expect(screen.getByText("R:R اجرایی ناخالص")).toBeInTheDocument();
+    expect(screen.getByText("117.00")).toBeInTheDocument();
+    expect(screen.getByText("115.00")).toBeInTheDocument();
+
+    rerender(<PositionTradeCard position={{
+      ...capped, public_id: "old-position", take_profit: 117,
+      tp_execution_policy: undefined,
+    }} onCancel={vi.fn()} onClose={vi.fn()} />);
+    expect(screen.queryByText("TP مدل (تحلیلی)")).not.toBeInTheDocument();
+    expect(screen.getByText("117.00")).toBeInTheDocument();
+  });
+
   it("shows empty-state when no real equity snapshots exist", () => {
     render(<EquityCurve history={[]} />);
     expect(screen.getByText("هنوز داده کافی برای نمودار موجودی وجود ندارد")).toBeInTheDocument();

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { apiFetch } from "./api";
 import { displayTehranTime } from "./displayTime";
 import { mergeOpenFormDefaults, type OpenFormState } from "./positionFormMerge";
-import { EquityCurve, MoneyValue, numberText, PositionTradeCard, StatTile } from "./PositionVisuals";
+import { EquityCurve, MoneyValue, numberText, PositionTradeCard, StatTile, tpModelExecutionText } from "./PositionVisuals";
 import { PositionPerformancePreview, PositionWalletOverview } from "./PositionOverview";
 
 export type PositionPrefill = {
@@ -569,7 +569,7 @@ export function PositionPage({ prefill, onConsumePrefill, initialTab }: Props) {
               <table className="data-table position-performance-table">
                 <thead><tr>
                   <th>نماد</th><th>جهت</th><th>ورود</th><th>خروج</th>
-                  <th>زمان بسته‌شدن (تهران)</th><th>کارمزد</th><th>PnL خالص</th>
+                  <th>TP مدل ← اجرایی</th><th>زمان بسته‌شدن (تهران)</th><th>کارمزد</th><th>PnL خالص</th>
                 </tr></thead>
                 <tbody>
                   {((report.history as Record<string, unknown>[]) || []).map((row, i) => (
@@ -579,13 +579,14 @@ export function PositionPage({ prefill, onConsumePrefill, initialTab }: Props) {
                         (row.direction === "LONG" ? "long" : "short")}>{String(row.direction ?? "—")}</span></td>
                       <td dir="ltr">{numberText(row.entry_price)}</td>
                       <td dir="ltr">{numberText(row.exit_price)}</td>
+                      <td dir="ltr">{tpModelExecutionText(row.take_profit, row.tp_execution_policy)}</td>
                       <td>{displayTehranTime(row.closed_at_tehran as string)}</td>
                       <td><MoneyValue value={row.fees_usdt} /></td>
                       <td><MoneyValue value={row.net_pnl_usdt} signed /></td>
                     </tr>
                   ))}
                   {(!Array.isArray(report.history) || report.history.length === 0) &&
-                    <tr><td colSpan={7} className="position-empty-list">معامله بسته‌شده‌ای در این بازه وجود ندارد.</td></tr>}
+                    <tr><td colSpan={8} className="position-empty-list">معامله بسته‌شده‌ای در این بازه وجود ندارد.</td></tr>}
                 </tbody>
               </table>
             </div>
