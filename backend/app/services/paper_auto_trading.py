@@ -232,6 +232,10 @@ async def maybe_auto_open_paper_position(
     tp = float(setup.take_profit)  # type: ignore[arg-type]
     direction = (setup.direction or "").upper()
 
+    from app.services.execution_tp_cap_apply import ai_take_profit_2_from_payload
+
+    tp2 = ai_take_profit_2_from_payload(structured, setup.structured_snapshot or {})
+
     svc = SimPositionService()
     req = OrderRequest(
         symbol=symbol,
@@ -242,6 +246,7 @@ async def maybe_auto_open_paper_position(
         entry_price=entry,
         stop_loss=sl,
         take_profit=tp,
+        take_profit_2=tp2,
         ai_setup_id=setup.setup_id,
     )
     try:

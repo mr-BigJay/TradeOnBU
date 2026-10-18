@@ -203,7 +203,17 @@ export function PositionTradeCard({
         <PositionDetail label="ورود" value={<span dir="ltr">{numberText(entry)}</span>} />
         <PositionDetail label="قیمت بازار" value={<span dir="ltr">{pending ? "—" : numberText(p.mark_price)}</span>} />
         <PositionDetail label="حد ضرر" value={<span dir="ltr">{numberText(p.stop_loss)}</span>} />
-        <PositionDetail label="حد سود" value={<span dir="ltr">{numberText(p.take_profit)}</span>} />
+        <PositionDetail
+          label="Execution TP"
+          value={<span dir="ltr">{numberText(p.execution_take_profit ?? p.take_profit)}</span>}
+        />
+        {p.ai_original_take_profit != null &&
+          Number(p.ai_original_take_profit) !== Number(p.execution_take_profit ?? p.take_profit) && (
+            <PositionDetail
+              label="AI Original TP"
+              value={<span dir="ltr">{numberText(p.ai_original_take_profit)}</span>}
+            />
+          )}
         <PositionDetail label="مارجین" value={<MoneyValue value={p.margin_usdt} />} />
         <PositionDetail label="نوع سفارش" value={String(p.order_type || "—").toUpperCase()} />
         <PositionDetail label="ارزش اسمی پوزیشن" value={<MoneyValue value={metrics?.notional_usdt} />} />

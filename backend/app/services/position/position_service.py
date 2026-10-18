@@ -143,11 +143,44 @@ class SimPositionService:
         if entry_for_risk is not None:
             await self._enforce_max_risk(session, settings, req, entry_for_risk)
 
+        entry_for_tp_cap = entry_for_risk
+        if order_type == "limit" and req.entry_price is not None:
+            entry_for_tp_cap = float(req.entry_price)
+        if entry_for_tp_cap is None:
+            raise PositionServiceError("قیمت مرجع برای TP اجرایی در دسترس نیست")
+
+        from app.domain.execution_tp_cap import apply_execution_take_profit_cap
+        from app.services.execution_tp_cap_apply import build_execution_tp_extra
+
+        tp_cap = apply_execution_take_profit_cap(
+            direction=req.direction,
+            entry=float(entry_for_tp_cap),
+            stop_loss=req.stop_loss,
+            take_profit_ai=req.take_profit,
+            take_profit_2_ai=req.take_profit_2,
+        )
+        execution_tp = tp_cap.execution_take_profit
+        if req.direction == "LONG" and not (req.stop_loss < entry_for_tp_cap < execution_tp):
+            raise PositionServiceError("TP اجرایی پس از محدودیت 3R با سطوح LONG ناسازگار است")
+        if req.direction == "SHORT" and not (execution_tp < entry_for_tp_cap < req.stop_loss):
+            raise PositionServiceError("TP اجرایی پس از محدودیت 3R با سطوح SHORT ناسازگار است")
+
         public_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc)
         monitor_from_ms = int(now.timestamp() * 1000)
 
         limit_price = req.entry_price if order_type == "limit" else None
+
+        order_extra = dict(req.order_extra or {})
+        order_extra.update(
+            build_execution_tp_extra(
+                tp_cap=tp_cap,
+                entry_ref=float(entry_for_tp_cap),
+                direction=req.direction,
+                stop_loss=req.stop_loss,
+                now=now,
+            )
+        )
 
         pos = SimPosition(
             public_id=public_id,
@@ -160,10 +193,11 @@ class SimPositionService:
             limit_entry_price=limit_price,
             entry_price=limit_price,
             stop_loss=req.stop_loss,
-            take_profit=req.take_profit,
+            take_profit=execution_tp,
             ai_setup_id=req.ai_setup_id,
             monitor_from_ms=monitor_from_ms,
             entry_is_maker=order_type == "limit",
+            extra=order_extra,
         )
         session.add(pos)
         await session.flush()
@@ -177,11 +211,32 @@ class SimPositionService:
             note="رزرو مارجین",
             affects_balance=False,
         )
-        await _log_event(session, pos, "ORDER_CREATED", None, pos.status, {"order_type": order_type})
+        await _log_event(
+            session,
+            pos,
+            "ORDER_CREATED",
+            None,
+            pos.status,
+            {
+                "order_type": order_type,
+                "ai_original_take_profit": tp_cap.ai_take_profit,
+                "execution_take_profit": execution_tp,
+                "execution_tp_cap_capped": tp_cap.was_capped,
+            },
+        )
 
         if order_type == "market":
             price, _ = await self.market.fetch_ticker(pos.symbol)
-            await self._fill_entry(session, pos, settings, price, transition_suffix="market_open")
+            filled_ok = await self._fill_entry(session, pos, settings, price, transition_suffix="market_open")
+            if not filled_ok:
+                if commit:
+                    await session.commit()
+                return ExecutionResult(
+                    False,
+                    public_id,
+                    "ورود Market به‌دلیل Slippage/هندسه نامعتبر لغو شد",
+                    {"status": pos.status, "reason": "fill_geometry_invalid"},
+                )
 
         if commit:
             await session.commit()
@@ -194,29 +249,49 @@ class SimPositionService:
         settings: SimPositionSettings,
         raw_price: float,
         transition_suffix: str,
-    ) -> None:
+    ) -> bool:
         if pos.status not in ("pending_entry",):
-            return
+            return pos.status == "open"
         fees = fee_profile_from_settings(settings)
         adverse = pos.order_type == "market"
         fill = apply_slippage(
             raw_price, pos.direction, side="entry", adverse=adverse, bps=settings.slippage_bps
         )
-        notional = position_notional(pos.margin_usdt, pos.leverage)
-        qty = quantity_from_notional(notional, fill)
-        pos.quantity_btc = qty
-        rate = fees.maker_rate if pos.entry_is_maker else fees.taker_rate
-        open_fee = fee_on_quantity(qty, fill, rate)
         key = f"entry:{pos.public_id}:{transition_suffix}:{int(fill * 100)}"
         if pos.transition_key:
-            return
+            return pos.status == "open"
+
+        from app.services.execution_tp_cap_apply import (
+            compute_post_fill_execution_tp,
+            execution_tp_cap_enabled,
+        )
+
+        cap_result = compute_post_fill_execution_tp(pos, fill_price=fill)
+        if execution_tp_cap_enabled(pos.extra) and not cap_result.geometry_ok:
+            await self._reject_pending_fill_geometry(
+                session,
+                pos,
+                fill_price=fill,
+                reason=cap_result.geometry_reason or "fill_geometry_invalid",
+            )
+            return False
+
+        notional = position_notional(pos.margin_usdt, pos.leverage)
+        qty = quantity_from_notional(notional, fill)
+        rate = fees.maker_rate if pos.entry_is_maker else fees.taker_rate
+        open_fee = fee_on_quantity(qty, fill, rate)
+
         pos.transition_key = key
+        pos.quantity_btc = qty
         pos.fill_price = fill
         pos.entry_price = fill
         pos.entry_fee_usdt = open_fee
+        pos.take_profit = cap_result.take_profit
+        pos.extra = cap_result.extra
         pos.status = "open"
         pos.opened_at = datetime.now(timezone.utc)
         pos.last_processed_candle_ms = pos.monitor_from_ms or 0
+        tp_tightened = cap_result.applied and cap_result.tp_changed
 
         await wallet.append_ledger(
             session,
@@ -231,7 +306,12 @@ class SimPositionService:
             "ENTRY_FILLED",
             "pending_entry",
             "open",
-            {"fill_price": fill, "open_fee": open_fee},
+            {
+                "fill_price": fill,
+                "open_fee": open_fee,
+                "execution_tp_post_fill_adjusted": tp_tightened,
+                "take_profit": pos.take_profit,
+            },
         )
         if (pos.extra or {}).get("auto_paper"):
             from app.services.paper_auto_trading import mark_setup_paper_fill
@@ -256,6 +336,46 @@ class SimPositionService:
             ).scalar_one_or_none()
             if setup:
                 setup.lifecycle_state = POSITION_OPEN
+        return True
+
+    async def _reject_pending_fill_geometry(
+        self,
+        session: AsyncSession,
+        pos: SimPosition,
+        *,
+        fill_price: float,
+        reason: str,
+    ) -> None:
+        """Cancel pending order when fill price breaks SL/Entry/TP ordering (no open fee)."""
+        extra = dict(pos.extra or {})
+        extra.update(
+            {
+                "fill_rejected_at": datetime.now(timezone.utc).isoformat(),
+                "fill_rejected_reason": reason,
+                "fill_attempt_price": float(fill_price),
+            }
+        )
+        pos.extra = extra
+        await wallet.append_ledger(
+            session,
+            entry_type=wallet.LEDGER_MARGIN_RELEASE,
+            amount_usdt=pos.margin_usdt,
+            reference_type="sim_position",
+            reference_id=pos.public_id,
+            note="لغو — هندسه Fill نامعتبر",
+            affects_balance=False,
+        )
+        await _log_event(
+            session,
+            pos,
+            "FILL_REJECTED",
+            pos.status,
+            "cancelled",
+            {"reason": reason, "fill_price": fill_price},
+        )
+        pos.status = "cancelled"
+        pos.close_reason = reason
+        pos.closed_at = datetime.now(timezone.utc)
 
     async def cancel_pending(
         self, session: AsyncSession, public_id: str, *, commit: bool = True
@@ -455,6 +575,11 @@ class SimPositionService:
             "fill_price": pos.fill_price,
             "stop_loss": pos.stop_loss,
             "take_profit": pos.take_profit,
+            "execution_take_profit": pos.take_profit,
+            "ai_original_take_profit": (pos.extra or {}).get("ai_original_take_profit"),
+            "ai_original_take_profit_2": (pos.extra or {}).get("ai_original_take_profit_2"),
+            "execution_take_profit_2": (pos.extra or {}).get("execution_take_profit_2"),
+            "execution_tp_cap_capped": (pos.extra or {}).get("execution_tp_cap_capped"),
             "mark_price": mark_price,
             "ai_setup_id": pos.ai_setup_id,
             "quantity_btc": pos.quantity_btc,
