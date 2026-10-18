@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from datetime import datetime, timezone
 from typing import Any
@@ -93,8 +94,8 @@ def validate_forecast_payload(
             price = float(pt.get("price"))
         except (TypeError, ValueError):
             raise ForecastValidationError("invalid_price", f"Point {idx} price invalid") from None
-        if price <= 0:
-            raise ForecastValidationError("invalid_price", f"Point {idx} price must be positive")
+        if not math.isfinite(price) or price <= 0:
+            raise ForecastValidationError("invalid_price", f"Point {idx} price must be positive and finite")
         normalized.append({"time": t_iso, "price": price})
 
     normalized.sort(key=lambda p: p["time"])

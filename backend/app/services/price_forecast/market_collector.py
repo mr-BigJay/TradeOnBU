@@ -41,23 +41,14 @@ def _summarize_depth(raw: dict[str, Any]) -> dict[str, Any]:
 
 
 async def _fetch_bitunix_funding(base: str, symbol: str) -> dict[str, Any]:
+    from app.services.price_forecast.bitunix_funding import parse_bitunix_funding_body
+
     url = f"{base}/api/v1/futures/market/funding_rate"
     async with httpx.AsyncClient(timeout=15.0) as client:
         resp = await client.get(url, params={"symbol": symbol})
         resp.raise_for_status()
         body = resp.json()
-    if body.get("code") != 0:
-        return {"status": "unavailable", "source": "bitunix", "reason": body.get("msg")}
-    data = body.get("data") or {}
-    return {
-        "status": "ok",
-        "source": "bitunix",
-        "funding_rate": float(data.get("fundingRate") or 0),
-        "mark_price": float(data.get("markPrice") or 0),
-        "index_price": float(data.get("indexPrice") or 0),
-        "next_funding_time_ms": int(data.get("nextFundingTime") or 0),
-        "funding_interval_hours": int(data.get("fundingInterval") or 0),
-    }
+    return parse_bitunix_funding_body(body, symbol)
 
 
 async def _fetch_bitunix_depth(base: str, symbol: str) -> dict[str, Any]:
@@ -83,12 +74,17 @@ async def _load_trade_rollups(session: AsyncSession, symbol: str, *, limit: int 
             .limit(limit)
         )
     ).scalars().all()
+    from app.services.price_forecast.bitunix_trade_ws import get_micro_collector
+
+    collector_meta = get_micro_collector().status_payload()
     if not rows:
         return {
             "status": "unavailable",
             "source": "bitunix_ws_trades",
             "reason": "no_persisted_trade_rollups",
-            "note": "CVD requires aggressor-side public trades (WebSocket collector)",
+            "interpretation": "provisional_volume_delta_not_verified_cvd",
+            "note": "Bitunix trade channel side (buy/sell) treated as provisional taker-side until verified",
+            "collector": collector_meta,
         }
     points = []
     cvd = 0.0
@@ -109,10 +105,12 @@ async def _load_trade_rollups(session: AsyncSession, symbol: str, *, limit: int 
             }
         )
     return {
-        "status": "ok",
+        "status": "ok" if collector_meta.get("freshness") == "ok" else "stale",
         "source": "bitunix_ws_trades",
+        "interpretation": "provisional_volume_delta_not_verified_cvd",
         "aggressor_field": "side_buy_sell_per_bitunix_trade_channel",
         "buckets_5m": points[-12:],
+        "collector": collector_meta,
     }
 
 

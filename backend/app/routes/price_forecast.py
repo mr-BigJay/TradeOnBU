@@ -12,11 +12,12 @@ from app.services.chart_data import ChartDataService
 from app.services.price_forecast.accuracy import record_actual_closes_for_due_points
 from app.services.price_forecast.run_service import execute_forecast_with_lock, latest_successful_run, load_run_points
 from app.services.price_forecast.settings_service import (
-    count_runs_today,
+    count_billable_runs_today,
     get_or_create_forecast_settings,
     month_cost_usd,
     schedule_next_run,
 )
+from app.services.price_forecast.run_policy import validate_forecast_config
 
 router = APIRouter(prefix="/api/gui/forecast", tags=["price-forecast"])
 
@@ -100,7 +101,7 @@ async def forecast_status(
         next_run_at=cfg.next_run_at,
         last_error=cfg.last_error,
         running_status=cfg.running_status,
-        runs_today=await count_runs_today(session),
+        runs_today=await count_billable_runs_today(session),
         month_cost_usd=await month_cost_usd(session),
     )
 
@@ -114,6 +115,10 @@ async def update_forecast_settings(
     cfg = await get_or_create_forecast_settings(session)
     for field, value in body.model_dump(exclude_unset=True).items():
         setattr(cfg, field, value)
+    try:
+        validate_forecast_config(cfg)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if body.enabled is True and cfg.next_run_at is None:
         cfg.next_run_at = schedule_next_run(cfg)
     cfg.updated_at = datetime.now(timezone.utc)
@@ -135,7 +140,7 @@ async def update_forecast_settings(
         next_run_at=cfg.next_run_at,
         last_error=cfg.last_error,
         running_status=cfg.running_status,
-        runs_today=await count_runs_today(session),
+        runs_today=await count_billable_runs_today(session),
         month_cost_usd=await month_cost_usd(session),
     )
 
@@ -160,7 +165,7 @@ async def forecast_chart(
             forecast_points=[],
             generated_at=None,
             run_id=None,
-            error="no_successful_forecast",
+            error="no_active_forecast",
         )
     points = await load_run_points(session, run.id)
     snap_fresh = None
@@ -198,7 +203,7 @@ async def forecast_chart(
 async def generate_forecast(
     _auth=Depends(require_dashboard_access),
 ):
-    outcome = await execute_forecast_with_lock(trigger="manual", force=True)
+    outcome = await execute_forecast_with_lock(trigger="manual", skip_enabled_check=True)
     if outcome.status == "busy":
         raise HTTPException(status_code=409, detail="forecast_busy")
     if outcome.status == "skipped":

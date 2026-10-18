@@ -5,27 +5,57 @@ import json
 import logging
 import time
 from collections import defaultdict
+from datetime import datetime, timezone
 from typing import Any
 
 import websockets
+
 from app.config import get_settings
 from app.db import SessionLocal
 from app.models import MarketMicroRollup
+from app.services.price_forecast.trade_rollup import parse_trade_event_ms, upsert_trade_bucket
 
 logger = logging.getLogger(__name__)
 
 BUCKET_5M_MS = 5 * 60 * 1000
 BUCKET_1M_MS = 60 * 1000
+STALE_AFTER_MS = 5 * 60 * 1000
 
 
 class BitunixMicroDataCollector:
-    """Persist trade (CVD) and periodic depth summaries across restarts."""
+    """Persist trade rollups and periodic depth summaries across restarts."""
 
     def __init__(self, symbol: str = "BTCUSDT") -> None:
         self.symbol = symbol
-        self._trade_buckets: dict[int, dict[str, float]] = defaultdict(lambda: {"buy_volume": 0.0, "sell_volume": 0.0, "trade_count": 0})
+        self._trade_buckets: dict[int, dict[str, float]] = defaultdict(
+            lambda: {"buy_volume": 0.0, "sell_volume": 0.0, "trade_count": 0}
+        )
         self._running = False
         self._task: asyncio.Task | None = None
+        self.ws_connected = False
+        self.last_trade_at_ms: int | None = None
+        self.last_flush_at_ms: int | None = None
+        self.last_disconnect_at_ms: int | None = None
+        self.disconnect_count = 0
+        self.gap_detected = False
+
+    def status_payload(self) -> dict[str, Any]:
+        now_ms = int(time.time() * 1000)
+        fresh = (
+            self.ws_connected
+            and self.last_trade_at_ms is not None
+            and (now_ms - self.last_trade_at_ms) <= STALE_AFTER_MS
+        )
+        return {
+            "ws_connected": self.ws_connected,
+            "freshness": "ok" if fresh else ("stale" if self.last_trade_at_ms else "unavailable"),
+            "last_trade_at_ms": self.last_trade_at_ms,
+            "last_flush_at_ms": self.last_flush_at_ms,
+            "last_disconnect_at_ms": self.last_disconnect_at_ms,
+            "disconnect_count": self.disconnect_count,
+            "gap_detected": self.gap_detected,
+            "pending_buckets": len(self._trade_buckets),
+        }
 
     def start(self) -> None:
         if self._running:
@@ -43,11 +73,12 @@ class BitunixMicroDataCollector:
                 pass
 
     async def _run_loop(self) -> None:
-        settings = get_settings()
         url = "wss://fapi.bitunix.com/public/"
         while self._running:
             try:
                 async with websockets.connect(url, ping_interval=20, ping_timeout=20) as ws:
+                    self.ws_connected = True
+                    self.gap_detected = self.disconnect_count > 0
                     sub = {"op": "subscribe", "args": [{"symbol": self.symbol, "ch": "trade"}]}
                     await ws.send(json.dumps(sub))
                     flush_at = time.monotonic() + 60
@@ -66,6 +97,9 @@ class BitunixMicroDataCollector:
                         for tr in msg.get("data") or []:
                             self._ingest_trade(tr)
             except Exception:
+                self.ws_connected = False
+                self.last_disconnect_at_ms = int(time.time() * 1000)
+                self.disconnect_count += 1
                 logger.exception("Bitunix trade WS reconnecting")
                 await asyncio.sleep(5)
 
@@ -79,8 +113,10 @@ class BitunixMicroDataCollector:
             return
         if vol <= 0:
             return
-        ts_raw = tr.get("t") or tr.get("ts")
-        ts_ms = int(ts_raw) if isinstance(ts_raw, (int, float)) else int(time.time() * 1000)
+        ts_ms = parse_trade_event_ms(tr)
+        if ts_ms is None:
+            return
+        self.last_trade_at_ms = ts_ms
         bucket = (ts_ms // BUCKET_5M_MS) * BUCKET_5M_MS
         b = self._trade_buckets[bucket]
         b["trade_count"] += 1
@@ -92,27 +128,30 @@ class BitunixMicroDataCollector:
     async def _flush_trades(self) -> None:
         if not self._trade_buckets:
             return
-        buckets = dict(self._trade_buckets)
-        self._trade_buckets.clear()
+        pending = dict(self._trade_buckets)
         async with SessionLocal() as session:
-            for bucket_ms, stats in buckets.items():
-                session.add(
-                    MarketMicroRollup(
+            try:
+                for bucket_ms, stats in pending.items():
+                    await upsert_trade_bucket(
+                        session,
                         symbol=self.symbol,
                         bucket_start_ms=bucket_ms,
-                        kind="trade_5m",
-                        source="bitunix_ws_trades",
-                        payload={
-                            "buy_volume": stats["buy_volume"],
-                            "sell_volume": stats["sell_volume"],
-                            "trade_count": stats["trade_count"],
-                        },
+                        buy_volume=float(stats["buy_volume"]),
+                        sell_volume=float(stats["sell_volume"]),
+                        trade_count=int(stats["trade_count"]),
                     )
-                )
-            try:
                 await session.commit()
             except Exception:
                 await session.rollback()
+                for bucket_ms, stats in pending.items():
+                    cur = self._trade_buckets[bucket_ms]
+                    cur["buy_volume"] += stats["buy_volume"]
+                    cur["sell_volume"] += stats["sell_volume"]
+                    cur["trade_count"] += stats["trade_count"]
+                return
+        for bucket_ms in pending:
+            self._trade_buckets.pop(bucket_ms, None)
+        self.last_flush_at_ms = int(time.time() * 1000)
 
     async def _snapshot_depth(self) -> None:
         import httpx
@@ -131,16 +170,33 @@ class BitunixMicroDataCollector:
             summary = _summarize_depth(body.get("data") or {})
             bucket_ms = (int(time.time() * 1000) // BUCKET_1M_MS) * BUCKET_1M_MS
             async with SessionLocal() as session:
-                session.add(
-                    MarketMicroRollup(
-                        symbol=self.symbol,
-                        bucket_start_ms=bucket_ms,
-                        kind="depth_1m",
-                        source="bitunix",
-                        payload=summary,
+                from sqlalchemy import select
+
+                existing = (
+                    await session.execute(
+                        select(MarketMicroRollup).where(
+                            MarketMicroRollup.symbol == self.symbol,
+                            MarketMicroRollup.bucket_start_ms == bucket_ms,
+                            MarketMicroRollup.kind == "depth_1m",
+                        )
                     )
-                )
-                await session.commit()
+                ).scalar_one_or_none()
+                if existing:
+                    existing.payload = summary
+                else:
+                    session.add(
+                        MarketMicroRollup(
+                            symbol=self.symbol,
+                            bucket_start_ms=bucket_ms,
+                            kind="depth_1m",
+                            source="bitunix",
+                            payload=summary,
+                        )
+                    )
+                try:
+                    await session.commit()
+                except Exception:
+                    await session.rollback()
         except Exception:
             logger.debug("Depth snapshot skipped", exc_info=True)
 
