@@ -284,3 +284,92 @@ async def test_monitor_cancels_expired_auto_pending_before_fill():
                 await mon.monitor_session(session)
         pos = (await session.execute(select(SimPosition))).scalar_one()
         assert pos.status == "cancelled"
+
+
+@pytest.mark.parametrize(
+    "direction, proposed_rr",
+    [
+        ("LONG", 2.5), ("LONG", 3.0), ("LONG", 3.1), ("LONG", 3.4), ("LONG", 5.0),
+        ("SHORT", 2.5), ("SHORT", 3.0), ("SHORT", 3.1), ("SHORT", 3.4), ("SHORT", 5.0),
+    ],
+)
+@pytest.mark.asyncio
+async def test_new_auto_paper_order_caps_tp_at_three_r_without_changing_ai_setup(direction, proposed_rr):
+    """The AI forecast stays original, only the newly created auto order TP is capped."""
+    await init_db()
+    async with SessionLocal() as session:
+        await _wallet_and_settings(session, auto=True)
+        entry = 100.0
+        sl = 95.0 if direction == "LONG" else 105.0
+        sign = 1.0 if direction == "LONG" else -1.0
+        proposed_tp = entry + sign * proposed_rr * 5.0
+        expected_tp = entry + sign * min(proposed_rr, 3.0) * 5.0
+        structured = _ict_clear_structured(decision=direction, take_profit=proposed_tp)
+        setup = _sample_setup(
+            setup_id=f"rr-cap-{direction.lower()}-{proposed_rr}",
+            direction=direction, entry_price=entry, stop_loss=sl,
+            take_profit=proposed_tp, structured_snapshot=structured,
+        )
+        session.add(setup)
+        await session.flush()
+
+        result = await maybe_auto_open_paper_position(
+            session, run_id=99, setup=setup,
+            validation={"ai_decision": direction, "acceptable_rr": True},
+            structured=structured, symbol="BTCUSDT",
+        )
+        assert result["created"] is True, result
+        pos = (await session.execute(
+            select(SimPosition).where(SimPosition.ai_setup_id == setup.setup_id)
+        )).scalar_one()
+
+        assert pos.status == "pending_entry"
+        assert pos.entry_price == pytest.approx(entry)
+        assert pos.stop_loss == pytest.approx(sl)
+        assert pos.take_profit == pytest.approx(expected_tp)
+        assert setup.take_profit == pytest.approx(proposed_tp)
+        assert structured["take_profit"] == pytest.approx(proposed_tp)
+        assert (pos.extra["ict_entry_snapshot"]["take_profit"]) == pytest.approx(proposed_tp)
+        policy = pos.extra["tp_execution_policy"]
+        assert policy["ai_take_profit"] == pytest.approx(proposed_tp)
+        assert policy["execution_take_profit"] == pytest.approx(expected_tp)
+        assert policy["execution_gross_rr"] == pytest.approx(min(proposed_rr, 3.0))
+        assert policy["was_capped"] is (proposed_rr > 3.0)
+
+
+@pytest.mark.asyncio
+async def test_new_auto_paper_order_does_not_rewrite_old_open_position():
+    await init_db()
+    async with SessionLocal() as session:
+        await _wallet_and_settings(session, auto=True)
+        previous = SimPosition(
+            public_id="existing-before-tp-policy",
+            symbol="BTCUSDT", direction="LONG", status="open",
+            order_type="limit", margin_usdt=50, leverage=10,
+            entry_price=100.0, stop_loss=95.0, take_profit=140.0,
+            ai_setup_id="older-ai-setup", extra={"old_metadata": True},
+        )
+        setup = _sample_setup(
+            setup_id="new-ai-setup", entry_price=100.0,
+            stop_loss=95.0, take_profit=125.0,
+        )
+        session.add_all([previous, setup])
+        await session.flush()
+
+        created = await maybe_auto_open_paper_position(
+            session, run_id=99, setup=setup,
+            validation={"ai_decision": "LONG", "acceptable_rr": True},
+            structured=_ict_clear_structured(), symbol="BTCUSDT",
+        )
+        assert created["created"] is True, created
+        await session.refresh(previous)
+        assert previous.status == "open"
+        assert previous.stop_loss == 95.0
+        assert previous.take_profit == 140.0
+        assert previous.extra == {"old_metadata": True}
+
+        new_pos = (await session.execute(
+            select(SimPosition).where(SimPosition.ai_setup_id == setup.setup_id)
+        )).scalar_one()
+        assert new_pos.take_profit == pytest.approx(115.0)
+        assert setup.take_profit == pytest.approx(125.0)

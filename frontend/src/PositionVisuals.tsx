@@ -17,6 +17,15 @@ export function numberText(value: unknown, decimals = 2): string {
   }).format(number);
 }
 
+export function tpModelExecutionText(executionTp: unknown, policy: unknown): string {
+  const info = policy && typeof policy === "object" ? policy as Record<string, unknown> : null;
+  const modelTp = numericValue(info?.ai_take_profit);
+  if (info?.was_capped === true && modelTp !== null) {
+    return numberText(modelTp) + " → " + numberText(executionTp);
+  }
+  return numberText(executionTp);
+}
+
 function pnlTone(value: unknown): Tone {
   const n = numericValue(value);
   return n === null || n === 0 ? "neutral" : n > 0 ? "profit" : "loss";
@@ -165,6 +174,8 @@ export function PositionTradeCard({
   const pnl = !pending && metrics ? metrics.net_unrealized_pnl : null;
   const rr = metrics ? numericValue(metrics.net_rr) : null;
   const direction = String(p.direction || "").toUpperCase();
+  const tpPolicy = p.tp_execution_policy && typeof p.tp_execution_policy === "object" ? p.tp_execution_policy as PositionRecord : null;
+  const showTpCap = tpPolicy?.was_capped === true;
   const entry = p.fill_price ?? p.entry_price ?? p.limit_entry_price;
   const stateText = pending ? "در انتظار ورود" : open ? "باز" : status || "نامشخص";
   const pnlPct = !pending && metrics ? numericValue(metrics.pnl_pct_on_margin) : null;
@@ -203,7 +214,11 @@ export function PositionTradeCard({
         <PositionDetail label="ورود" value={<span dir="ltr">{numberText(entry)}</span>} />
         <PositionDetail label="قیمت بازار" value={<span dir="ltr">{pending ? "—" : numberText(p.mark_price)}</span>} />
         <PositionDetail label="حد ضرر" value={<span dir="ltr">{numberText(p.stop_loss)}</span>} />
-        <PositionDetail label="حد سود" value={<span dir="ltr">{numberText(p.take_profit)}</span>} />
+        <PositionDetail label="حد سود اجرایی" value={<span dir="ltr">{numberText(p.take_profit)}</span>} />
+        {showTpCap && <>
+          <PositionDetail label="TP مدل (تحلیلی)" value={<span dir="ltr">{numberText(tpPolicy?.ai_take_profit)}</span>} />
+          <PositionDetail label="R:R اجرایی ناخالص" value={<span dir="ltr">1 : {numberText(tpPolicy?.execution_gross_rr)}</span>} />
+        </>}
         <PositionDetail label="مارجین" value={<MoneyValue value={p.margin_usdt} />} />
         <PositionDetail label="نوع سفارش" value={String(p.order_type || "—").toUpperCase()} />
         <PositionDetail label="ارزش اسمی پوزیشن" value={<MoneyValue value={metrics?.notional_usdt} />} />

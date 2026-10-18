@@ -1,0 +1,67 @@
+name: Auto Paper TP 3R Cap Regression
+
+on:
+  pull_request:
+    paths:
+      - "backend/app/domain/paper_execution_policy.py"
+      - "backend/app/services/paper_auto_trading.py"
+      - "backend/app/services/position/position_service.py"
+      - "backend/app/services/position/report_service.py"
+      - "backend/tests/test_auto_paper_tp_cap.py"
+      - "backend/tests/test_paper_auto_trading.py"
+      - "frontend/src/PositionPage.tsx"
+      - "frontend/src/PositionVisuals.tsx"
+      - "frontend/src/PositionVisuals.test.tsx"
+      - ".github/workflows/auto-paper-tp-cap-checks.yml"
+  push:
+    branches:
+      - feat/cap-new-auto-paper-tp-at-3r
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Create isolated test DB directory
+        run: mkdir -p data
+      - name: Full backend regression
+        env:
+          SKIP_CONFIG_GUARD: "1"
+          DISABLE_APP_BACKGROUND: "1"
+          DATABASE_URL: sqlite+aiosqlite:///./data/test_tradeonbu.db
+        run: python -m pytest -q
+
+  frontend:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: TypeScript
+        run: npx tsc --noEmit
+      - name: Build
+        run: npm run build
+      - name: UI tests
+        run: npm test
