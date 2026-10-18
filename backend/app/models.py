@@ -2,7 +2,7 @@ import enum
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import JSON, DateTime, Float, Integer, String, Text, func
+from sqlalchemy import JSON, DateTime, Float, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
@@ -52,6 +52,8 @@ class SystemState(Base):
     ai_analysis_lock_until_ms: Mapped[int] = mapped_column(Integer, default=0)
     opportunity_monitor_lock_owner: Mapped[str | None] = mapped_column(String(64), nullable=True)
     opportunity_monitor_lock_until_ms: Mapped[int] = mapped_column(Integer, default=0)
+    price_forecast_lock_owner: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    price_forecast_lock_until_ms: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class RuntimeSettings(Base):
@@ -460,3 +462,94 @@ class SimEquitySnapshot(Base):
     margin_in_use: Mapped[float] = mapped_column(Float)
     unrealized_pnl: Mapped[float] = mapped_column(Float)
     recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+class PriceForecastSettings(Base):
+    __tablename__ = "price_forecast_settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    enabled: Mapped[bool] = mapped_column(default=False)
+    interval_minutes: Mapped[int] = mapped_column(Integer, default=60)
+    model: Mapped[str] = mapped_column(String(64), default="gpt-6-luna")
+    reasoning_effort: Mapped[str] = mapped_column(String(16), default="low")
+    max_output_tokens: Mapped[int] = mapped_column(Integer, default=1200)
+    daily_request_limit: Mapped[int] = mapped_column(Integer, default=48)
+    monthly_budget_usd: Mapped[float] = mapped_column(Float, default=5.0)
+    input_price_per_mtok: Mapped[float] = mapped_column(Float, default=2.0)
+    cached_input_price_per_mtok: Mapped[float] = mapped_column(Float, default=0.5)
+    output_price_per_mtok: Mapped[float] = mapped_column(Float, default=8.0)
+    reasoning_price_per_mtok: Mapped[float] = mapped_column(Float, default=8.0)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    running_status: Mapped[str] = mapped_column(String(32), default="idle")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class PriceForecastRun(Base):
+    __tablename__ = "price_forecast_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    public_id: Mapped[str] = mapped_column(String(36), unique=True, index=True)
+    symbol: Mapped[str] = mapped_column(String(32), default="BTCUSDT", index=True)
+    status: Mapped[str] = mapped_column(String(32), index=True, default="pending")
+    trigger: Mapped[str] = mapped_column(String(32), default="manual")
+    anchor_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    anchor_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    generated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    model: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    reasoning_effort: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    input_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    cached_input_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    output_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    reasoning_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    latency_ms: Mapped[int] = mapped_column(Integer, default=0)
+    estimated_cost_usd: Mapped[float] = mapped_column(Float, default=0.0)
+    market_snapshot_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    raw_response_excerpt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+class PriceForecastPoint(Base):
+    __tablename__ = "price_forecast_points"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[int] = mapped_column(Integer, index=True)
+    point_index: Mapped[int] = mapped_column(Integer)
+    target_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    forecast_price: Mapped[float] = mapped_column(Float)
+    actual_close: Mapped[float | None] = mapped_column(Float, nullable=True)
+    actual_recorded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error_abs: Mapped[float | None] = mapped_column(Float, nullable=True)
+    error_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+
+class MarketDataSnapshot(Base):
+    __tablename__ = "market_data_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True, default="BTCUSDT")
+    collected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    freshness: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    valid: Mapped[bool] = mapped_column(default=True)
+
+
+class MarketMicroRollup(Base):
+    """Persisted trade / book summaries (survives container restart)."""
+
+    __tablename__ = "market_micro_rollups"
+    __table_args__ = (UniqueConstraint("symbol", "bucket_start_ms", "kind", name="uq_micro_rollup_bucket"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True, default="BTCUSDT")
+    bucket_start_ms: Mapped[int] = mapped_column(Integer, index=True)
+    kind: Mapped[str] = mapped_column(String(32), index=True)
+    source: Mapped[str] = mapped_column(String(32), default="bitunix")
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

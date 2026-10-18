@@ -80,6 +80,7 @@ async def stream_analysis_response(
     instructions: str,
     user_input: str,
     reasoning_effort: str = "max",
+    max_output_tokens: int | None = None,
     timeout: float = 600.0,
 ) -> AnalysisResponse:
     effort = (reasoning_effort or "max").lower()
@@ -94,6 +95,8 @@ async def stream_analysis_response(
         "store": False,
         "stream": True,
     }
+    if max_output_tokens is not None and max_output_tokens > 0:
+        payload["max_output_tokens"] = int(max_output_tokens)
     text_parts: list[str] = []
     response_obj: dict[str, Any] = {}
     async with httpx.AsyncClient(timeout=timeout) as client:

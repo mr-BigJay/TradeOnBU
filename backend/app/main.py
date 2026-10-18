@@ -24,6 +24,7 @@ from app.routes import chatgpt_ai as chatgpt_ai_routes
 from app.routes import siwc_public as siwc_public_routes
 from app.routes import position as position_routes
 from app.routes import opportunities as opportunities_routes
+from app.routes import price_forecast as price_forecast_routes
 from app.services.settings_runtime import refresh_settings_cache
 from app.models import MarketTrendSnapshot, Signal, SignalEvent, SignalStatus
 from app.schemas import (
@@ -116,6 +117,26 @@ async def lifespan(app: FastAPI):
             max_instances=1,
             coalesce=True,
         )
+
+        async def _price_forecast_tick() -> None:
+            from app.services.price_forecast.scheduler import execute_scheduled_forecast_if_due
+            from app.services.price_forecast.accuracy import record_actual_closes_for_due_points
+
+            await record_actual_closes_for_due_points()
+            await execute_scheduled_forecast_if_due()
+
+        scheduler.add_job(
+            _price_forecast_tick,
+            "interval",
+            minutes=1,
+            id="price_forecast_scheduled",
+            max_instances=1,
+            coalesce=True,
+        )
+
+        from app.services.price_forecast.bitunix_trade_ws import get_micro_collector
+
+        get_micro_collector().start()
     yield
     scheduler.shutdown(wait=False)
 
@@ -127,6 +148,7 @@ app.include_router(chatgpt_ai_routes.router)
 app.include_router(siwc_public_routes.router)
 app.include_router(position_routes.router)
 app.include_router(opportunities_routes.router)
+app.include_router(price_forecast_routes.router)
 app.add_middleware(SessionSecurityMiddleware)
 app.add_middleware(
     CORSMiddleware,

@@ -1827,3 +1827,28 @@ label {
   .position-open-dashboard .position-trade-card__footer button { display: none !important; }
   .position-open-dashboard .position-trading-layout { display: block; }
 }
+
+.forecast-chart-wrap {
+  position: relative;
+}
+
+.forecast-future-shade {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: linear-gradient(90deg, rgba(0, 229, 255, 0.04), rgba(0, 229, 255, 0.1));
+  pointer-events: none;
+  z-index: 1;
+}
+
+.forecast-settings-grid {
+  display: grid;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
