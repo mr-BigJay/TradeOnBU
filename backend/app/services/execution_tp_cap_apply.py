@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
@@ -27,6 +28,24 @@ def ai_take_profit_2_from_payload(
         if val > 0:
             return val
     return None
+
+
+def levels_geometry_valid(
+    direction: str,
+    entry: float,
+    stop_loss: float,
+    take_profit: float,
+) -> tuple[bool, str | None]:
+    d = (direction or "").upper()
+    if d == "LONG":
+        if not (stop_loss < entry < take_profit):
+            return False, "long_fill_geometry_invalid"
+    elif d == "SHORT":
+        if not (take_profit < entry < stop_loss):
+            return False, "short_fill_geometry_invalid"
+    else:
+        return False, "invalid_direction"
+    return True, None
 
 
 def build_execution_tp_extra(
@@ -62,26 +81,72 @@ def build_execution_tp_extra(
     return extra
 
 
-def apply_post_market_fill_execution_tp_cap(
+@dataclass
+class PostFillCapResult:
+    applied: bool
+    take_profit: float
+    extra: dict[str, Any]
+    geometry_ok: bool
+    geometry_reason: str | None
+    tp_changed: bool
+
+
+def compute_post_market_fill_execution_tp(
     pos,
     *,
     fill_price: float,
-) -> bool:
+) -> PostFillCapResult:
     """
-    Re-cap take_profit after market fill + slippage (new positions only).
-    Idempotent per position. Returns True if take_profit changed.
+    Re-cap execution TP (+ audit TP2) from actual fill. Idempotent when already applied.
+    Does not mutate pos — caller validates geometry and commits state.
     """
     extra = dict(pos.extra or {})
+    base_tp = float(pos.take_profit)
+
     if not extra.get("execution_tp_cap_applied_at"):
-        return False
+        ok, reason = levels_geometry_valid(pos.direction, fill_price, float(pos.stop_loss), base_tp)
+        return PostFillCapResult(
+            applied=False,
+            take_profit=base_tp,
+            extra=extra,
+            geometry_ok=ok,
+            geometry_reason=reason,
+            tp_changed=False,
+        )
+
     if extra.get("execution_tp_cap_post_fill_applied"):
-        return False
+        ok, reason = levels_geometry_valid(pos.direction, fill_price, float(pos.stop_loss), base_tp)
+        return PostFillCapResult(
+            applied=False,
+            take_profit=base_tp,
+            extra=extra,
+            geometry_ok=ok,
+            geometry_reason=reason,
+            tp_changed=False,
+        )
+
     if (pos.order_type or "").lower() != "market":
-        return False
+        ok, reason = levels_geometry_valid(pos.direction, fill_price, float(pos.stop_loss), base_tp)
+        return PostFillCapResult(
+            applied=False,
+            take_profit=base_tp,
+            extra=extra,
+            geometry_ok=ok,
+            geometry_reason=reason,
+            tp_changed=False,
+        )
 
     ai_tp = extra.get("ai_original_take_profit")
     if ai_tp is None:
-        return False
+        ok, reason = levels_geometry_valid(pos.direction, fill_price, float(pos.stop_loss), base_tp)
+        return PostFillCapResult(
+            applied=False,
+            take_profit=base_tp,
+            extra=extra,
+            geometry_ok=ok,
+            geometry_reason=reason,
+            tp_changed=False,
+        )
 
     tp_cap = apply_execution_take_profit_cap(
         direction=pos.direction,
@@ -90,10 +155,7 @@ def apply_post_market_fill_execution_tp_cap(
         take_profit_ai=float(ai_tp),
         take_profit_2_ai=extra.get("ai_original_take_profit_2"),
     )
-    prev_tp = float(pos.take_profit)
     new_tp = float(tp_cap.execution_take_profit)
-    pos.take_profit = new_tp
-
     extra["execution_take_profit"] = new_tp
     extra["execution_tp_cap_post_fill_applied"] = True
     extra["execution_tp_cap_post_fill_at"] = datetime.now(timezone.utc).isoformat()
@@ -103,5 +165,31 @@ def apply_post_market_fill_execution_tp_cap(
     )
     if tp_cap.was_capped or abs(new_tp - float(ai_tp)) > 1e-9:
         extra["execution_tp_cap_capped"] = True
-    pos.extra = extra
-    return abs(new_tp - prev_tp) > 1e-9
+    if tp_cap.execution_take_profit_2 is not None:
+        extra["execution_take_profit_2"] = float(tp_cap.execution_take_profit_2)
+        extra["execution_tp_cap_capped_tp2"] = tp_cap.was_capped_tp2
+
+    ok, reason = levels_geometry_valid(pos.direction, fill_price, float(pos.stop_loss), new_tp)
+    return PostFillCapResult(
+        applied=True,
+        take_profit=new_tp,
+        extra=extra,
+        geometry_ok=ok,
+        geometry_reason=reason,
+        tp_changed=abs(new_tp - base_tp) > 1e-9,
+    )
+
+
+def apply_post_market_fill_execution_tp_cap(
+    pos,
+    *,
+    fill_price: float,
+) -> bool:
+    """Legacy helper: mutates pos when geometry valid. Prefer compute + validate in fill path."""
+    result = compute_post_market_fill_execution_tp(pos, fill_price=fill_price)
+    if not result.geometry_ok:
+        return False
+    prev = float(pos.take_profit)
+    pos.take_profit = result.take_profit
+    pos.extra = result.extra
+    return result.applied and abs(result.take_profit - prev) > 1e-9
