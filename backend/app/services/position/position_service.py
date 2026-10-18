@@ -455,6 +455,7 @@ class SimPositionService:
             "fill_price": pos.fill_price,
             "stop_loss": pos.stop_loss,
             "take_profit": pos.take_profit,
+            "tp_execution_policy": (pos.extra or {}).get("tp_execution_policy"),
             "mark_price": mark_price,
             "ai_setup_id": pos.ai_setup_id,
             "quantity_btc": pos.quantity_btc,

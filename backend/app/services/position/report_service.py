@@ -111,6 +111,7 @@ async def build_report(
                 "exit_price": t.exit_price,
                 "stop_loss": t.stop_loss,
                 "take_profit": t.take_profit,
+                "tp_execution_policy": (t.extra or {}).get("tp_execution_policy"),
                 "opened_at_tehran": format_tehran(t.opened_at),
                 "closed_at_tehran": format_tehran(t.closed_at),
                 "gross_pnl_usdt": t.gross_pnl_usdt,

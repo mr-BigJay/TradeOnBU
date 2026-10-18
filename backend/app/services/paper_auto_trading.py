@@ -8,6 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.setup_lifecycle import PENDING_ENTRY, POSITION_OPEN, READY_LONG, READY_SHORT
+from app.domain.paper_execution_policy import MAX_NEW_AUTO_PAPER_GROSS_RR, cap_new_auto_paper_tp
 from app.domain.time_utils import ensure_utc
 from app.models import AiProposedSetup, SimPosition, SimPositionSettings
 from app.services.ai_setup_memory import validate_proposed_setup_levels
@@ -201,7 +202,9 @@ async def maybe_auto_open_paper_position(
 
     entry_f = float(setup.entry_price)  # type: ignore[arg-type]
     sl_f = float(setup.stop_loss)  # type: ignore[arg-type]
-    tp_f = float(setup.take_profit)  # type: ignore[arg-type]
+    proposed_tp = float(setup.take_profit)  # type: ignore[arg-type]
+    # Apply the gross 3R ceiling ONLY to the new order, not the stored AI setup.
+    tp_f = cap_new_auto_paper_tp(setup.direction, entry_f, sl_f, proposed_tp)
     rr_ok, net_rr = await net_rr_acceptable_for_auto_paper(
         session,
         direction=setup.direction,
@@ -229,8 +232,16 @@ async def maybe_auto_open_paper_position(
 
     entry = float(setup.entry_price)  # type: ignore[arg-type]
     sl = float(setup.stop_loss)  # type: ignore[arg-type]
-    tp = float(setup.take_profit)  # type: ignore[arg-type]
+    tp = tp_f
     direction = (setup.direction or "").upper()
+    tp_policy = {
+        "ai_take_profit": proposed_tp,
+        "execution_take_profit": tp,
+        "was_capped": tp != proposed_tp,
+        "max_gross_rr": MAX_NEW_AUTO_PAPER_GROSS_RR,
+        "original_gross_rr": abs(proposed_tp - entry) / abs(entry - sl),
+        "execution_gross_rr": abs(tp - entry) / abs(entry - sl),
+    }
 
     svc = SimPositionService()
     req = OrderRequest(
@@ -267,6 +278,7 @@ async def maybe_auto_open_paper_position(
             "ai_run_id": run_id,
             "source": "gpt_auto_paper",
             "ict_entry_snapshot": ict_snapshot,
+            "tp_execution_policy": tp_policy,
         }
         await session.flush()
 
@@ -274,6 +286,7 @@ async def maybe_auto_open_paper_position(
     meta["position_id"] = result.position_id
     meta["setup_id"] = setup.setup_id
     meta["ict_entry_snapshot"] = ict_snapshot
+    meta["tp_execution_policy"] = tp_policy
     logger.info(
         "PAPER AUTO ENTRY CREATED",
         extra={
