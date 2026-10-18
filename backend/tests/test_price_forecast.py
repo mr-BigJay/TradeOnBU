@@ -16,7 +16,9 @@ from app.services.price_forecast.hour_bounds import iso_utc, next_six_hourly_clo
 from app.services.price_forecast.lock import acquire_price_forecast_lock, release_price_forecast_lock
 from app.services.price_forecast.run_policy import schedule_backoff_after_failure
 from app.services.price_forecast.run_service import execute_forecast_with_lock
-from app.services.price_forecast.settings_service import get_or_create_forecast_settings
+from app.services.price_forecast.maintenance import reconcile_stale_forecast_runs, schedule_after_daily_limit_reached
+from app.services.price_forecast.settings_service import count_billable_runs_today, get_or_create_forecast_settings
+from app.services.price_forecast.scheduler import execute_scheduled_forecast_if_due
 from app.services.price_forecast.trade_rollup import parse_trade_event_ms, upsert_trade_bucket
 from app.services.price_forecast.validation import ForecastValidationError, validate_forecast_payload
 from app.services.siwc.responses_client import AnalysisResponse, OpenAIResponsesError
@@ -411,6 +413,70 @@ async def test_openai_stream_error_keeps_partial_usage():
         run = (await session.execute(select(PriceForecastRun))).scalar_one()
         assert run.input_tokens == 50
         assert run.output_tokens == 10
+
+
+@pytest.mark.asyncio
+async def test_stale_running_run_reconciled_and_excluded_from_daily_count():
+    await init_db()
+    old = datetime.now(timezone.utc) - timedelta(hours=2)
+    async with SessionLocal() as session:
+        cfg = await get_or_create_forecast_settings(session)
+        cfg.running_status = "running"
+        run = PriceForecastRun(
+            public_id="stale-run",
+            symbol="BTCUSDT",
+            status="running",
+            trigger="scheduled",
+        )
+        session.add(run)
+        await session.flush()
+        run.created_at = old
+        await session.commit()
+    async with SessionLocal() as session:
+        n = await reconcile_stale_forecast_runs(session)
+        await session.commit()
+        assert n == 1
+        run = (await session.execute(select(PriceForecastRun).where(PriceForecastRun.public_id == "stale-run"))).scalar_one()
+        assert run.status == "failed"
+        assert run.error_code == "process_interrupted"
+        cfg = await get_or_create_forecast_settings(session)
+        assert cfg.running_status == "idle"
+        # Reconciled run is failed (billable once), not stuck as running forever.
+        assert await count_billable_runs_today(session) == 1
+
+
+@pytest.mark.asyncio
+async def test_scheduled_daily_limit_advances_next_run_at():
+    await init_db()
+    async with SessionLocal() as session:
+        cfg = await get_or_create_forecast_settings(session)
+        cfg.enabled = True
+        cfg.daily_request_limit = 1
+        cfg.next_run_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+        session.add(
+            PriceForecastRun(
+                public_id="billable",
+                symbol="BTCUSDT",
+                status="ok",
+                trigger="manual",
+            )
+        )
+        await session.commit()
+    with patch("app.services.price_forecast.run_service.stream_analysis_response", AsyncMock()) as mock_ai:
+        outcome = await execute_scheduled_forecast_if_due()
+    assert outcome.status == "skipped"
+    assert outcome.message == "daily_limit_reached"
+    mock_ai.assert_not_called()
+    async with SessionLocal() as session:
+        cfg = await get_or_create_forecast_settings(session)
+        nxt = cfg.next_run_at.replace(tzinfo=timezone.utc) if cfg.next_run_at.tzinfo is None else cfg.next_run_at
+        assert nxt >= schedule_after_daily_limit_reached()
+
+
+def test_schedule_after_daily_limit_is_next_utc_day():
+    now = datetime(2026, 6, 15, 23, 50, tzinfo=timezone.utc)
+    nxt = schedule_after_daily_limit_reached(now=now)
+    assert nxt == datetime(2026, 6, 16, 0, 0, tzinfo=timezone.utc)
 
 
 @pytest.mark.asyncio

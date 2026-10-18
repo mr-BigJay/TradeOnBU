@@ -138,6 +138,10 @@ async def lifespan(app: FastAPI):
 
         get_micro_collector().start()
     yield
+    if not os.getenv("DISABLE_APP_BACKGROUND"):
+        from app.services.price_forecast.bitunix_trade_ws import get_micro_collector
+
+        await get_micro_collector().stop()
     scheduler.shutdown(wait=False)
 
 

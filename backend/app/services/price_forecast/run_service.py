@@ -23,6 +23,11 @@ from app.services.price_forecast.run_policy import (
     schedule_backoff_after_failure,
     validate_forecast_config,
 )
+from app.services.price_forecast.maintenance import (
+    reconcile_stale_forecast_runs,
+    schedule_after_daily_limit_reached,
+    schedule_after_monthly_budget_reached,
+)
 from app.services.price_forecast.settings_service import (
     count_billable_runs_today,
     get_or_create_forecast_settings,
@@ -134,14 +139,21 @@ async def run_price_forecast(*, trigger: str, skip_enabled_check: bool = False) 
     try:
         async with SessionLocal() as session:
             cfg = await get_or_create_forecast_settings(session)
+            await reconcile_stale_forecast_runs(session)
             validate_forecast_config(cfg)
 
             if trigger != "manual" and not skip_enabled_check and not cfg.enabled:
                 return ForecastRunOutcome(status="skipped", message="forecast_disabled")
 
             if await count_billable_runs_today(session) >= int(cfg.daily_request_limit):
+                if trigger == "scheduled":
+                    cfg.next_run_at = schedule_after_daily_limit_reached()
+                    await session.commit()
                 return ForecastRunOutcome(status="skipped", message="daily_limit_reached")
             if await month_cost_usd(session) >= float(cfg.monthly_budget_usd):
+                if trigger == "scheduled":
+                    cfg.next_run_at = schedule_after_monthly_budget_reached()
+                    await session.commit()
                 return ForecastRunOutcome(status="skipped", message="monthly_budget_reached")
 
             token = await _resolve_openai_token(session)

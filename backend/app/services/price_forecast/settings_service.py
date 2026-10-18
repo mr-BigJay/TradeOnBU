@@ -36,11 +36,17 @@ async def get_or_create_forecast_settings(session: AsyncSession) -> PriceForecas
 
 
 async def count_billable_runs_today(session: AsyncSession) -> int:
-    """Every persisted run that reached OpenAI billing (ok/failed/running)."""
+    """Runs that consumed or may consume OpenAI quota today (ok/failed, or running still in-flight)."""
+    from app.config import get_settings
+
     start = _utc_now().replace(hour=0, minute=0, second=0, microsecond=0)
+    in_flight_cutoff = _utc_now() - timedelta(seconds=int(get_settings().ai_analysis_lock_ttl_seconds) + 60)
     q = select(func.count()).select_from(PriceForecastRun).where(
         PriceForecastRun.created_at >= start,
-        PriceForecastRun.status.in_(("ok", "failed", "running")),
+        (
+            PriceForecastRun.status.in_(("ok", "failed"))
+            | ((PriceForecastRun.status == "running") & (PriceForecastRun.created_at >= in_flight_cutoff))
+        ),
     )
     return int((await session.execute(q)).scalar_one())
 

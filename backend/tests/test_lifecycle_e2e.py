@@ -195,6 +195,8 @@ async def test_parallel_monitor_ticks_single_order():
         st.opportunity_monitor_lock_until_ms = 0
         st.price_forecast_lock_owner = None
         st.price_forecast_lock_until_ms = 0
+        st.ai_analysis_lock_owner = None
+        st.ai_analysis_lock_until_ms = 0
         await session.commit()
 
     created = datetime.now(timezone.utc) - timedelta(minutes=30)
