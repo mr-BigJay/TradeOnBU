@@ -1830,15 +1830,86 @@ label {
 
 .forecast-chart-wrap {
   position: relative;
+  min-height: 420px;
+}
+
+.forecast-chart-canvas {
+  position: relative;
+  z-index: 3;
 }
 
 .forecast-future-shade {
   position: absolute;
   top: 0;
   bottom: 0;
-  background: linear-gradient(90deg, rgba(0, 229, 255, 0.04), rgba(0, 229, 255, 0.1));
+  background: linear-gradient(90deg, rgba(0, 229, 255, 0.03), rgba(0, 120, 180, 0.12));
   pointer-events: none;
   z-index: 1;
+}
+
+.forecast-boundary-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  border-left: 1px dashed rgba(0, 229, 255, 0.55);
+  pointer-events: none;
+  z-index: 2;
+}
+
+.forecast-zone-label {
+  position: absolute;
+  top: 10px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  color: rgba(0, 229, 255, 0.72);
+  pointer-events: none;
+  z-index: 2;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.forecast-point-tooltip {
+  position: absolute;
+  z-index: 6;
+  max-width: 220px;
+  padding: 0.55rem 0.65rem;
+  border-radius: 8px;
+  background: rgba(8, 14, 28, 0.94);
+  border: 1px solid rgba(0, 229, 255, 0.35);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  color: #d5def5;
+}
+
+.forecast-point-tooltip__title {
+  font-weight: 600;
+  color: #00e5ff;
+  margin-bottom: 0.25rem;
+}
+
+.forecast-point-tooltip__row {
+  margin-bottom: 0.15rem;
+}
+
+.forecast-point-tooltip__muted {
+  font-size: 0.72rem;
+  color: #9fb0d0;
+  margin-top: 0.15rem;
+}
+
+@media (max-width: 640px) {
+  .forecast-chart-wrap {
+    min-height: 360px;
+  }
+
+  .forecast-point-tooltip {
+    max-width: min(92vw, 240px);
+    font-size: 0.76rem;
+  }
 }
 
 .forecast-settings-grid {
