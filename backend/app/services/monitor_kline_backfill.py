@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from app.domain.candle_utils import interval_ms
+from app.domain.setup_monitor_boundary import interval_grid_first_open_at_or_after
 
 DEFAULT_MONITOR_KLINE_LIMIT = 120
 MAX_MONITOR_KLINE_LIMIT = 500
@@ -32,11 +33,11 @@ class MonitorFetchPlan:
 
 
 def next_closed_bar_open_ms(*, cursor_ms: int, boundary_ms: int, interval: str = "5m") -> int:
-    """Next 5m bar open on the exchange grid after cursor, not before monitor boundary."""
+    """Next closed bar open on the interval grid after cursor (boundary may be 1m-aligned)."""
     step = interval_ms(interval)
-    if cursor_ms < boundary_ms:
-        return boundary_ms
-    return ((cursor_ms // step) + 1) * step
+    grid_floor = interval_grid_first_open_at_or_after(boundary_ms, interval)
+    after_cursor = ((cursor_ms // step) + 1) * step
+    return max(grid_floor, after_cursor)
 
 
 def live_monitor_fetch_plan(
@@ -51,6 +52,8 @@ def live_monitor_fetch_plan(
     Live monitor history: anchor on cursor + structural context, not full setup lifetime.
     """
     step = interval_ms(interval)
+    if boundary_ms % step != 0:
+        boundary_ms = interval_grid_first_open_at_or_after(boundary_ms, interval)
     context_ms = STRUCTURAL_CONTEXT_BARS * step
     effective_cursor = cursor_ms if cursor_ms >= 0 else boundary_ms - step
     lag_bars = max(0, (now_ms - effective_cursor) // step)
@@ -104,6 +107,8 @@ def replay_fetch_plan(
 ) -> MonitorFetchPlan:
     """Independent replay: full history from monitor boundary (audit path)."""
     step = interval_ms(interval)
+    if boundary_ms % step != 0:
+        boundary_ms = interval_grid_first_open_at_or_after(boundary_ms, interval)
     context_ms = STRUCTURAL_CONTEXT_BARS * step
     span_bars = max(0, (now_ms - boundary_ms) // step + CLOSE_BUFFER_BARS)
     bars_needed = span_bars + STRUCTURAL_CONTEXT_BARS
@@ -164,7 +169,12 @@ def aggregate_monitor_kline_limit(setups: list, *, now_ms: int, interval: str = 
     per_setup: list[dict] = []
     chosen = DEFAULT_MONITOR_KLINE_LIMIT
     for setup in setups:
-        boundary = setup.monitor_from_ms or 0
+        confirm_boundary = setup.monitor_from_ms or 0
+        boundary = (
+            interval_grid_first_open_at_or_after(confirm_boundary, interval)
+            if confirm_boundary % interval_ms(interval) != 0
+            else confirm_boundary
+        )
         cursor = setup.monitor_cursor_ms if setup.monitor_cursor_ms is not None else -1
         lim, meta = monitor_kline_limit_for_setups(
             monitor_cursor_ms=cursor,

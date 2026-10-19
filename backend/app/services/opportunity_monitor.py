@@ -41,7 +41,10 @@ from app.domain.execution_order_policy import (
     reconcile_pending_ai_limit_order,
     verify_five_m_for_pending_fills,
 )
-from app.domain.setup_monitor_boundary import first_eligible_bar_open_ms
+from app.domain.setup_monitor_boundary import (
+    first_eligible_bar_open_ms,
+    five_m_monitor_anchor_ms,
+)
 from app.domain.time_utils import ensure_utc
 from app.models import AiProposedSetup, SimPosition
 from app.services.ict_confirmation_engine import _check_invalidation_on_bar
@@ -86,7 +89,10 @@ from app.services.entry_execution_settings import (
     shadow_simulation_enabled,
 )
 from app.services.entry_execution_shadow import run_balanced_shadow_tick
-from app.services.monitor_1m_integrity import assess_1m_monitor_integrity
+from app.services.monitor_1m_integrity import (
+    assess_1m_monitor_integrity,
+    balanced_1m_allows_new_orders,
+)
 from app.services.paper_auto_trading import maybe_auto_open_paper_position
 
 logger = logging.getLogger(__name__)
@@ -705,11 +711,12 @@ class OpportunityMonitorService:
                 setup.last_validation_result = {"ok": False, "reason": "missing_structured_monitor_requirements"}
                 continue
 
-            boundary = _monitor_boundary_ms(setup)
-            cursor_eff = _monitor_cursor_effective(setup, boundary)
+            confirm_boundary = _monitor_boundary_ms(setup)
+            five_m_boundary = five_m_monitor_anchor_ms(confirm_boundary)
+            cursor_eff = _monitor_cursor_effective(setup, confirm_boundary)
             fetch_plan = live_monitor_fetch_plan(
                 setup_id=setup.setup_id,
-                boundary_ms=boundary,
+                boundary_ms=five_m_boundary,
                 cursor_ms=cursor_eff,
                 now_ms=now_ms,
             )
@@ -721,7 +728,7 @@ class OpportunityMonitorService:
             skipped_opens = detect_skipped_closed_bars(
                 closed_bars=bundle.closed,
                 cursor_ms=cursor_eff,
-                boundary_ms=boundary,
+                boundary_ms=five_m_boundary,
                 now_ms=now_ms,
                 interval=MONITOR_INTERVAL,
             )
@@ -746,7 +753,7 @@ class OpportunityMonitorService:
                 jump = first_discontinuity_open_ms(
                     new_bars=new_bars,
                     cursor_ms=cursor_eff,
-                    boundary_ms=boundary,
+                    boundary_ms=five_m_boundary,
                     interval=MONITOR_INTERVAL,
                 )
                 if jump is not None:
@@ -827,22 +834,27 @@ class OpportunityMonitorService:
             conf_state = dict(setup.confirmation_state or {})
             new_1m: list = []
             balanced_1m_integrity_ok = True
+            balanced_1m_order_ok = True
             if paper_entry_mode == ENTRY_MODE_BALANCED and closed_1m:
-                cursor_1m = _monitor_1m_cursor_ms(setup, boundary)
+                cursor_1m = _monitor_1m_cursor_ms(setup, confirm_boundary)
+                stale_sec = int(get_effective_settings().market_data_stale_seconds or 120)
+                max_1m_age = max(90_000, min(330_000, stale_sec * 1000 + 30_000))
                 one_m_ok, one_m_reason, one_m_detail = assess_1m_monitor_integrity(
                     closed_1m=closed_1m,
                     data_complete=bundle_1m_complete,
                     gaps_remaining=bundle_1m_gaps,
-                    boundary_ms=boundary,
+                    boundary_ms=confirm_boundary,
                     cursor_ms=cursor_1m,
                     now_ms=now_ms,
+                    max_age_after_close_ms=max_1m_age,
                 )
                 notes = dict(setup.objective_notes or {})
                 notes["monitor_1m_integrity"] = {"ok": one_m_ok, "reason": one_m_reason, **one_m_detail}
                 setup.objective_notes = notes
                 balanced_1m_integrity_ok = one_m_ok
+                balanced_1m_order_ok = balanced_1m_allows_new_orders(ok=one_m_ok, reason=one_m_reason)
                 if one_m_ok:
-                    new_1m = _eligible_new_closed_1m_bars(setup, closed_1m, now_ms, boundary)
+                    new_1m = _eligible_new_closed_1m_bars(setup, closed_1m, now_ms, confirm_boundary)
                 else:
                     _record_market_data_health(
                         setup,
@@ -853,6 +865,7 @@ class OpportunityMonitorService:
                     )
             elif paper_entry_mode == ENTRY_MODE_BALANCED:
                 balanced_1m_integrity_ok = False
+                balanced_1m_order_ok = False
                 notes = dict(setup.objective_notes or {})
                 notes["monitor_1m_integrity"] = {"ok": False, "reason": "missing_1m_closed_bars"}
                 setup.objective_notes = notes
@@ -868,7 +881,7 @@ class OpportunityMonitorService:
                     zone_hi=zone_hi,
                     invalidation_level=setup.invalidation_level,
                     structured=structured,
-                    monitor_from_ms=boundary,
+                    monitor_from_ms=confirm_boundary,
                     now_ms=now_ms,
                 )
 
@@ -887,7 +900,7 @@ class OpportunityMonitorService:
                     zone_hi=zone_hi,
                     invalidation_level=setup.invalidation_level,
                     structured=structured,
-                    monitor_from_ms=boundary,
+                    monitor_from_ms=confirm_boundary,
                     now_ms=now_ms,
                 )
                 conf_state = apply_balanced_progress_to_state(
@@ -917,7 +930,7 @@ class OpportunityMonitorService:
                         zone_hi=zone_hi,
                         invalidation_level=setup.invalidation_level,
                         structured=structured,
-                        monitor_from_ms=boundary,
+                        monitor_from_ms=confirm_boundary,
                     )
                     conf_state = {
                         **conf_state,
@@ -1103,7 +1116,7 @@ class OpportunityMonitorService:
                     session, setup, bundle, now_ms, now, summary
                 ):
                     continue
-                if order_engine == ENTRY_MODE_BALANCED and not balanced_1m_integrity_ok:
+                if order_engine == ENTRY_MODE_BALANCED and not balanced_1m_order_ok:
                     integrity = (setup.objective_notes or {}).get("monitor_1m_integrity") or {}
                     append_timeline_event(
                         setup,

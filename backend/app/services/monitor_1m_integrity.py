@@ -6,6 +6,14 @@ from app.domain.candles import Candle
 from app.domain.candle_utils import candle_close_ms, interval_ms
 
 
+DEFAULT_1M_FRESH_AFTER_CLOSE_MS = 180_000
+
+
+def balanced_1m_allows_new_orders(*, ok: bool, reason: str) -> bool:
+    """BALANCED paper orders require provable fresh 1m progress, not ok_no_new_bars alone."""
+    return ok and reason == "ok"
+
+
 def assess_1m_monitor_integrity(
     *,
     closed_1m: list[Candle],
@@ -14,7 +22,7 @@ def assess_1m_monitor_integrity(
     boundary_ms: int,
     cursor_ms: int,
     now_ms: int,
-    max_age_after_close_ms: int = 330_000,
+    max_age_after_close_ms: int = DEFAULT_1M_FRESH_AFTER_CLOSE_MS,
 ) -> tuple[bool, str, dict]:
     """
     Returns (ok, reason, detail). When not ok, BALANCED must not stamp tokens or advance 1m cursor.
@@ -54,11 +62,13 @@ def assess_1m_monitor_integrity(
     ]
     if not in_scope:
         at_or_after = [c for c in closed_1m if c.time_ms >= boundary_ms]
-        if at_or_after:
-            latest = max(at_or_after, key=lambda c: c.time_ms)
-            fail = _freshness_fail(latest)
-            if fail:
-                return False, fail[1], detail
+        if not at_or_after:
+            return False, "missing_1m_coverage_after_boundary", detail
+        latest = max(at_or_after, key=lambda c: c.time_ms)
+        fail = _freshness_fail(latest)
+        if fail:
+            return False, fail[1], detail
+        detail["coverage_through_ms"] = latest.time_ms
         return True, "ok_no_new_bars", detail
 
     sorted_scope = sorted(in_scope, key=lambda c: c.time_ms)
