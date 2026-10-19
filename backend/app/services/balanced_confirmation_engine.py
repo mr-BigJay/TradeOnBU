@@ -205,13 +205,9 @@ def _pending_chronology_stamp_allowed(
     now_ms: int,
 ) -> bool:
     """Re-stamp a deferred token after full 1m coverage (no look-ahead; monotonic 1m opens)."""
-    trial = dict(timestamps)
-    trial[token] = bar_ms
-    if not sequence_order_valid(sequence, trial):
-        return False
     if not _1m_coverage_complete_for_5m(bar_5m=bar_5m, closed_1m=closed_1m, now_ms=now_ms):
         return False
-    return _try_token_on_1m(
+    if not _try_token_on_1m(
         token=token,
         direction=direction,
         bar_1m=bar_1m,
@@ -221,6 +217,21 @@ def _pending_chronology_stamp_allowed(
         zone_lo=zone_lo,
         zone_hi=zone_hi,
         structured=structured,
+    ):
+        return False
+    return not _would_violate_chronology_if_stamped(
+        direction=direction,
+        sequence=sequence,
+        timestamps=timestamps,
+        new_token=token,
+        new_ms=bar_ms,
+        bar_5m=bar_5m,
+        closed_5m=closed_5m,
+        closed_1m=closed_1m,
+        zone_lo=zone_lo,
+        zone_hi=zone_hi,
+        structured=structured,
+        now_ms=now_ms,
     )
 
 
@@ -239,40 +250,41 @@ def _retry_pending_chronology_stamp(
     structured: dict[str, Any],
     monitor_from_ms: int,
     now_ms: int,
-) -> tuple[bool, int]:
+) -> tuple[str, int, dict[str, Any] | None]:
     """
     Re-attempt a chronology-deferred stamp when 1m slot coverage becomes provable (no look-ahead).
-    Returns (resolved_any, last_1m_ms unchanged on failure at deferred bar).
+    Returns (outcome, last_1m_ms, ambiguous_audit) where outcome is resolved|pending|ambiguous|noop.
     """
+    cursor_ms = int(confirmation_state.get("monitor_1m_cursor_ms") or monitor_from_ms - 1)
     pending = confirmation_state.get("pending_chronology_proof")
     if not pending or not isinstance(pending, dict):
-        return False, int(confirmation_state.get("monitor_1m_cursor_ms") or monitor_from_ms - 1)
+        return "noop", cursor_ms, None
     if pending.get("defer_reason") != "incomplete_1m_coverage":
-        return False, int(confirmation_state.get("monitor_1m_cursor_ms") or monitor_from_ms - 1)
+        return "noop", cursor_ms, None
 
     token = pending.get("token")
     bar_ms = pending.get("bar_1m_ms")
     if not token or bar_ms is None:
-        return False, int(confirmation_state.get("monitor_1m_cursor_ms") or monitor_from_ms - 1)
+        return "noop", cursor_ms, None
 
     bar_ms = int(bar_ms)
     bar_1m = next((c for c in closed_1m if c.time_ms == bar_ms), None)
     if bar_1m is None or now_ms < candle_close_ms(bar_1m, "1m"):
-        return False, int(confirmation_state.get("monitor_1m_cursor_ms") or monitor_from_ms - 1)
+        return "pending", cursor_ms, None
 
     if token in timestamps:
-        return True, bar_ms
+        return "resolved", bar_ms, None
 
     nxt = next_sequence_token(sequence, [t for t in sequence if t in timestamps])
     if nxt != token:
-        return False, int(confirmation_state.get("monitor_1m_cursor_ms") or monitor_from_ms - 1)
+        return "pending", cursor_ms, None
 
     parent_open = _parent_5m_open_ms(bar_1m.time_ms)
     bar_5m = next((b for b in closed_5m if b.time_ms == parent_open), None)
     if bar_5m is None:
         partial = [c for c in closed_1m if parent_open <= c.time_ms <= bar_1m.time_ms]
         if not partial:
-            return False, int(confirmation_state.get("monitor_1m_cursor_ms") or monitor_from_ms - 1)
+            return "pending", cursor_ms, None
         bar_5m = Candle(
             time_ms=parent_open,
             open=partial[0].open,
@@ -281,6 +293,10 @@ def _retry_pending_chronology_stamp(
             close=partial[-1].close,
             volume=sum(c.volume or 0 for c in partial),
         )
+
+    coverage_complete = _1m_coverage_complete_for_5m(
+        bar_5m=bar_5m, closed_1m=closed_1m, now_ms=now_ms
+    )
 
     if not _pending_chronology_stamp_allowed(
         sequence=sequence,
@@ -297,7 +313,17 @@ def _retry_pending_chronology_stamp(
         structured=structured,
         now_ms=now_ms,
     ):
-        return False, int(confirmation_state.get("monitor_1m_cursor_ms") or monitor_from_ms - 1)
+        if coverage_complete:
+            ambiguous = {
+                "token": token,
+                "bar_1m_ms": bar_ms,
+                "parent_5m_ms": parent_open,
+                "reason": "chronology_unprovable_after_5m_close",
+                "evaluated_at_ms": now_ms,
+                "prior_defer_reason": pending.get("defer_reason"),
+            }
+            return "ambiguous", bar_ms, ambiguous
+        return "pending", cursor_ms, None
 
     timestamps[token] = bar_1m.time_ms
     if token == "entry_zone_touch":
@@ -316,7 +342,7 @@ def _retry_pending_chronology_stamp(
             "engine": "BALANCED",
             "bar_1m_ms": bar_1m.time_ms,
         }
-    return True, bar_1m.time_ms
+    return "resolved", bar_1m.time_ms, None
 
 
 def process_balanced_new_closed_1m_bars(
@@ -360,7 +386,7 @@ def process_balanced_new_closed_1m_bars(
         progress.invalidation_reason = inv_reason
         return progress
 
-    resolved, resolved_ms = _retry_pending_chronology_stamp(
+    retry_outcome, retry_ms, retry_ambiguous = _retry_pending_chronology_stamp(
         direction=direction,
         policy=policy,
         sequence=sequence,
@@ -375,17 +401,24 @@ def process_balanced_new_closed_1m_bars(
         monitor_from_ms=monitor_from_ms,
         now_ms=now_ms,
     )
-    if resolved:
-        last_1m_ms = resolved_ms
+    if retry_outcome == "resolved":
+        last_1m_ms = retry_ms
         progress.confirmation_timestamps = timestamps
         progress.confirmation_evidence = evidence
         progress.completed = [t for t in sequence if t in timestamps]
         progress.missing = [t for t in sequence if t not in timestamps]
         progress.pending_chronology_proof = None
+        progress.chronology_proof_ambiguous = None
+    elif retry_outcome == "ambiguous":
+        last_1m_ms = retry_ms
+        progress.pending_chronology_proof = None
+        progress.chronology_proof_ambiguous = retry_ambiguous
 
     pending = confirmation_state.get("pending_chronology_proof")
     if getattr(progress, "pending_chronology_proof", None):
         pending = progress.pending_chronology_proof
+    elif retry_outcome == "ambiguous":
+        pending = None
     defer_bar_ms = int(pending["bar_1m_ms"]) if isinstance(pending, dict) and pending.get("bar_1m_ms") is not None else None
 
     for bar_1m in sorted(new_1m_bars, key=lambda c: c.time_ms):
@@ -531,6 +564,12 @@ def apply_balanced_progress_to_state(
         out["pending_chronology_proof"] = pending
     else:
         out.pop("pending_chronology_proof", None)
+    if hasattr(progress, "chronology_proof_ambiguous"):
+        amb = progress.chronology_proof_ambiguous
+        if amb:
+            out["chronology_proof_ambiguous"] = amb
+        else:
+            out.pop("chronology_proof_ambiguous", None)
     return out
 
 

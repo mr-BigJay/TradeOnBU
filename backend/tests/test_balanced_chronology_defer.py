@@ -118,7 +118,7 @@ def test_defers_touch_before_5m_close_and_rolls_back_1m_cursor():
     assert state["monitor_1m_cursor_ms"] == m2
 
 
-def test_resolves_pending_touch_after_5m_close_without_advancing_past_deferred_bar():
+def test_retry_marks_ambiguous_when_mss_and_touch_share_1m_without_proof():
     ctx = _run_incremental_through_minute(through_open_ms=20_000 * STEP5 + 3 * STEP1)
     state = ctx["state"]
     bar_5m = ctx["bar_5m"]
@@ -143,8 +143,70 @@ def test_resolves_pending_touch_after_5m_close_without_advancing_past_deferred_b
         monitor_from_ms=ctx["boundary"],
         now_ms=now_after,
     )
-    assert progress.confirmation_timestamps["entry_zone_touch"] == ctx["m3"]
+    ts = progress.confirmation_timestamps
+    assert "entry_zone_touch" not in ts
+    assert ts["liquidity_sweep"] < ts["mss"]
+    assert ts["mss"] == ctx["m3"]
+    amb = getattr(progress, "chronology_proof_ambiguous", None)
+    assert amb and amb["token"] == "entry_zone_touch"
+    assert amb["reason"] == "chronology_unprovable_after_5m_close"
     assert getattr(progress, "pending_chronology_proof", None) is None
+    assert progress.last_bar_ms >= ctx["m3"]
+
+
+def _run_positive_same_5m_incremental() -> dict:
+    closed_5m, closed_1m, bar_5m, _ = _build_positive_same_5m()
+    t5 = bar_5m.time_ms
+    boundary = t5 + STEP1
+    policy = resolve_confirmation_policy(
+        sequence=["liquidity_sweep", "mss", "entry_zone_touch"],
+        structured={"confirmation_type": "sweep_mss_poi"},
+    )
+    state: dict = {"monitor_1m_cursor_ms": boundary - 1}
+    cursor = boundary - 1
+    for open_ms in [c.time_ms for c in closed_1m if c.time_ms >= boundary]:
+        now_ms = candle_close_ms(_1m(open_ms, o=0, h=0, l=0, c=0), "1m") + 2_000
+        partial = [c for c in closed_1m if c.time_ms <= open_ms]
+        new = [
+            c
+            for c in partial
+            if c.time_ms > cursor
+            and c.time_ms >= boundary
+            and now_ms >= candle_close_ms(c, "1m")
+        ]
+        if not new:
+            continue
+        progress = process_balanced_new_closed_1m_bars(
+            direction="LONG",
+            policy=policy,
+            confirmation_state=state,
+            new_1m_bars=new,
+            closed_5m=closed_5m,
+            closed_1m=partial,
+            zone_lo=ZONE_LO,
+            zone_hi=ZONE_HI,
+            invalidation_level=89.0,
+            structured={},
+            monitor_from_ms=boundary,
+            now_ms=now_ms,
+        )
+        state = apply_balanced_progress_to_state(
+            state,
+            progress,
+            policy=policy,
+            monitor_1m_cursor_ms=progress.last_bar_ms,
+        )
+        cursor = progress.last_bar_ms
+    return {"state": state, "closed_5m": closed_5m, "closed_1m": closed_1m, "bar_5m": bar_5m}
+
+
+def test_three_confirmations_strictly_ascending_1m_timestamps():
+    ctx = _run_positive_same_5m_incremental()
+    ts = ctx["state"]["confirmation_timestamps"]
+    assert set(ts) == {"liquidity_sweep", "mss", "entry_zone_touch"}
+    assert ts["liquidity_sweep"] < ts["mss"] < ts["entry_zone_touch"]
+    assert ctx["state"].get("pending_chronology_proof") is None
+    assert ctx["state"].get("chronology_proof_ambiguous") is None
 
 
 @pytest.mark.asyncio
@@ -266,8 +328,12 @@ async def test_monitor_tick_before_and_after_1205_for_chronology_defer():
             await session.execute(select(AiProposedSetup).where(AiProposedSetup.setup_id == "chrono-mon-1"))
         ).scalar_one()
         conf = row.confirmation_state or {}
-        assert conf["confirmation_timestamps"].get("entry_zone_touch") == m3
+        assert "entry_zone_touch" not in (conf.get("confirmation_timestamps") or {})
+        amb = conf.get("chronology_proof_ambiguous") or {}
+        assert amb.get("token") == "entry_zone_touch"
+        assert amb.get("reason") == "chronology_unprovable_after_5m_close"
         assert conf.get("pending_chronology_proof") is None
+        assert conf["monitor_1m_cursor_ms"] >= m3
         pos = (
             await session.execute(select(SimPosition).where(SimPosition.ai_setup_id == "chrono-mon-1"))
         ).scalar_one_or_none()
