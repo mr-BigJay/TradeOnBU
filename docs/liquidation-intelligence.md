@@ -44,7 +44,8 @@ Authenticated dashboard API (same key as other GUI routes):
 
 - `liquidation_events` — deduplicated normalized rows
 - `liquidation_source_status` — connection health
-- `liquidation_window_rollups` — time-aligned buckets (`bucket_start <= event_ts < bucket_end`), backfilled from raw on hourly job
+- `liquidation_window_rollups` — time-aligned buckets (`bucket_start <= event_ts < bucket_end`); SQL `GROUP BY` + `liquidation_rollup_cursors` watermark
+- GPT market summary receives **per-source** `bybit` / `binance` window metrics via `compact_liquidation_for_llm()`; combined totals are explicitly labeled partial sums
 - `liquidation_source_status.coverage_gaps` — lightweight connected-interval history for window coverage (not event timestamps)
 
 ## Disable / rollback

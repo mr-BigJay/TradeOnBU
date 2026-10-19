@@ -323,7 +323,8 @@ async def test_rollup_persistence_and_idempotent():
         assert "1m" in names and "4h" in names
         one_m = next(r for r in rows if r.window_name == "1m")
         assert one_m.payload.get("bucket_end_ms") == one_m.bucket_start_ms + 60_000
-        assert one_m.payload.get("bucket_start_ms") <= ev.event_timestamp_ms < one_m.payload.get("bucket_end_ms")
+        assert one_m.payload.get("time_bucket_closed") in (True, False)
+        assert one_m.payload["bucket_start_ms"] <= ev.event_timestamp_ms < one_m.payload["bucket_end_ms"]
 
 
 @pytest.mark.asyncio
@@ -368,18 +369,36 @@ async def test_summary_partial_when_disconnected():
     assert isinstance(out["price_clusters"], dict)
 
 
-def test_compact_for_llm_removes_heavy_fields():
+def test_compact_for_llm_includes_per_source_metrics():
     full = {
-        "status": "ok",
+        "status": "partial",
         "symbol": "BTCUSDT",
-        "windows": {"5m": {"coverage": "partial", "metrics": {"event_count": 1}}},
-        "freshness_and_coverage": {"bybit": {"window_5m_coverage": "partial"}},
+        "bybit": {
+            "status": "ok",
+            "source_quality": "bybit_full_tape",
+            "connection_state": "connected_active",
+            "event_freshness": "ok",
+            "windows": {
+                "5m": {
+                    "coverage": "full",
+                    "metrics": {"total_observed_notional_usd": 1500.0, "event_count": 2, "long_liquidation_notional_usd": 1500.0},
+                }
+            },
+            "burst_metrics": {"burst": False},
+        },
+        "binance": {
+            "status": "partial",
+            "windows": {"5m": {"coverage": "unknown", "metrics": None}},
+            "burst_metrics": {},
+        },
+        "combined_labeled": {"status": "partial_labeled", "windows": {}},
+        "freshness_and_coverage": {},
         "price_clusters": {"bybit": list(range(10)), "binance": list(range(10))},
     }
     slim = compact_liquidation_for_llm(full)
+    assert slim["bybit"]["windows"]["5m"]["metrics"]["total_observed_notional_usd"] == 1500.0
+    assert slim["binance"]["windows"]["5m"]["metrics"] is None
     assert len(slim.get("price_clusters", {}).get("bybit", [])) <= 3
-    assert slim.get("freshness_and_coverage") is not None
-    assert slim["windows"]["5m"]["coverage"] == "partial"
 
 
 @pytest.mark.asyncio
@@ -400,6 +419,173 @@ async def test_gpt_summary_includes_connection_coverage():
     slim = compact_liquidation_for_llm(full)
     assert "freshness_and_coverage" in slim
     assert full["bybit"]["windows"]["5m"]["coverage"] in ("unknown", "observed_none", "partial", "full", "empty")
+    assert "bybit" in slim and "binance" in slim
+
+
+@pytest.mark.asyncio
+async def test_market_snapshot_liquidation_metrics_reach_llm_json():
+    await init_db()
+    now = int(time.time() * 1000)
+    bybit_ev = parse_bybit_all_liquidation_message(BYBIT_MSG)[0]
+    bybit_ev = NormalizedLiquidation(
+        **{
+            **bybit_ev.__dict__,
+            "event_timestamp_ms": now - 120_000,
+            "estimated_notional_usd": 1215.0,
+            "dedupe_key": build_dedupe_key("bybit", "BTCUSDT", now - 120_000, "Buy", 81000.5, 0.015),
+        }
+    )
+    binance_ev = parse_binance_force_order_message(BINANCE_MSG)
+    assert binance_ev is not None
+    binance_ev = NormalizedLiquidation(
+        **{
+            **binance_ev.__dict__,
+            "event_timestamp_ms": now - 90_000,
+            "estimated_notional_usd": 1619.0,
+        }
+    )
+    conn_since = now - 4 * 60 * 60 * 1000
+    with patch.object(get_settings(), "liquidation_intelligence_enabled", True):
+        async with SessionLocal() as session:
+            await insert_liquidation_event(session, bybit_ev)
+            await insert_liquidation_event(session, binance_ev)
+            await record_source_message(
+                session,
+                "bybit",
+                connected=True,
+                connection_activity_at_ms=now,
+                subscription_confirmed=True,
+            )
+            await record_source_message(
+                session,
+                "binance",
+                connected=True,
+                connection_activity_at_ms=now,
+                subscription_confirmed=True,
+            )
+            st_b = (
+                await session.execute(select(LiquidationSourceStatus).where(LiquidationSourceStatus.source_exchange == "bybit"))
+            ).scalar_one()
+            st_n = (
+                await session.execute(select(LiquidationSourceStatus).where(LiquidationSourceStatus.source_exchange == "binance"))
+            ).scalar_one()
+            st_b.connected_since_ms = conn_since
+            st_b.coverage_gaps = [{"start_ms": conn_since, "end_ms": now}]
+            st_n.connected_since_ms = conn_since
+            st_n.coverage_gaps = [{"start_ms": conn_since, "end_ms": now}]
+            await session.commit()
+
+            from app.services.liquidation_intelligence.summary import build_liquidation_forecast_summary
+            from app.services.price_forecast.market_collector import build_llm_market_summary
+
+            full = await build_liquidation_forecast_summary(session)
+            slim = compact_liquidation_for_llm(full)
+            snap = MarketDataSnapshot(
+                symbol="BTCUSDT",
+                payload={"collected_at": "t", "liquidations": slim},
+                freshness={"liquidations": slim.get("status")},
+            )
+            llm_json = build_llm_market_summary(snap, anchor_price=80000.0, expected_times_iso=["2026-01-01T12:00:00Z"])
+            import json
+
+            parsed = json.loads(llm_json)
+            liq = parsed["liquidations"]
+            bybit_5m = liq["bybit"]["windows"]["5m"]
+            assert bybit_5m["metrics"] is not None
+            assert bybit_5m["metrics"]["total_observed_notional_usd"] == pytest.approx(1215.0, rel=0.01)
+            binance_5m = liq["binance"]["windows"]["5m"]
+            assert binance_5m["metrics"] is not None
+            assert binance_5m["metrics"]["total_observed_notional_usd"] == pytest.approx(1619.0, rel=0.01)
+            combined_5m = liq["combined_labeled"]["windows"]["5m"]
+            assert combined_5m["metrics"]["total_observed_notional_usd"] == pytest.approx(2834.0, rel=0.01)
+            assert set(combined_5m["contributing_sources"]) == {"bybit", "binance"}
+
+
+@pytest.mark.asyncio
+async def test_subscription_reset_on_disconnect_and_pending_on_connect():
+    await init_db()
+    async with SessionLocal() as session:
+        await record_source_message(session, "bybit", connected=True, subscription_confirmed=True)
+        await record_source_message(session, "bybit", connected=False)
+        await session.commit()
+        st = (await session.execute(select(LiquidationSourceStatus))).scalar_one()
+        assert st.subscription_confirmed is False
+        await record_source_message(session, "bybit", connected=True)
+        await session.commit()
+        st2 = (await session.execute(select(LiquidationSourceStatus))).scalar_one()
+        assert st2.connected is True
+        assert st2.subscription_confirmed is False
+
+
+@pytest.mark.asyncio
+async def test_startup_reconcile_unclean_connected_flag():
+    await init_db()
+    now = int(time.time() * 1000)
+    async with SessionLocal() as session:
+        await record_source_message(
+            session,
+            "bybit",
+            connected=True,
+            connection_activity_at_ms=now - 60_000,
+            subscription_confirmed=True,
+        )
+        st = (await session.execute(select(LiquidationSourceStatus))).scalar_one()
+        st.connected_since_ms = now - 3600_000
+        await session.commit()
+        from app.services.liquidation_intelligence.startup_reconcile import reconcile_liquidation_sources_on_startup
+
+        n = await reconcile_liquidation_sources_on_startup(session)
+        await session.commit()
+        st2 = (await session.execute(select(LiquidationSourceStatus))).scalar_one()
+        assert n == 1
+        assert st2.connected is False
+        assert st2.subscription_confirmed is False
+        assert st2.coverage_gaps and st2.coverage_gaps[0]["end_ms"] == now - 60_000
+
+
+@pytest.mark.asyncio
+async def test_rollup_large_dataset_exact_totals():
+    await init_db()
+    now = int(time.time() * 1000)
+    window_ms = 60_000
+    bucket = (now // window_ms) * window_ms
+    ts = bucket + 30_000
+    expected = 0.0
+    async with SessionLocal() as session:
+        for i in range(800):
+            notional = 10.0 + (i % 7)
+            expected += notional
+            ev = NormalizedLiquidation(
+                source_exchange="bybit",
+                symbol="BTCUSDT",
+                event_timestamp_ms=ts + (i % 50),
+                received_timestamp_ms=now,
+                liquidated_position_side="long" if i % 2 == 0 else "short",
+                native_order_side="Buy",
+                price=80000.0,
+                quantity_btc=0.001,
+                estimated_notional_usd=notional,
+                price_type="bankruptcy_price",
+                source_quality="observed",
+                dedupe_key=build_dedupe_key("bybit", "BTCUSDT", ts + i, "Buy", 80000.0, i),
+            )
+            await insert_liquidation_event(session, ev)
+        await session.commit()
+        n1 = await materialize_rollups_for_symbol(session, now_ms=now)
+        n2 = await materialize_rollups_for_symbol(session, now_ms=now)
+        await session.commit()
+        assert n2 == n1
+        row = (
+            await session.execute(
+                select(LiquidationWindowRollup).where(
+                    LiquidationWindowRollup.window_name == "1m",
+                    LiquidationWindowRollup.source_exchange == "bybit",
+                    LiquidationWindowRollup.bucket_start_ms == bucket,
+                )
+            )
+        ).scalar_one()
+        assert row.payload["total_observed_notional_usd"] == pytest.approx(expected, rel=0.001)
+        assert row.payload["event_count"] == 800
 
 
 def test_llm_market_summary_includes_liquidations_key():

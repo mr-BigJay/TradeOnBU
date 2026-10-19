@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.services.liquidation_intelligence.analytics import WINDOW_MS, build_per_source_analytics, compute_window_metrics
 from app.services.liquidation_intelligence.collector import get_liquidation_collector
+from app.services.liquidation_intelligence.gpt_packaging import build_combined_labeled_summary
 from app.services.liquidation_intelligence.health import build_windows_with_coverage, source_health_block, window_data_coverage
 from app.services.liquidation_intelligence.repository import all_source_status, fetch_events_since, latest_event_time
 
@@ -74,18 +75,10 @@ async def build_liquidation_forecast_summary(session: AsyncSession, *, symbol: s
     binance_block = _source_block("binance", binance, price_type="avg_fill_price", quality_label="binance_sampled_stream")
 
     combined_events = bybit + binance
-    combined_st = None
-    combined_windows = build_windows_with_coverage(
-        combined_events,
-        now_ms,
-        compute_window_metrics,
-        source_status=combined_st,
-    )
-    w1h = combined_windows.get("1h") or {}
-    combined_notional_1h = (
-        (w1h.get("metrics") or {}).get("total_observed_notional_usd")
-        if w1h.get("coverage") not in ("unknown", "empty", "observed_none") and w1h.get("metrics")
-        else None
+    combined_labeled = build_combined_labeled_summary(
+        bybit_block=bybit_block,
+        binance_block=binance_block,
+        combined_events=bool(combined_events),
     )
 
     aggregate_status = "unavailable"
@@ -132,13 +125,11 @@ async def build_liquidation_forecast_summary(session: AsyncSession, *, symbol: s
         },
         "bybit": bybit_block,
         "binance": binance_block,
-        "combined_labeled": {
-            "status": "ok" if combined_events else "unavailable",
-            "total_observed_notional_usd_1h": combined_notional_1h,
-            "windows": combined_windows,
-            "note": "Dollar totals only — do not merge bankruptcy and fill prices into clusters",
+        "combined_labeled": combined_labeled,
+        "windows": {
+            "bybit": bybit_block.get("windows") or {},
+            "binance": binance_block.get("windows") or {},
         },
-        "windows": combined_windows,
         "price_clusters": {
             "bybit": bybit_block.get("price_clusters") or [],
             "binance": binance_block.get("price_clusters") or [],

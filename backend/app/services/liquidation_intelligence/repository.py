@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import delete, desc, func, select
+from sqlalchemy import Integer, case, cast, delete, desc, func, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.models import LiquidationEvent, LiquidationSourceStatus, LiquidationWindowRollup
+from app.models import LiquidationEvent, LiquidationRollupCursor, LiquidationSourceStatus, LiquidationWindowRollup
 from app.services.liquidation_intelligence.coverage import append_coverage_gap
 from app.services.liquidation_intelligence.types import NormalizedLiquidation
 
@@ -43,13 +43,16 @@ async def record_source_message(
     now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
     st = await ensure_source_status(session, source)
     was_connected = bool(st.connected)
-    if connected and not was_connected:
-        st.connected_since_ms = now_ms
     if not connected and was_connected:
         start = int(st.connected_since_ms or 0)
         if start > 0:
             st.coverage_gaps = append_coverage_gap(st.coverage_gaps, start_ms=start, end_ms=now_ms, now_ms=now_ms)
         st.connected_since_ms = None
+        st.subscription_confirmed = False
+    if connected and not was_connected:
+        st.connected_since_ms = now_ms
+        if subscription_confirmed is None:
+            st.subscription_confirmed = False
     st.connected = connected
     if message_at_ms is not None:
         st.last_message_at_ms = message_at_ms
@@ -179,3 +182,84 @@ async def prune_liquidation_data(session: AsyncSession) -> tuple[int, int]:
 
 async def all_source_status(session: AsyncSession) -> list[LiquidationSourceStatus]:
     return list((await session.execute(select(LiquidationSourceStatus).order_by(LiquidationSourceStatus.source_exchange))).scalars().all())
+
+
+async def get_rollup_cursor(
+    session: AsyncSession,
+    *,
+    symbol: str,
+    window_name: str,
+    source_exchange: str,
+) -> LiquidationRollupCursor:
+    row = (
+        await session.execute(
+            select(LiquidationRollupCursor).where(
+                LiquidationRollupCursor.symbol == symbol,
+                LiquidationRollupCursor.window_name == window_name,
+                LiquidationRollupCursor.source_exchange == source_exchange,
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        row = LiquidationRollupCursor(symbol=symbol, window_name=window_name, source_exchange=source_exchange)
+        session.add(row)
+        await session.flush()
+    return row
+
+
+async def aggregate_liquidation_buckets(
+    session: AsyncSession,
+    *,
+    symbol: str,
+    window_ms: int,
+    since_ms: int,
+    until_ms: int,
+    source_exchange: str,
+) -> list[dict]:
+    """Single-pass SQL grouping — no row limit; bucket_start <= ts < bucket_end by construction."""
+    bucket = (cast(LiquidationEvent.event_timestamp_ms / window_ms, Integer) * window_ms).label("bucket_start")
+    long_sum = func.sum(
+        case(
+            (LiquidationEvent.liquidated_position_side == "long", LiquidationEvent.estimated_notional_usd),
+            else_=0.0,
+        )
+    ).label("long_notional")
+    short_sum = func.sum(
+        case(
+            (LiquidationEvent.liquidated_position_side == "short", LiquidationEvent.estimated_notional_usd),
+            else_=0.0,
+        )
+    ).label("short_notional")
+    cnt = func.count(LiquidationEvent.id).label("event_count")
+    largest = func.max(LiquidationEvent.estimated_notional_usd).label("largest")
+    q = (
+        select(bucket, long_sum, short_sum, cnt, largest)
+        .where(
+            LiquidationEvent.symbol == symbol,
+            LiquidationEvent.event_timestamp_ms >= since_ms,
+            LiquidationEvent.event_timestamp_ms < until_ms,
+        )
+        .group_by(bucket)
+        .order_by(bucket)
+    )
+    if source_exchange != "combined":
+        q = q.where(LiquidationEvent.source_exchange == source_exchange)
+    rows = (await session.execute(q)).all()
+    out: list[dict] = []
+    for row in rows:
+        long_n = float(row.long_notional or 0)
+        short_n = float(row.short_notional or 0)
+        total = long_n + short_n
+        ratio = (long_n / short_n) if short_n > 0 else None
+        out.append(
+            {
+                "bucket_start_ms": int(row.bucket_start),
+                "long_liquidation_notional_usd": round(long_n, 2),
+                "short_liquidation_notional_usd": round(short_n, 2),
+                "total_observed_notional_usd": round(total, 2),
+                "long_short_ratio": round(ratio, 4) if ratio is not None else None,
+                "event_count": int(row.event_count or 0),
+                "largest_observed_usd": round(float(row.largest or 0), 2),
+            }
+        )
+    return out

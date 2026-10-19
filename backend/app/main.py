@@ -140,6 +140,14 @@ async def lifespan(app: FastAPI):
         get_micro_collector().start()
 
         from app.services.liquidation_intelligence.collector import get_liquidation_collector
+        from app.services.liquidation_intelligence.startup_reconcile import reconcile_liquidation_sources_on_startup
+
+        async with SessionLocal() as session:
+            try:
+                await reconcile_liquidation_sources_on_startup(session)
+                await session.commit()
+            except Exception:
+                logger.exception("Liquidation source startup reconcile failed")
 
         get_liquidation_collector().start()
 

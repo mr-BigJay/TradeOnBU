@@ -603,6 +603,22 @@ class LiquidationSourceStatus(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
+class LiquidationRollupCursor(Base):
+    """Incremental rollup watermark per symbol/window/source."""
+
+    __tablename__ = "liquidation_rollup_cursors"
+    __table_args__ = (
+        UniqueConstraint("symbol", "window_name", "source_exchange", name="uq_liq_rollup_cursor"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True, default="BTCUSDT")
+    window_name: Mapped[str] = mapped_column(String(8), index=True)
+    source_exchange: Mapped[str] = mapped_column(String(16), index=True)
+    last_closed_bucket_start_ms: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
 class LiquidationWindowRollup(Base):
     __tablename__ = "liquidation_window_rollups"
     __table_args__ = (

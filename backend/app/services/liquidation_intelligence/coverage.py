@@ -36,9 +36,23 @@ def connected_intervals_from_status(
     return sorted(intervals, key=lambda x: x[0])
 
 
+def _merge_intervals(intervals: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    if not intervals:
+        return []
+    ordered = sorted(intervals, key=lambda x: x[0])
+    merged: list[tuple[int, int]] = [ordered[0]]
+    for start, end in ordered[1:]:
+        prev_start, prev_end = merged[-1]
+        if start <= prev_end:
+            merged[-1] = (prev_start, max(prev_end, end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
 def connected_ms_in_window(intervals: list[tuple[int, int]], window_start_ms: int, window_end_ms: int) -> int:
     total = 0
-    for start, end in intervals:
+    for start, end in _merge_intervals(intervals):
         clipped = _clamp_interval(start, end, window_start_ms, window_end_ms)
         if clipped:
             total += clipped[1] - clipped[0]
