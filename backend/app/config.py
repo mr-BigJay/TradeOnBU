@@ -49,6 +49,7 @@ class Settings(BaseSettings):
     liquidation_ws_recv_idle_seconds: float = 120.0
     liquidation_binance_ws_url: str = "wss://fstream.binance.com/market/ws/btcusdt@forceOrder"
     liquidation_bybit_ws_url: str = "wss://stream.bybit.com/v5/public/linear"
+    liquidation_forecast_fetch_limit: int = 50_000
 
     # Source: siwc (ChatGPT subscription) or openai_api (paid API).
     ai_provider: str = "siwc"

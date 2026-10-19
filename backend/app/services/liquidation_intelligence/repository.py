@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.models import LiquidationEvent, LiquidationRollupCursor, LiquidationSourceStatus, LiquidationWindowRollup
 from app.services.liquidation_intelligence.coverage import append_coverage_gap
+from app.services.liquidation_intelligence.fetch_result import FetchEventsResult
 from app.services.liquidation_intelligence.types import NormalizedLiquidation
 
 
@@ -111,19 +112,39 @@ async def fetch_events_since(
     since_ms: int,
     source: str | None = None,
     limit: int = 50_000,
-) -> list[LiquidationEvent]:
-    """Fetch newest events in range (cap at limit) in chronological order for analytics."""
+) -> FetchEventsResult:
+    """Fetch newest events in range (cap at limit) in chronological order for forecast analytics."""
+    filters = [
+        LiquidationEvent.symbol == symbol,
+        LiquidationEvent.event_timestamp_ms >= since_ms,
+    ]
+    if source:
+        filters.append(LiquidationEvent.source_exchange == source)
     q = (
         select(LiquidationEvent)
-        .where(LiquidationEvent.symbol == symbol, LiquidationEvent.event_timestamp_ms >= since_ms)
+        .where(*filters)
         .order_by(desc(LiquidationEvent.event_timestamp_ms))
         .limit(limit)
     )
-    if source:
-        q = q.where(LiquidationEvent.source_exchange == source)
     rows = list((await session.execute(q)).scalars().all())
     rows.reverse()
-    return rows
+    earliest = int(rows[0].event_timestamp_ms) if rows else None
+    truncated = False
+    matching: int | None = None
+    if len(rows) >= limit:
+        matching = int((await session.execute(select(func.count()).select_from(LiquidationEvent).where(*filters))).scalar_one())
+        truncated = matching > limit
+    if not truncated and earliest is not None and earliest > since_ms and len(rows) >= limit:
+        truncated = True
+    return FetchEventsResult(
+        events=rows,
+        truncated=truncated,
+        row_limit=limit,
+        rows_returned=len(rows),
+        since_ms=since_ms,
+        earliest_returned_ms=earliest,
+        matching_row_count=matching,
+    )
 
 
 async def latest_event_time(session: AsyncSession, symbol: str) -> int | None:

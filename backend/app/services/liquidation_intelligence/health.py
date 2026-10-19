@@ -5,6 +5,7 @@ from typing import Any
 from app.models import LiquidationSourceStatus
 from app.services.liquidation_intelligence.analytics import WINDOW_MS
 from app.services.liquidation_intelligence.coverage import window_connection_coverage
+from app.services.liquidation_intelligence.fetch_result import FetchEventsResult
 
 
 def effective_connection_activity_ms(
@@ -136,25 +137,63 @@ def window_data_coverage(
     }
 
 
+def _apply_query_truncation(
+    cov: dict[str, Any],
+    *,
+    window_name: str,
+    now_ms: int,
+    fetch: FetchEventsResult | None,
+) -> dict[str, Any]:
+    if fetch is None or not fetch.truncated:
+        return cov
+    window_start = now_ms - WINDOW_MS[window_name]
+    earliest = fetch.earliest_returned_ms
+    window_incomplete = earliest is None or window_start < earliest or window_name == "4h"
+    if not window_incomplete:
+        return {
+            **cov,
+            "query_truncated": True,
+            "query_truncation_note": "Lookback query capped; this window may still be complete",
+        }
+    note = fetch.compact_warning() or "Query truncated"
+    return {
+        **cov,
+        "coverage": "truncated",
+        "partial": True,
+        "metrics": None,
+        "query_truncated": True,
+        "query_truncation_note": note,
+        "earliest_event_in_sample_ms": earliest,
+        "lookback_start_ms": fetch.since_ms,
+    }
+
+
 def build_windows_with_coverage(
     events: list[Any],
     now_ms: int,
     compute_metrics_fn,
     *,
     source_status: LiquidationSourceStatus | None,
+    fetch_result: FetchEventsResult | None = None,
 ) -> dict[str, Any]:
     raw = compute_metrics_fn(events, now_ms)
     out: dict[str, Any] = {}
     for name in ("1m", "5m", "15m", "1h", "4h"):
         metrics = raw.get(name)
         cov = window_data_coverage(source_status, events, now_ms, name)
-        if cov.get("metrics") is None and cov.get("coverage") in ("unknown", "empty", "observed_none"):
+        cov = _apply_query_truncation(cov, window_name=name, now_ms=now_ms, fetch=fetch_result)
+        if cov.get("metrics") is None and cov.get("coverage") in (
+            "unknown",
+            "empty",
+            "observed_none",
+            "truncated",
+        ):
             out[name] = {**cov, "metrics": None}
             continue
-        if cov.get("coverage") in ("partial", "unknown"):
+        if cov.get("coverage") in ("partial", "unknown", "truncated"):
             out[name] = {
                 **cov,
-                "metrics": {**(metrics or {}), "_data_coverage": cov.get("coverage")},
+                "metrics": None if cov.get("coverage") == "truncated" else {**(metrics or {}), "_data_coverage": cov.get("coverage")},
             }
         else:
             out[name] = {**cov, "metrics": metrics}

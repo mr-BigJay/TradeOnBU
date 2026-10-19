@@ -8,9 +8,23 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.services.liquidation_intelligence.analytics import WINDOW_MS, build_per_source_analytics, compute_window_metrics
 from app.services.liquidation_intelligence.collector import get_liquidation_collector
+from app.services.liquidation_intelligence.fetch_result import FetchEventsResult
 from app.services.liquidation_intelligence.gpt_packaging import build_combined_labeled_summary
-from app.services.liquidation_intelligence.health import build_windows_with_coverage, source_health_block, window_data_coverage
+from app.services.liquidation_intelligence.health import build_windows_with_coverage, source_health_block
 from app.services.liquidation_intelligence.repository import all_source_status, fetch_events_since, latest_event_time
+
+
+def _query_quality_block(fetch: FetchEventsResult, exchange: str) -> dict[str, Any]:
+    return {
+        "source": exchange,
+        "truncated": fetch.truncated,
+        "row_limit": fetch.row_limit,
+        "rows_returned": fetch.rows_returned,
+        "matching_row_count": fetch.matching_row_count,
+        "since_ms": fetch.since_ms,
+        "earliest_returned_ms": fetch.earliest_returned_ms,
+        "warning": fetch.compact_warning(),
+    }
 
 
 async def build_liquidation_forecast_summary(session: AsyncSession, *, symbol: str = "BTCUSDT") -> dict[str, Any]:
@@ -25,14 +39,28 @@ async def build_liquidation_forecast_summary(session: AsyncSession, *, symbol: s
     now_ms = int(time.time() * 1000)
     since_ms = now_ms - WINDOW_MS["4h"]
     stale_after_ms = int(settings.liquidation_stale_after_seconds) * 1000
-    bybit = await fetch_events_since(session, symbol=symbol, since_ms=since_ms, source="bybit")
-    binance = await fetch_events_since(session, symbol=symbol, since_ms=since_ms, source="binance")
+    fetch_limit = int(settings.liquidation_forecast_fetch_limit)
+    bybit_fetch = await fetch_events_since(
+        session, symbol=symbol, since_ms=since_ms, source="bybit", limit=fetch_limit
+    )
+    binance_fetch = await fetch_events_since(
+        session, symbol=symbol, since_ms=since_ms, source="binance", limit=fetch_limit
+    )
+    bybit = bybit_fetch.events
+    binance = binance_fetch.events
     statuses = await all_source_status(session)
     status_map = {s.source_exchange: s for s in statuses}
     collector = get_liquidation_collector()
     live = collector.status_payload() if collector else {}
 
-    def _source_block(exchange: str, events: list, *, price_type: str, quality_label: str) -> dict[str, Any]:
+    def _source_block(
+        exchange: str,
+        events: list,
+        fetch: FetchEventsResult,
+        *,
+        price_type: str,
+        quality_label: str,
+    ) -> dict[str, Any]:
         st = status_map.get(exchange)
         health = source_health_block(st, now_ms=now_ms, stale_after_ms=stale_after_ms, events_in_lookback=events)
         conn = health["connection_state"]
@@ -43,22 +71,35 @@ async def build_liquidation_forecast_summary(session: AsyncSession, *, symbol: s
                 "source_quality": quality_label,
                 "windows": {},
                 "price_clusters": [],
+                "event_query_quality": _query_quality_block(fetch, exchange),
             }
         analytics = build_per_source_analytics(events, now_ms, source=exchange, price_type=price_type) if events else {}
-        windows = build_windows_with_coverage(events, now_ms, compute_window_metrics, source_status=st)
+        windows = build_windows_with_coverage(
+            events,
+            now_ms,
+            compute_window_metrics,
+            source_status=st,
+            fetch_result=fetch,
+        )
         partial_any = any(
             w.get("partial")
-            or w.get("coverage") in ("empty", "partial", "unknown")
+            or w.get("coverage") in ("empty", "partial", "unknown", "truncated")
+            or w.get("query_truncated")
             for w in windows.values()
         )
         if not events and conn in ("connected_idle", "connected_active", "connecting"):
-            for key in ("5m", "15m", "1h", "4h"):
-                windows[key] = window_data_coverage(st, [], now_ms, key)
+            windows = build_windows_with_coverage(
+                [],
+                now_ms,
+                compute_window_metrics,
+                source_status=st,
+                fetch_result=fetch,
+            )
         if not events and conn in ("connected_idle", "connected_active", "connecting"):
             status = "connected_no_events"
         elif not events:
             status = "stale" if conn == "stale" else "unavailable"
-        elif partial_any:
+        elif partial_any or fetch.truncated:
             status = "partial"
         else:
             status = "ok"
@@ -69,10 +110,15 @@ async def build_liquidation_forecast_summary(session: AsyncSession, *, symbol: s
             "windows": windows,
             "burst_metrics": analytics.get("burst_metrics", {}),
             "price_clusters": analytics.get("price_clusters", []),
+            "event_query_quality": _query_quality_block(fetch, exchange),
         }
 
-    bybit_block = _source_block("bybit", bybit, price_type="bankruptcy_price", quality_label="bybit_full_tape")
-    binance_block = _source_block("binance", binance, price_type="avg_fill_price", quality_label="binance_sampled_stream")
+    bybit_block = _source_block(
+        "bybit", bybit, bybit_fetch, price_type="bankruptcy_price", quality_label="bybit_full_tape"
+    )
+    binance_block = _source_block(
+        "binance", binance, binance_fetch, price_type="avg_fill_price", quality_label="binance_sampled_stream"
+    )
 
     combined_events = bybit + binance
     combined_labeled = build_combined_labeled_summary(
@@ -89,7 +135,7 @@ async def build_liquidation_forecast_summary(session: AsyncSession, *, symbol: s
         "connected_no_events",
     ):
         aggregate_status = "partial"
-    elif combined_events:
+    elif combined_events or bybit_fetch.truncated or binance_fetch.truncated:
         aggregate_status = "partial"
 
     last_ev = await latest_event_time(session, symbol)
@@ -98,6 +144,10 @@ async def build_liquidation_forecast_summary(session: AsyncSession, *, symbol: s
         "status": aggregate_status,
         "symbol": symbol,
         "sources": ["bybit", "binance"],
+        "event_query_quality": {
+            "bybit": bybit_block.get("event_query_quality"),
+            "binance": binance_block.get("event_query_quality"),
+        },
         "freshness_and_coverage": {
             "now_ms": now_ms,
             "lookback_ms": WINDOW_MS["4h"],

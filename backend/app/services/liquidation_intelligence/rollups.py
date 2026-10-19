@@ -17,6 +17,44 @@ def bucket_start_for_timestamp(timestamp_ms: int, window_ms: int) -> int:
     return (int(timestamp_ms) // window_ms) * window_ms
 
 
+def _empty_closed_payload(*, bucket_start: int, bucket_end: int) -> dict[str, Any]:
+    return {
+        "bucket_start_ms": bucket_start,
+        "bucket_end_ms": bucket_end,
+        "long_liquidation_notional_usd": 0.0,
+        "short_liquidation_notional_usd": 0.0,
+        "total_observed_notional_usd": 0.0,
+        "long_short_ratio": None,
+        "event_count": 0,
+        "largest_observed_usd": 0.0,
+        "time_bucket_closed": True,
+        "connection_coverage_complete": None,
+        "observation": "no_events_observed",
+        "rollup_kind": "time_aligned_event_sum",
+        "note": "Closed bucket with no raw events stored — not proof of zero market liquidations",
+    }
+
+
+def _missing_closed_buckets_between(
+    populated_starts: set[int],
+    *,
+    window_ms: int,
+    now_ms: int,
+    span_min: int,
+    span_max: int,
+) -> list[int]:
+    """Closed buckets with no events strictly between span_min and span_max (bounded)."""
+    if span_max <= span_min:
+        return []
+    missing: list[int] = []
+    b = span_min
+    while b <= span_max:
+        if b not in populated_starts and now_ms >= b + window_ms:
+            missing.append(b)
+        b += window_ms
+    return missing
+
+
 async def materialize_rollups_for_symbol(
     session: AsyncSession,
     *,
@@ -24,7 +62,7 @@ async def materialize_rollups_for_symbol(
     now_ms: int,
     sources: tuple[str, ...] = ("bybit", "binance", "combined"),
 ) -> int:
-    """Incremental SQL rollups: one grouped query per window/source; idempotent upserts."""
+    """Incremental SQL rollups + bounded closed empty buckets between populated spans."""
     settings = get_settings()
     raw_cutoff_ms = now_ms - int(settings.liquidation_raw_retention_days) * 86400 * 1000
     written = 0
@@ -42,7 +80,10 @@ async def materialize_rollups_for_symbol(
                 until_ms=until_ms,
                 source_exchange=source,
             )
-            seen_starts = {int(a["bucket_start_ms"]) for a in aggregates}
+            populated_starts = {int(a["bucket_start_ms"]) for a in aggregates}
+            written_starts: set[int] = set()
+            span_min = min(populated_starts) if populated_starts else 0
+            span_max = max(populated_starts) if populated_starts else 0
             max_closed = int(cursor.last_closed_bucket_start_ms or 0)
             for agg in aggregates:
                 bucket_start = int(agg["bucket_start_ms"])
@@ -54,13 +95,8 @@ async def materialize_rollups_for_symbol(
                     "time_bucket_closed": time_bucket_closed,
                     "connection_coverage_complete": None,
                     "rollup_kind": "time_aligned_event_sum",
+                    "observation": "complete" if time_bucket_closed else "in_progress",
                 }
-                if time_bucket_closed and agg.get("event_count", 0) == 0:
-                    payload["observation"] = "empty_complete"
-                elif not time_bucket_closed:
-                    payload["observation"] = "in_progress"
-                else:
-                    payload["observation"] = "complete"
                 await upsert_window_rollup(
                     session,
                     symbol=symbol,
@@ -70,25 +106,36 @@ async def materialize_rollups_for_symbol(
                     payload=payload,
                 )
                 written += 1
+                written_starts.add(bucket_start)
                 if time_bucket_closed and bucket_start > max_closed:
                     max_closed = bucket_start
+            if populated_starts:
+                for bucket_start in _missing_closed_buckets_between(
+                    populated_starts,
+                    window_ms=window_ms,
+                    now_ms=now_ms,
+                    span_min=span_min,
+                    span_max=span_max,
+                ):
+                    bucket_end = bucket_start + window_ms
+                    await upsert_window_rollup(
+                        session,
+                        symbol=symbol,
+                        source_exchange=source,
+                        window_name=window_name,
+                        bucket_start_ms=bucket_start,
+                        payload=_empty_closed_payload(bucket_start=bucket_start, bucket_end=bucket_end),
+                    )
+                    written += 1
+                    written_starts.add(bucket_start)
+                    if bucket_start > max_closed:
+                        max_closed = bucket_start
             open_start = bucket_start_for_timestamp(now_ms, window_ms)
-            if open_start not in seen_starts:
+            if open_start not in populated_starts and open_start not in written_starts:
                 bucket_end = open_start + window_ms
-                payload = {
-                    "bucket_start_ms": open_start,
-                    "bucket_end_ms": bucket_end,
-                    "long_liquidation_notional_usd": 0.0,
-                    "short_liquidation_notional_usd": 0.0,
-                    "total_observed_notional_usd": 0.0,
-                    "long_short_ratio": None,
-                    "event_count": 0,
-                    "largest_observed_usd": 0.0,
-                    "time_bucket_closed": False,
-                    "connection_coverage_complete": None,
-                    "observation": "in_progress",
-                    "rollup_kind": "time_aligned_event_sum",
-                }
+                payload = _empty_closed_payload(bucket_start=open_start, bucket_end=bucket_end)
+                payload["time_bucket_closed"] = False
+                payload["observation"] = "in_progress"
                 await upsert_window_rollup(
                     session,
                     symbol=symbol,

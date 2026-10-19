@@ -26,7 +26,8 @@ from app.services.liquidation_intelligence.parsers import (
     parse_binance_force_order_message,
     parse_bybit_all_liquidation_message,
 )
-from app.services.liquidation_intelligence.repository import insert_liquidation_event, prune_liquidation_data, record_source_message
+from app.services.liquidation_intelligence.repository import fetch_events_since, insert_liquidation_event, prune_liquidation_data, record_source_message
+from app.services.liquidation_intelligence.rollups import bucket_start_for_timestamp
 from app.services.liquidation_intelligence.summary import build_liquidation_forecast_summary
 from app.services.liquidation_intelligence.types import NormalizedLiquidation
 from app.services.liquidation_intelligence.ws_common import run_ws_message_loop
@@ -546,9 +547,9 @@ async def test_startup_reconcile_unclean_connected_flag():
 @pytest.mark.asyncio
 async def test_rollup_large_dataset_exact_totals():
     await init_db()
-    now = int(time.time() * 1000)
     window_ms = 60_000
-    bucket = (now // window_ms) * window_ms
+    bucket = bucket_start_for_timestamp(1_700_000_100_000, window_ms)
+    now = bucket + window_ms + 5000
     ts = bucket + 30_000
     expected = 0.0
     async with SessionLocal() as session:
@@ -666,3 +667,124 @@ def test_aggregation_windows():
 def test_burst_detection():
     b = detect_burst(5000, 1000)
     assert b["burst"] is True
+
+
+@pytest.mark.asyncio
+async def test_fetch_truncation_detected_with_small_limit():
+    await init_db()
+    now = int(time.time() * 1000)
+    since = now - 4 * 60 * 60 * 1000
+    async with SessionLocal() as session:
+        for i in range(10):
+            ts = since + (i + 1) * 60_000
+            ev = NormalizedLiquidation(
+                source_exchange="bybit",
+                symbol="BTCUSDT",
+                event_timestamp_ms=ts,
+                received_timestamp_ms=now,
+                liquidated_position_side="long",
+                native_order_side="Buy",
+                price=80000.0,
+                quantity_btc=0.01,
+                estimated_notional_usd=100.0 + i,
+                price_type="bankruptcy_price",
+                source_quality="observed",
+                dedupe_key=build_dedupe_key("bybit", "BTCUSDT", ts, "Buy", 80000.0, i),
+            )
+            await insert_liquidation_event(session, ev)
+        await session.commit()
+        result = await fetch_events_since(session, symbol="BTCUSDT", since_ms=since, source="bybit", limit=3)
+        assert result.truncated is True
+        assert result.rows_returned == 3
+        assert result.matching_row_count == 10
+
+
+@pytest.mark.asyncio
+async def test_truncation_marks_summary_and_gpt_compact():
+    await init_db()
+    now = int(time.time() * 1000)
+    since = now - 4 * 60 * 60 * 1000
+    conn_since = since
+    async with SessionLocal() as session:
+        for i in range(10):
+            ts = since + (i + 1) * 60_000
+            ev = NormalizedLiquidation(
+                source_exchange="bybit",
+                symbol="BTCUSDT",
+                event_timestamp_ms=ts,
+                received_timestamp_ms=now,
+                liquidated_position_side="long",
+                native_order_side="Buy",
+                price=80000.0,
+                quantity_btc=0.01,
+                estimated_notional_usd=200.0,
+                price_type="bankruptcy_price",
+                source_quality="observed",
+                dedupe_key=build_dedupe_key("bybit", "BTCUSDT", ts, "Buy", 80000.0, float(i)),
+            )
+            await insert_liquidation_event(session, ev)
+        await record_source_message(
+            session,
+            "bybit",
+            connected=True,
+            connection_activity_at_ms=now,
+            subscription_confirmed=True,
+        )
+        st = (await session.execute(select(LiquidationSourceStatus).where(LiquidationSourceStatus.source_exchange == "bybit"))).scalar_one()
+        st.connected_since_ms = conn_since
+        st.coverage_gaps = [{"start_ms": conn_since, "end_ms": now}]
+        await session.commit()
+    with patch.object(get_settings(), "liquidation_intelligence_enabled", True), patch.object(
+        get_settings(), "liquidation_forecast_fetch_limit", 3
+    ):
+        async with SessionLocal() as session:
+            full = await build_liquidation_forecast_summary(session)
+    slim = compact_liquidation_for_llm(full)
+    assert full["event_query_quality"]["bybit"]["truncated"] is True
+    assert full["bybit"]["windows"]["4h"]["coverage"] == "truncated"
+    assert full["bybit"]["windows"]["4h"]["metrics"] is None
+    assert slim["event_query_quality"]["bybit"]["warning"]
+    assert slim["bybit"]["windows"]["4h"]["metrics"] is None
+
+
+@pytest.mark.asyncio
+async def test_closed_empty_rollup_between_populated_buckets():
+    await init_db()
+    window_ms = 60_000
+    b0 = bucket_start_for_timestamp(1_700_000_000_000, window_ms)
+    b1 = b0 + window_ms
+    b2 = b0 + 2 * window_ms
+    now_ms = b2 + window_ms + 5000
+    async with SessionLocal() as session:
+        for bucket, idx in ((b0, 1), (b2, 2)):
+            ev = NormalizedLiquidation(
+                source_exchange="bybit",
+                symbol="BTCUSDT",
+                event_timestamp_ms=bucket + 10_000,
+                received_timestamp_ms=now_ms,
+                liquidated_position_side="long",
+                native_order_side="Buy",
+                price=80000.0,
+                quantity_btc=0.01,
+                estimated_notional_usd=500.0 * idx,
+                price_type="bankruptcy_price",
+                source_quality="observed",
+                dedupe_key=build_dedupe_key("bybit", "BTCUSDT", bucket, "Buy", 80000.0, idx),
+            )
+            await insert_liquidation_event(session, ev)
+        await session.commit()
+        await materialize_rollups_for_symbol(session, now_ms=now_ms, sources=("bybit",))
+        await session.commit()
+        mid = (
+            await session.execute(
+                select(LiquidationWindowRollup).where(
+                    LiquidationWindowRollup.window_name == "1m",
+                    LiquidationWindowRollup.source_exchange == "bybit",
+                    LiquidationWindowRollup.bucket_start_ms == b1,
+                )
+            )
+        ).scalar_one_or_none()
+        assert mid is not None
+        assert mid.payload["observation"] == "no_events_observed"
+        assert mid.payload["time_bucket_closed"] is True
+        assert mid.payload["event_count"] == 0

@@ -20,6 +20,7 @@ LIQUIDATION_BINANCE_WS_URL=wss://fstream.binance.com/market/ws/btcusdt@forceOrde
 LIQUIDATION_BYBIT_WS_URL=wss://stream.bybit.com/v5/public/linear
 LIQUIDATION_WS_RECV_IDLE_SECONDS=120
 LIQUIDATION_WS_MAX_QUEUE=500
+LIQUIDATION_FORECAST_FETCH_LIMIT=50000
 ```
 
 Restart the backend container. The collector does **not** call OpenAI and does not alter ICT scheduling.

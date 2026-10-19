@@ -33,6 +33,7 @@ def compact_liquidation_for_llm(full: dict[str, Any]) -> dict[str, Any]:
         "symbol": full.get("symbol"),
         "sources": full.get("sources"),
         "source_quality": full.get("source_quality"),
+        "event_query_quality": full.get("event_query_quality"),
         "coverage_notes": full.get("coverage_notes"),
         "freshness_and_coverage": full.get("freshness_and_coverage"),
         "bybit": bybit,

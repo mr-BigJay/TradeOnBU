@@ -6,7 +6,7 @@ LLM_WINDOW_KEYS = ("5m", "15m", "1h", "4h")
 
 
 def _metrics_usable(coverage: str | None) -> bool:
-    return coverage not in (None, "unknown", "empty", "observed_none")
+    return coverage not in (None, "unknown", "empty", "observed_none", "truncated")
 
 
 def _sum_metric_dicts(parts: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -44,6 +44,7 @@ def slim_windows_for_llm(windows: dict[str, Any] | None) -> dict[str, Any]:
             "partial": w.get("partial"),
             "connected_fraction": w.get("connected_fraction"),
             "event_count": w.get("event_count"),
+            "query_truncated": w.get("query_truncated"),
             "metrics": metrics,
         }
     return out
@@ -51,11 +52,18 @@ def slim_windows_for_llm(windows: dict[str, Any] | None) -> dict[str, Any]:
 
 def slim_source_block_for_llm(block: dict[str, Any] | None) -> dict[str, Any]:
     block = block or {}
+    q = block.get("event_query_quality") or {}
     return {
         "status": block.get("status"),
         "source_quality": block.get("source_quality"),
         "connection_state": block.get("connection_state"),
         "event_freshness": block.get("event_freshness"),
+        "event_query_quality": {
+            "truncated": q.get("truncated"),
+            "warning": q.get("warning"),
+            "rows_returned": q.get("rows_returned"),
+            "row_limit": q.get("row_limit"),
+        },
         "windows": slim_windows_for_llm(block.get("windows")),
         "burst_metrics": block.get("burst_metrics") or {},
     }
