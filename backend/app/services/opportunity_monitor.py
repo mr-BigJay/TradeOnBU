@@ -77,13 +77,16 @@ from app.services.entry_execution_pipeline import (
     strict_promotion_ready,
     sync_pipeline_after_monitor,
 )
+from app.services.entry_execution_mode_switch import reconcile_setup_entry_engine
 from app.services.entry_execution_settings import (
     get_paper_entry_execution_config,
     live_confirmation_engine_mode,
     live_order_engine_mode,
+    paper_orders_allowed,
     shadow_simulation_enabled,
 )
 from app.services.entry_execution_shadow import run_balanced_shadow_tick
+from app.services.monitor_1m_integrity import assess_1m_monitor_integrity
 from app.services.paper_auto_trading import maybe_auto_open_paper_position
 
 logger = logging.getLogger(__name__)
@@ -399,17 +402,16 @@ async def _attempt_ready_paper_order(
         and not promotion_ready(policy, conf_state, allow_pre_entry=False)
     )
 
-    if shadow_simulation_enabled(paper_entry_mode or entry_mode, balanced_shadow):
+    from app.services.runtime_settings import get_runtime_settings
+
+    runtime = await get_runtime_settings(session)
+    if not paper_orders_allowed(
+        dry_run=bool(getattr(runtime, "paper_entry_dry_run", False)),
+        paper_trading_paused=runtime.paper_trading_paused,
+    ):
         append_timeline_event(
             setup,
-            "balanced_shadow_skip_order",
-            would_allow_pre_entry=allow_pre_entry,
-            at_ms=int(now.timestamp() * 1000),
-        )
-        append_timeline_event(
-            setup,
-            "balanced_shadow_order_blocked",
-            live_engine=order_engine,
+            "paper_order_skipped_dry_run_or_pause",
             at_ms=int(now.timestamp() * 1000),
         )
         return False
@@ -626,9 +628,10 @@ class OpportunityMonitorService:
         setups = list(result.scalars().all())
         summary: dict[str, Any] = {"checked": len(setups), "promoted": 0, "invalidated": 0, "expired": 0, "orders": 0}
 
-        paper_entry_mode, balanced_shadow = await get_paper_entry_execution_config(session)
+        paper_entry_mode, balanced_shadow, paper_entry_dry_run = await get_paper_entry_execution_config(session)
         summary["paper_entry_mode"] = paper_entry_mode
         summary["balanced_entry_shadow"] = balanced_shadow
+        summary["paper_entry_dry_run"] = paper_entry_dry_run
 
         bundle, fetch_meta = await fetch_monitor_5m_bundle(self.market, symbol, setups, now_ms=now_ms)
         kline_limit = fetch_meta.get("aggregate_limit", 120)
@@ -637,9 +640,13 @@ class OpportunityMonitorService:
         summary["fetch_meta"] = fetch_meta
 
         closed_1m: list = []
+        bundle_1m_complete = True
+        bundle_1m_gaps: list[int] = []
         if paper_entry_mode == ENTRY_MODE_BALANCED:
             bundle_1m = await self.market.fetch_kline_bundle(symbol, "1m", max(300, kline_limit * 5))
             closed_1m = list(bundle_1m.closed or [])
+            bundle_1m_complete = bool(bundle_1m.data_complete)
+            bundle_1m_gaps = list(bundle_1m.gaps_remaining or [])
 
         if not bundle.closed:
             for setup in setups:
@@ -790,17 +797,22 @@ class OpportunityMonitorService:
                             )
                             break
                     if setup.lifecycle_state in (READY_LONG, READY_SHORT):
-                        from app.services.conditional_revision import objective_confirmations_satisfied
-
-                        conf_ok, reject_reason = objective_confirmations_satisfied(setup)
-                        if not conf_ok:
+                        gap_live = live_confirmation_engine_mode(paper_entry_mode, balanced_shadow)
+                        gap_policy = policy_for_setup(setup, sequence)
+                        gap_conf = setup.confirmation_state or {}
+                        if not _promotion_confirmations_met(
+                            live_engine=gap_live,
+                            policy=gap_policy,
+                            conf_state=gap_conf,
+                        ):
                             setup.lifecycle_state = wait_state_for_direction(setup.direction)
-                            setup.last_rejection_reason = reject_reason or REASON_MISSING_CONFIRMATIONS
+                            setup.last_rejection_reason = REASON_MISSING_CONFIRMATIONS
                             setup.last_validation_result = {
                                 "ok": False,
-                                "reason": reject_reason or REASON_MISSING_CONFIRMATIONS,
-                                "missing": (setup.confirmation_state or {}).get("missing") or [],
+                                "reason": REASON_MISSING_CONFIRMATIONS,
+                                "missing": gap_conf.get("missing") or [],
                                 "ict_confirmed": False,
+                                "gap_suspend": True,
                             }
                     continue
                 if setup.lifecycle_state in (PENDING_ENTRY, POSITION_OPEN):
@@ -808,15 +820,35 @@ class OpportunityMonitorService:
                 continue
 
             live_engine = live_confirmation_engine_mode(paper_entry_mode, balanced_shadow)
+            reconcile_setup_entry_engine(setup, live_engine=live_engine)
             policy = policy_for_setup(setup, sequence)
             zone_lo, zone_hi = _zone_bounds(setup)
             structured = setup.structured_snapshot or {}
             conf_state = dict(setup.confirmation_state or {})
-            new_1m = (
-                _eligible_new_closed_1m_bars(setup, closed_1m, now_ms, boundary)
-                if paper_entry_mode == ENTRY_MODE_BALANCED
-                else []
-            )
+            new_1m: list = []
+            if paper_entry_mode == ENTRY_MODE_BALANCED and closed_1m:
+                cursor_1m = _monitor_1m_cursor_ms(setup, boundary)
+                one_m_ok, one_m_reason, one_m_detail = assess_1m_monitor_integrity(
+                    closed_1m=closed_1m,
+                    data_complete=bundle_1m_complete,
+                    gaps_remaining=bundle_1m_gaps,
+                    boundary_ms=boundary,
+                    cursor_ms=cursor_1m,
+                    now_ms=now_ms,
+                )
+                notes = dict(setup.objective_notes or {})
+                notes["monitor_1m_integrity"] = {"ok": one_m_ok, "reason": one_m_reason, **one_m_detail}
+                setup.objective_notes = notes
+                if one_m_ok:
+                    new_1m = _eligible_new_closed_1m_bars(setup, closed_1m, now_ms, boundary)
+                else:
+                    _record_market_data_health(
+                        setup,
+                        ok=False,
+                        reason=REASON_MISSING_MARKET_DATA,
+                        now=now,
+                        extra={"1m_integrity": one_m_reason, **one_m_detail},
+                    )
 
             if shadow_simulation_enabled(paper_entry_mode, balanced_shadow) and new_1m:
                 run_balanced_shadow_tick(

@@ -210,10 +210,14 @@ async def test_balanced_pre_entry_order_before_5m_close_and_no_pre_order_fill():
                             return_value=[],
                         ):
                             with patch(
-                                "app.services.opportunity_monitor._net_rr_ok",
-                                AsyncMock(return_value=(True, 2.5)),
+                                "app.services.opportunity_monitor.assess_1m_monitor_integrity",
+                                return_value=(True, "ok", {}),
                             ):
-                                summary = await mon.monitor_setups(session, symbol="BTCUSDT")
+                                with patch(
+                                    "app.services.opportunity_monitor._net_rr_ok",
+                                    AsyncMock(return_value=(True, 2.5)),
+                                ):
+                                    summary = await mon.monitor_setups(session, symbol="BTCUSDT")
         await session.commit()
 
         row = (await session.execute(select(AiProposedSetup).where(AiProposedSetup.setup_id == "pre-entry-1"))).scalar_one()

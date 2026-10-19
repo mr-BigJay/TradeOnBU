@@ -65,7 +65,12 @@ def resolve_confirmation_policy(
     if isinstance(optional_raw, list):
         optional = {str(x) for x in optional_raw if str(x) in seq}
 
-    # Required = full sequence minus optional, but profile minimums cannot be optional.
+    # AI optional hints cannot drop profile minimums or final entry proof token.
+    for t in min_struct:
+        optional.discard(t)
+    if "entry_zone_touch" in seq:
+        optional.discard("entry_zone_touch")
+
     required_set = {t for t in seq if t not in optional}
     for t in min_struct:
         if t in seq:

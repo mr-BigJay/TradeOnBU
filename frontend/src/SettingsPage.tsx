@@ -163,7 +163,15 @@ export function SettingsPage() {
               disabled={(strategy.paper_entry_mode || "STRICT") !== "BALANCED"}
               onChange={(e) => setStrategy({ ...strategy, balanced_entry_shadow_mode: e.target.checked })}
             />{" "}
-            Shadow Mode (فقط BALANCED — بدون سفارش واقعی)
+            Shadow Mode (مقایسه موازی — STRICT عملیاتی + شبیه‌سازی BALANCED)
+          </label>
+          <label>
+            <input
+              type="checkbox"
+              checked={!!strategy.paper_entry_dry_run}
+              onChange={(e) => setStrategy({ ...strategy, paper_entry_dry_run: e.target.checked })}
+            />{" "}
+            Dry Run (هیچ سفارش Paper — فقط مشاهده/مقایسه)
           </label>
           <button type="submit">ذخیره</button>
         </form>

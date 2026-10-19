@@ -174,7 +174,11 @@ async def maybe_auto_open_paper_position(
 
     mode = normalize_entry_mode(entry_mode)
     if entry_mode is None:
-        mode, _shadow = await get_paper_entry_execution_config(session)
+        mode, _shadow, dry_run = await get_paper_entry_execution_config(session)
+        if dry_run:
+            meta["skipped"] = True
+            meta["reason"] = "paper_entry_dry_run"
+            return meta
 
     lifecycle_upper = (setup.lifecycle_state or "").upper()
     if lifecycle_upper in (READY_LONG, READY_SHORT):

@@ -51,6 +51,7 @@ class StrategyUpdate(BaseModel):
     scanning_enabled: bool = True
     paper_entry_mode: str = Field(default="STRICT")
     balanced_entry_shadow_mode: bool = False
+    paper_entry_dry_run: bool = False
 
 
 class RiskUpdate(BaseModel):
@@ -132,6 +133,7 @@ async def get_strategy(session: AsyncSession = Depends(get_db), _=Depends(requir
         "scanning_enabled": row.scanning_enabled,
         "paper_entry_mode": getattr(row, "paper_entry_mode", None) or "STRICT",
         "balanced_entry_shadow_mode": bool(getattr(row, "balanced_entry_shadow_mode", False)),
+        "paper_entry_dry_run": bool(getattr(row, "paper_entry_dry_run", False)),
     }
 
 
@@ -149,6 +151,7 @@ async def put_strategy(body: StrategyUpdate, session: AsyncSession = Depends(get
     mode = (body.paper_entry_mode or "STRICT").upper()
     row.paper_entry_mode = "BALANCED" if mode == "BALANCED" else "STRICT"
     row.balanced_entry_shadow_mode = body.balanced_entry_shadow_mode
+    row.paper_entry_dry_run = body.paper_entry_dry_run
     await audit(session, user.id, "strategy", "update", body.model_dump())
     await session.commit()
     await refresh_settings_cache(session)

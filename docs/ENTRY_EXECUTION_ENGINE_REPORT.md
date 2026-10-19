@@ -14,7 +14,8 @@
 |------|---------------------|--------------|
 | **STRICT** (default) | `process_bar_sequential` on closed 5m only | After full sequence + touch evidence |
 | **BALANCED** | `process_balanced_new_closed_1m_bars` on each **closed 1m** (intra-5m, no 5m-close wait) | After unified `ConfirmationPolicy` (full required **or** pre-entry structural) |
-| **Shadow** | BALANCED sim in `objective_notes.balanced_shadow_sim` only | Live engine stays **STRICT**; no paper orders or balance changes |
+| **Shadow** | BALANCED sim in `objective_notes.balanced_shadow_sim` only | Live **STRICT** orders still execute; shadow does not block them |
+| **Dry run** | `paper_entry_dry_run` | No paper orders (observe/compare only), independent of shadow |
 
 Pipeline metadata on `objective_notes.execution_pipeline`: `AI_VALIDATED` → `ENTRY_ELIGIBLE` → `ORDER_PENDING` → `POSITION_OPEN`.
 
