@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.models import LiquidationEvent, LiquidationSourceStatus, LiquidationWindowRollup
+from app.services.liquidation_intelligence.coverage import append_coverage_gap
 from app.services.liquidation_intelligence.types import NormalizedLiquidation
 
 
@@ -36,15 +37,32 @@ async def record_source_message(
     reconnect_delta: int = 0,
     message_at_ms: int | None = None,
     heartbeat_at_ms: int | None = None,
+    connection_activity_at_ms: int | None = None,
     subscription_confirmed: bool | None = None,
 ) -> None:
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
     st = await ensure_source_status(session, source)
+    was_connected = bool(st.connected)
+    if connected and not was_connected:
+        st.connected_since_ms = now_ms
+    if not connected and was_connected:
+        start = int(st.connected_since_ms or 0)
+        if start > 0:
+            st.coverage_gaps = append_coverage_gap(st.coverage_gaps, start_ms=start, end_ms=now_ms, now_ms=now_ms)
+        st.connected_since_ms = None
     st.connected = connected
     if message_at_ms is not None:
         st.last_message_at_ms = message_at_ms
         st.last_event_at_ms = message_at_ms
-    if heartbeat_at_ms is not None:
+    activity_ms = connection_activity_at_ms or heartbeat_at_ms
+    if message_at_ms is not None:
+        activity_ms = activity_ms or now_ms
+    if activity_ms is not None:
+        st.last_connection_activity_at_ms = activity_ms
+        st.last_heartbeat_at_ms = activity_ms
+    elif heartbeat_at_ms is not None:
         st.last_heartbeat_at_ms = heartbeat_at_ms
+        st.last_connection_activity_at_ms = heartbeat_at_ms
     if subscription_confirmed is not None:
         st.subscription_confirmed = subscription_confirmed
     st.events_received = int(st.events_received or 0) + received_delta

@@ -93,6 +93,9 @@ SIGNAL_MIGRATIONS = [
     "ALTER TABLE liquidation_source_status ADD COLUMN last_event_at_ms INTEGER",
     "ALTER TABLE liquidation_source_status ADD COLUMN last_heartbeat_at_ms INTEGER",
     "ALTER TABLE liquidation_source_status ADD COLUMN subscription_confirmed BOOLEAN DEFAULT 0",
+    "ALTER TABLE liquidation_source_status ADD COLUMN last_connection_activity_at_ms INTEGER",
+    "ALTER TABLE liquidation_source_status ADD COLUMN connected_since_ms INTEGER",
+    "ALTER TABLE liquidation_source_status ADD COLUMN coverage_gaps JSON",
 ]
 
 LEGACY_SETUP_BACKFILL = """

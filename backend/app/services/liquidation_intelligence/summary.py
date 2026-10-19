@@ -6,14 +6,9 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.services.liquidation_intelligence.analytics import (
-    WINDOW_MS,
-    aggregate_observed_notional_total,
-    build_per_source_analytics,
-    compute_window_metrics,
-)
+from app.services.liquidation_intelligence.analytics import WINDOW_MS, build_per_source_analytics, compute_window_metrics
 from app.services.liquidation_intelligence.collector import get_liquidation_collector
-from app.services.liquidation_intelligence.health import build_windows_with_coverage, source_health_block
+from app.services.liquidation_intelligence.health import build_windows_with_coverage, source_health_block, window_data_coverage
 from app.services.liquidation_intelligence.repository import all_source_status, fetch_events_since, latest_event_time
 
 
@@ -49,12 +44,15 @@ async def build_liquidation_forecast_summary(session: AsyncSession, *, symbol: s
                 "price_clusters": [],
             }
         analytics = build_per_source_analytics(events, now_ms, source=exchange, price_type=price_type) if events else {}
-        windows = (
-            build_windows_with_coverage(events, now_ms, compute_window_metrics)
-            if events
-            else {k: {"coverage": "empty", "partial": False, "metrics": None} for k in ("5m", "15m", "1h", "4h")}
+        windows = build_windows_with_coverage(events, now_ms, compute_window_metrics, source_status=st)
+        partial_any = any(
+            w.get("partial")
+            or w.get("coverage") in ("empty", "partial", "unknown")
+            for w in windows.values()
         )
-        partial_any = any(w.get("partial") or w.get("coverage") in ("empty", "partial") for w in windows.values())
+        if not events and conn in ("connected_idle", "connected_active", "connecting"):
+            for key in ("5m", "15m", "1h", "4h"):
+                windows[key] = window_data_coverage(st, [], now_ms, key)
         if not events and conn in ("connected_idle", "connected_active", "connecting"):
             status = "connected_no_events"
         elif not events:
@@ -76,10 +74,19 @@ async def build_liquidation_forecast_summary(session: AsyncSession, *, symbol: s
     binance_block = _source_block("binance", binance, price_type="avg_fill_price", quality_label="binance_sampled_stream")
 
     combined_events = bybit + binance
-    combined_windows = (
-        build_windows_with_coverage(combined_events, now_ms, compute_window_metrics) if combined_events else {}
+    combined_st = None
+    combined_windows = build_windows_with_coverage(
+        combined_events,
+        now_ms,
+        compute_window_metrics,
+        source_status=combined_st,
     )
-    combined_notional_1h = aggregate_observed_notional_total(combined_events, now_ms, WINDOW_MS["1h"]) if combined_events else None
+    w1h = combined_windows.get("1h") or {}
+    combined_notional_1h = (
+        (w1h.get("metrics") or {}).get("total_observed_notional_usd")
+        if w1h.get("coverage") not in ("unknown", "empty", "observed_none") and w1h.get("metrics")
+        else None
+    )
 
     aggregate_status = "unavailable"
     if bybit_block.get("status") == "ok" or binance_block.get("status") == "ok":
@@ -105,10 +112,12 @@ async def build_liquidation_forecast_summary(session: AsyncSession, *, symbol: s
             "bybit": {
                 "connection_state": bybit_block.get("connection_state"),
                 "event_freshness": bybit_block.get("event_freshness"),
+                "window_5m_coverage": (bybit_block.get("windows") or {}).get("5m", {}).get("coverage"),
             },
             "binance": {
                 "connection_state": binance_block.get("connection_state"),
                 "event_freshness": binance_block.get("event_freshness"),
+                "window_5m_coverage": (binance_block.get("windows") or {}).get("5m", {}).get("coverage"),
             },
         },
         "source_quality": {
@@ -129,7 +138,7 @@ async def build_liquidation_forecast_summary(session: AsyncSession, *, symbol: s
             "windows": combined_windows,
             "note": "Dollar totals only — do not merge bankruptcy and fill prices into clusters",
         },
-        "windows": combined_windows if combined_events else {},
+        "windows": combined_windows,
         "price_clusters": {
             "bybit": bybit_block.get("price_clusters") or [],
             "binance": binance_block.get("price_clusters") or [],

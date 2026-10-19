@@ -15,7 +15,9 @@ from app.models import LiquidationEvent, LiquidationSourceStatus, LiquidationWin
 from app.services.liquidation_intelligence.analytics import compute_price_clusters, compute_window_metrics, detect_burst
 from app.services.liquidation_intelligence.collector import LiquidationIntelligenceCollector
 from app.services.liquidation_intelligence.dedupe import build_dedupe_key
-from app.services.liquidation_intelligence.health import connection_activity_state, window_coverage_for_events
+from app.services.liquidation_intelligence.coverage import events_in_aligned_bucket, window_connection_coverage
+from app.services.liquidation_intelligence.health import connection_activity_state, window_data_coverage
+from app.services.liquidation_intelligence.rollups import bucket_start_for_timestamp, materialize_rollups_for_symbol
 from app.services.liquidation_intelligence.llm_compact import compact_liquidation_for_llm
 from app.services.liquidation_intelligence.maintenance import run_liquidation_retention_tick
 from app.services.liquidation_intelligence.parsers import (
@@ -25,7 +27,6 @@ from app.services.liquidation_intelligence.parsers import (
     parse_bybit_all_liquidation_message,
 )
 from app.services.liquidation_intelligence.repository import insert_liquidation_event, prune_liquidation_data, record_source_message
-from app.services.liquidation_intelligence.rollups import materialize_rollups_for_symbol
 from app.services.liquidation_intelligence.summary import build_liquidation_forecast_summary
 from app.services.liquidation_intelligence.types import NormalizedLiquidation
 from app.services.liquidation_intelligence.ws_common import run_ws_message_loop
@@ -180,6 +181,7 @@ def test_connection_idle_not_stale():
     now = int(time.time() * 1000)
     state = connection_activity_state(
         connected=True,
+        last_connection_activity_at_ms=now - 1000,
         last_heartbeat_at_ms=now - 1000,
         last_event_at_ms=None,
         now_ms=now,
@@ -189,10 +191,77 @@ def test_connection_idle_not_stale():
     assert state == "connected_idle"
 
 
-def test_window_coverage_empty_not_zero_metrics():
-    cov = window_coverage_for_events([], int(time.time() * 1000), "5m")
-    assert cov["coverage"] == "empty"
+def test_connection_stays_active_when_events_flow_past_stale_heartbeat():
+    now = 10**12
+    stale = 300_000
+    state = connection_activity_state(
+        connected=True,
+        last_connection_activity_at_ms=now - 120_000,
+        last_heartbeat_at_ms=now - 600_000,
+        last_event_at_ms=now - 120_000,
+        now_ms=now,
+        stale_after_ms=stale,
+        subscription_confirmed=True,
+    )
+    assert state == "connected_active"
+
+
+def test_healthy_connection_zero_events_observed_none():
+    now = 1_700_000_000_000
+    st = LiquidationSourceStatus(
+        source_exchange="bybit",
+        connected=True,
+        connected_since_ms=now - 6 * 60_000,
+        subscription_confirmed=True,
+        coverage_gaps=[],
+    )
+    cov = window_data_coverage(st, [], now, "5m")
+    assert cov["coverage"] == "observed_none"
     assert cov["metrics"] is None
+
+
+def test_disconnect_mid_window_marks_partial():
+    now = 1_700_000_000_000
+    window_ms = 5 * 60_000
+    start = now - window_ms
+    st = LiquidationSourceStatus(
+        source_exchange="bybit",
+        connected=True,
+        connected_since_ms=now - 60_000,
+        subscription_confirmed=True,
+        coverage_gaps=[{"start_ms": start, "end_ms": now - 120_000}],
+    )
+    conn = window_connection_coverage(
+        connected=st.connected,
+        connected_since_ms=st.connected_since_ms,
+        coverage_gaps=st.coverage_gaps,
+        now_ms=now,
+        window_start_ms=start,
+        subscription_confirmed=True,
+    )
+    assert conn["coverage"] == "partial"
+
+
+def test_restart_unknown_coverage_without_history():
+    now = int(time.time() * 1000)
+    st = LiquidationSourceStatus(source_exchange="binance", connected=True, subscription_confirmed=True)
+    cov = window_data_coverage(st, [], now, "5m")
+    assert cov["coverage"] == "unknown"
+    assert cov["metrics"] is None
+
+
+def test_time_aligned_bucket_boundaries():
+    window_ms = 60_000
+    bucket = bucket_start_for_timestamp(125_000, window_ms)
+    assert bucket == 120_000
+
+    class E:
+        pass
+
+    e = E()
+    e.event_timestamp_ms = 125_000
+    assert len(events_in_aligned_bucket([e], 120_000, 180_000)) == 1
+    assert len(events_in_aligned_bucket([e], 60_000, 120_000)) == 0
 
 
 @pytest.mark.asyncio
@@ -235,7 +304,7 @@ def test_collector_binance_url_default_market_path():
 
 
 @pytest.mark.asyncio
-async def test_rollup_persistence():
+async def test_rollup_persistence_and_idempotent():
     await init_db()
     now = int(time.time() * 1000)
     ev = parse_bybit_all_liquidation_message(BYBIT_MSG)[0]
@@ -243,11 +312,31 @@ async def test_rollup_persistence():
     async with SessionLocal() as session:
         await insert_liquidation_event(session, ev)
         await session.commit()
-        n = await materialize_rollups_for_symbol(session, now_ms=now)
+        n1 = await materialize_rollups_for_symbol(session, now_ms=now)
+        n2 = await materialize_rollups_for_symbol(session, now_ms=now)
         await session.commit()
-        assert n > 0
+        assert n1 > 0
+        assert n2 == n1
         rows = (await session.execute(select(LiquidationWindowRollup))).scalars().all()
-        assert len(rows) >= 1
+        assert len(rows) >= 5
+        names = {r.window_name for r in rows}
+        assert "1m" in names and "4h" in names
+        one_m = next(r for r in rows if r.window_name == "1m")
+        assert one_m.payload.get("bucket_end_ms") == one_m.bucket_start_ms + 60_000
+        assert one_m.payload.get("bucket_start_ms") <= ev.event_timestamp_ms < one_m.payload.get("bucket_end_ms")
+
+
+@pytest.mark.asyncio
+async def test_hourly_maintenance_materializes_all_window_sizes():
+    await init_db()
+    now = int(time.time() * 1000)
+    ev = parse_bybit_all_liquidation_message(BYBIT_MSG)[0]
+    ev = NormalizedLiquidation(**{**ev.__dict__, "event_timestamp_ms": now - 30_000})
+    async with SessionLocal() as session:
+        await insert_liquidation_event(session, ev)
+        await session.commit()
+    deleted = await run_liquidation_retention_tick()
+    assert deleted[2] > 0
 
 
 @pytest.mark.asyncio
@@ -283,11 +372,34 @@ def test_compact_for_llm_removes_heavy_fields():
     full = {
         "status": "ok",
         "symbol": "BTCUSDT",
-        "windows": {"5m": {"event_count": 1}},
+        "windows": {"5m": {"coverage": "partial", "metrics": {"event_count": 1}}},
+        "freshness_and_coverage": {"bybit": {"window_5m_coverage": "partial"}},
         "price_clusters": {"bybit": list(range(10)), "binance": list(range(10))},
     }
     slim = compact_liquidation_for_llm(full)
     assert len(slim.get("price_clusters", {}).get("bybit", [])) <= 3
+    assert slim.get("freshness_and_coverage") is not None
+    assert slim["windows"]["5m"]["coverage"] == "partial"
+
+
+@pytest.mark.asyncio
+async def test_gpt_summary_includes_connection_coverage():
+    await init_db()
+    now = int(time.time() * 1000)
+    with patch.object(get_settings(), "liquidation_intelligence_enabled", True):
+        async with SessionLocal() as session:
+            await record_source_message(
+                session,
+                "bybit",
+                connected=True,
+                connection_activity_at_ms=now,
+                subscription_confirmed=True,
+            )
+            await session.commit()
+            full = await build_liquidation_forecast_summary(session)
+    slim = compact_liquidation_for_llm(full)
+    assert "freshness_and_coverage" in slim
+    assert full["bybit"]["windows"]["5m"]["coverage"] in ("unknown", "observed_none", "partial", "full", "empty")
 
 
 def test_llm_market_summary_includes_liquidations_key():
@@ -308,11 +420,37 @@ async def test_ict_instructions_untouched():
 
 
 @pytest.mark.asyncio
+async def test_record_event_bumps_connection_activity():
+    await init_db()
+    now = int(time.time() * 1000)
+    async with SessionLocal() as session:
+        await record_source_message(session, "bybit", connected=True, connection_activity_at_ms=now - 500_000)
+        await record_source_message(
+            session,
+            "bybit",
+            connected=True,
+            message_at_ms=now,
+            connection_activity_at_ms=now,
+            received_delta=1,
+        )
+        await session.commit()
+        st = (await session.execute(select(LiquidationSourceStatus))).scalar_one()
+        assert st.last_connection_activity_at_ms == now
+        assert st.last_event_at_ms == now
+
+
+@pytest.mark.asyncio
 async def test_independent_source_failures():
     await init_db()
     with patch.object(get_settings(), "liquidation_intelligence_enabled", True):
         async with SessionLocal() as session:
-            await record_source_message(session, "bybit", connected=True, heartbeat_at_ms=int(time.time() * 1000), subscription_confirmed=True)
+            await record_source_message(
+                session,
+                "bybit",
+                connected=True,
+                connection_activity_at_ms=int(time.time() * 1000),
+                subscription_confirmed=True,
+            )
             await record_source_message(session, "binance", connected=False, error="ws_closed")
             await session.commit()
             out = await build_liquidation_forecast_summary(session)

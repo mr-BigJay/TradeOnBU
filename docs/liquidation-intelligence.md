@@ -44,7 +44,8 @@ Authenticated dashboard API (same key as other GUI routes):
 
 - `liquidation_events` — deduplicated normalized rows
 - `liquidation_source_status` — connection health
-- `liquidation_window_rollups` — optional aggregated buckets (retention job)
+- `liquidation_window_rollups` — time-aligned buckets (`bucket_start <= event_ts < bucket_end`), backfilled from raw on hourly job
+- `liquidation_source_status.coverage_gaps` — lightweight connected-interval history for window coverage (not event timestamps)
 
 ## Disable / rollback
 
