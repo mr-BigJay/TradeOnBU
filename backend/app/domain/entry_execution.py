@@ -21,6 +21,8 @@ AUDIT_POTENTIAL_NOT_EXECUTABLE = "potential_not_executable"
 AUDIT_MISSED_EXECUTABLE = "missed_executable_opportunity"
 AUDIT_ORDER_UNFILLED = "order_created_not_filled"
 AUDIT_EXECUTED_PROFIT = "executed_profitable_trade"
+AUDIT_EXECUTED_LOSS = "executed_loss_trade"
+AUDIT_EXECUTED_OPEN = "executed_open_or_breakeven"
 
 
 class EntryExecutionMode(str, Enum):

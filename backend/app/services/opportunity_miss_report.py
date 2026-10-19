@@ -51,6 +51,8 @@ from app.domain.setup_lifecycle import (
 )
 from app.domain.entry_execution import (
     AUDIT_DIRECTION_CORRECT,
+    AUDIT_EXECUTED_LOSS,
+    AUDIT_EXECUTED_OPEN,
     AUDIT_EXECUTED_PROFIT,
     AUDIT_MISSED_EXECUTABLE,
     AUDIT_ORDER_UNFILLED,
@@ -209,6 +211,16 @@ def classify_setup_outcome(
     return classify_execution_outcome(setup, timeline=timeline, replay_diff=replay_diff)
 
 
+def _closed_net_pnl(pos: dict[str, Any]) -> float | None:
+    pnl = pos.get("net_pnl_usdt")
+    if pnl is None:
+        return None
+    try:
+        return float(pnl)
+    except (TypeError, ValueError):
+        return None
+
+
 def classify_user_audit_bucket(
     setup: AiProposedSetup,
     *,
@@ -216,21 +228,35 @@ def classify_user_audit_bucket(
     execution_outcome: str,
 ) -> str:
     """
-    Five user-facing buckets:
-    direction correct, potential not executable, missed executable, order unfilled, executed profit.
+    User-facing buckets with strict PnL: closed != TP hit; profit requires net_pnl > 0.
     """
     pos_hint = timeline.get("paper_orders") or []
-    tp_hit = any((p.get("status") or "").lower() in ("tp_hit", "closed") for p in pos_hint)
     filled = _had_real_fill(pos_hint)
     pipe = (setup.objective_notes or {}).get("execution_pipeline") or {}
 
-    if filled and tp_hit:
-        return AUDIT_EXECUTED_PROFIT
     if filled:
-        return AUDIT_EXECUTED_PROFIT if execution_outcome == OUTCOME_ORDER_CREATED else AUDIT_ORDER_UNFILLED
-    if execution_outcome == OUTCOME_LIMIT_NOT_FILLED or (
-        execution_outcome == OUTCOME_ORDER_CREATED and not filled
-    ):
+        closed_rows = [
+            p
+            for p in pos_hint
+            if (p.get("status") or "").lower() in ("closed", "tp_hit", "sl_hit")
+            and p.get("fill_price") is not None
+        ]
+        if closed_rows:
+            pnl = _closed_net_pnl(closed_rows[-1])
+            if pnl is not None:
+                if pnl > 0:
+                    return AUDIT_EXECUTED_PROFIT
+                if pnl < 0:
+                    return AUDIT_EXECUTED_LOSS
+                return AUDIT_EXECUTED_OPEN
+        open_rows = [p for p in pos_hint if (p.get("status") or "").lower() == "open"]
+        if open_rows:
+            return AUDIT_EXECUTED_OPEN
+
+    pending = [p for p in pos_hint if (p.get("status") or "").lower() == "pending_entry"]
+    if pending and not filled:
+        return AUDIT_ORDER_UNFILLED
+    if execution_outcome == OUTCOME_LIMIT_NOT_FILLED:
         return AUDIT_ORDER_UNFILLED
     if execution_outcome in (OUTCOME_POTENTIAL_MISSED, OUTCOME_ENGINE_DELAY):
         return AUDIT_MISSED_EXECUTABLE

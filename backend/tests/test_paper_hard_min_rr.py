@@ -141,4 +141,4 @@ async def test_opportunity_monitor_promotion_blocked_when_net_rr_under_2():
         await session.commit()
         row = (await session.execute(select(AiProposedSetup).where(AiProposedSetup.setup_id == "rr-mon"))).scalar_one()
         assert summary["promoted"] == 0
-        assert row.lifecycle_state == "WAIT_LONG"
+        assert row.lifecycle_state == "ICT_CONFIRMED_LONG"

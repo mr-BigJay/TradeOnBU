@@ -13,8 +13,8 @@
 | Mode | Confirmation driver | Order timing |
 |------|---------------------|--------------|
 | **STRICT** (default) | `process_bar_sequential` on closed 5m only | After full sequence + touch evidence |
-| **BALANCED** | `advance_balanced_on_closed_5m_bar` (closed 1m inside each 5m + 5m fallback) | After full sequence **or** pre-entry structural tokens (limit staged before touch) |
-| **Shadow** | Same as BALANCED | No `maybe_auto_open_paper_position`; timeline `balanced_shadow_skip_order` |
+| **BALANCED** | `process_balanced_new_closed_1m_bars` on each **closed 1m** (intra-5m, no 5m-close wait) | After unified `ConfirmationPolicy` (full required **or** pre-entry structural) |
+| **Shadow** | BALANCED sim in `objective_notes.balanced_shadow_sim` only | Live engine stays **STRICT**; no paper orders or balance changes |
 
 Pipeline metadata on `objective_notes.execution_pipeline`: `AI_VALIDATED` → `ENTRY_ELIGIBLE` → `ORDER_PENDING` → `POSITION_OPEN`.
 

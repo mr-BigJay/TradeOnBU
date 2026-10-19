@@ -89,9 +89,11 @@ async def build_setup_timeline(session: AsyncSession, setup: AiProposedSetup) ->
         {
             "public_id": p.public_id,
             "status": p.status,
+            "close_reason": p.close_reason,
             "created_at": _iso_dt(p.created_at),
             "fill_price": p.fill_price,
             "limit_entry_price": p.limit_entry_price,
+            "net_pnl_usdt": p.net_pnl_usdt,
         }
         for p in positions
     ]

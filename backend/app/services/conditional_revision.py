@@ -205,20 +205,25 @@ def objective_confirmations_satisfied_for_order(
     *,
     allow_pre_entry_without_touch: bool = False,
 ) -> tuple[bool, str | None]:
-    """STRICT: full sequence + touch evidence. BALANCED early limit: pre-entry structural tokens only."""
-    if allow_pre_entry_without_touch:
-        from app.services.balanced_confirmation_engine import pre_entry_requirements_met
+    """Unified policy for order creation (STRICT full path or BALANCED pre-entry)."""
+    from app.services.confirmation_policy import order_entry_allowed, resolve_confirmation_policy
 
-        conf = row.confirmation_state or {}
-        sequence = conf.get("sequence") or conf.get("required") or []
-        if isinstance(sequence, list) and sequence:
-            if pre_entry_requirements_met(
-                sequence=[str(x) for x in sequence],
-                confirmation_state=conf,
-                structured=row.structured_snapshot or {},
-            ):
-                return True, None
-    return objective_confirmations_satisfied(row)
+    conf = row.confirmation_state or {}
+    sequence = conf.get("sequence") or conf.get("required") or []
+    if not isinstance(sequence, list) or not sequence:
+        return False, REASON_MISSING_CONFIRMATIONS
+    policy = resolve_confirmation_policy(
+        sequence=[str(x) for x in sequence],
+        structured=row.structured_snapshot or {},
+        plan=getattr(row, "conditional_plan", None) or {},
+    )
+    return order_entry_allowed(
+        policy,
+        conf,
+        allow_pre_entry_without_touch=allow_pre_entry_without_touch,
+        zone_lo=float(row.entry_zone_low) if row.entry_zone_low is not None else None,
+        zone_hi=float(row.entry_zone_high) if row.entry_zone_high is not None else None,
+    )
 
 
 def objective_confirmations_satisfied(row: Any) -> tuple[bool, str | None]:

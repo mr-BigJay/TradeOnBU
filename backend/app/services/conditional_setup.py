@@ -163,12 +163,11 @@ def apply_conditional_plan_to_setup_row(
     row.invalidation_level = plan.get("structural_invalidation_level")
     row.invalidation = structured.get("conditional_invalidation") or structured.get("invalidation_condition")
     row.conditional_plan = plan
-    from app.services.balanced_confirmation_engine import effective_required_tokens
+    from app.services.confirmation_policy import resolve_confirmation_policy
 
-    required = effective_required_tokens(sequence, structured)
+    policy = resolve_confirmation_policy(sequence=sequence, structured=structured, plan=plan)
     row.confirmation_state = {
-        "sequence": list(sequence),
-        "required": list(required),
+        **policy.as_state_fields(),
         "completed": [],
         "missing": list(sequence),
         "confirmation_timestamps": {},
