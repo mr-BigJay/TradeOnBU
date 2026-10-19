@@ -245,8 +245,18 @@ async def test_gap_suspend_preserves_balanced_pre_entry_ready():
 
 
 @pytest.mark.asyncio
-async def test_no_retroactive_fill_then_valid_fill_after_order():
-    """Reuses clock-controlled fill contract: pre-order touch ignored, post-order touch fills."""
-    from tests.test_lifecycle_clock_fill import test_limit_fill_only_after_order_creation_time
-
-    await test_limit_fill_only_after_order_creation_time()
+async def test_1m_integrity_gap_from_cursor_fails():
+    bars = [
+        Candle(time_ms=1_000_000, open=1, high=2, low=1, close=1.5, volume=1),
+        Candle(time_ms=1_180_000, open=1.5, high=2, low=1, close=1.6, volume=1),
+    ]
+    ok, reason, _ = assess_1m_monitor_integrity(
+        closed_1m=bars,
+        data_complete=True,
+        gaps_remaining=[],
+        boundary_ms=900_000,
+        cursor_ms=1_060_000,
+        now_ms=1_250_000,
+    )
+    assert not ok
+    assert reason == "1m_gap_from_cursor"

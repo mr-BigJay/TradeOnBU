@@ -172,13 +172,13 @@ async def maybe_auto_open_paper_position(
     from app.services.conditional_revision import objective_confirmations_satisfied_for_order
     from app.services.entry_execution_settings import get_paper_entry_execution_config
 
-    mode = normalize_entry_mode(entry_mode)
-    if entry_mode is None:
-        mode, _shadow, dry_run = await get_paper_entry_execution_config(session)
-        if dry_run:
-            meta["skipped"] = True
-            meta["reason"] = "paper_entry_dry_run"
-            return meta
+    _mode_cfg, _shadow, dry_run = await get_paper_entry_execution_config(session)
+    if dry_run:
+        meta["skipped"] = True
+        meta["reason"] = "paper_entry_dry_run"
+        return meta
+
+    mode = normalize_entry_mode(entry_mode) if entry_mode is not None else _mode_cfg
 
     lifecycle_upper = (setup.lifecycle_state or "").upper()
     if lifecycle_upper in (READY_LONG, READY_SHORT):

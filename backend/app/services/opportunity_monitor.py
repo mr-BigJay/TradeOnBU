@@ -826,6 +826,7 @@ class OpportunityMonitorService:
             structured = setup.structured_snapshot or {}
             conf_state = dict(setup.confirmation_state or {})
             new_1m: list = []
+            balanced_1m_integrity_ok = True
             if paper_entry_mode == ENTRY_MODE_BALANCED and closed_1m:
                 cursor_1m = _monitor_1m_cursor_ms(setup, boundary)
                 one_m_ok, one_m_reason, one_m_detail = assess_1m_monitor_integrity(
@@ -839,6 +840,7 @@ class OpportunityMonitorService:
                 notes = dict(setup.objective_notes or {})
                 notes["monitor_1m_integrity"] = {"ok": one_m_ok, "reason": one_m_reason, **one_m_detail}
                 setup.objective_notes = notes
+                balanced_1m_integrity_ok = one_m_ok
                 if one_m_ok:
                     new_1m = _eligible_new_closed_1m_bars(setup, closed_1m, now_ms, boundary)
                 else:
@@ -849,6 +851,11 @@ class OpportunityMonitorService:
                         now=now,
                         extra={"1m_integrity": one_m_reason, **one_m_detail},
                     )
+            elif paper_entry_mode == ENTRY_MODE_BALANCED:
+                balanced_1m_integrity_ok = False
+                notes = dict(setup.objective_notes or {})
+                notes["monitor_1m_integrity"] = {"ok": False, "reason": "missing_1m_closed_bars"}
+                setup.objective_notes = notes
 
             if shadow_simulation_enabled(paper_entry_mode, balanced_shadow) and new_1m:
                 run_balanced_shadow_tick(
@@ -1095,6 +1102,21 @@ class OpportunityMonitorService:
                 if await _monitor_ready_structural_invalidation_before_order(
                     session, setup, bundle, now_ms, now, summary
                 ):
+                    continue
+                if order_engine == ENTRY_MODE_BALANCED and not balanced_1m_integrity_ok:
+                    integrity = (setup.objective_notes or {}).get("monitor_1m_integrity") or {}
+                    append_timeline_event(
+                        setup,
+                        "paper_order_skipped_1m_integrity",
+                        at_ms=now_ms,
+                        reason=integrity.get("reason"),
+                    )
+                    setup.last_validation_result = {
+                        "ok": True,
+                        "ready_for_paper": True,
+                        "order_skipped_reason": "balanced_1m_integrity",
+                        "1m_integrity": integrity,
+                    }
                     continue
                 await _attempt_ready_paper_order(
                     session,

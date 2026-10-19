@@ -4,7 +4,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from app.domain.setup_lifecycle import SETUP_MODE_CONDITIONAL, wait_state_for_direction
-from app.domain.setup_monitor_boundary import first_eligible_bar_open_ms
+from app.domain.entry_execution import ENTRY_MODE_STRICT
+from app.domain.setup_monitor_boundary import monitor_start_open_ms
 from app.services.ai_trader_report import _has_conditional_plan
 
 MIN_EXPIRES_HOURS = 1.0
@@ -141,12 +142,18 @@ def parse_conditional_plan(structured: dict[str, Any]) -> tuple[dict[str, Any] |
 
 
 def apply_conditional_plan_to_setup_row(
-    row: Any, *, plan: dict[str, Any], run_id: int, structured: dict[str, Any], created_at: datetime | None = None
+    row: Any,
+    *,
+    plan: dict[str, Any],
+    run_id: int,
+    structured: dict[str, Any],
+    created_at: datetime | None = None,
+    entry_mode: str = ENTRY_MODE_STRICT,
 ) -> None:
     direction = plan["potential_direction"]
     sequence = plan["confirmation_sequence"]
     created_at = created_at or datetime.now(timezone.utc)
-    boundary = first_eligible_bar_open_ms(created_at, "5m")
+    boundary = monitor_start_open_ms(created_at, entry_mode)
 
     row.direction = direction
     row.setup_mode = SETUP_MODE_CONDITIONAL

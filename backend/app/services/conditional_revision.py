@@ -418,6 +418,7 @@ def apply_conditional_revision_to_setup_row(
     run_id: int,
     structured: dict[str, Any],
     revision_at: datetime | None = None,
+    entry_mode: str = "STRICT",
 ) -> RevisionImpact:
     """Apply a duplicate conditional revision; preserve monitor + confirmations when safe."""
     impact = assess_conditional_revision_impact(row, plan)
@@ -437,6 +438,7 @@ def apply_conditional_revision_to_setup_row(
             run_id=run_id,
             structured=structured,
             created_at=revision_time,
+            entry_mode=entry_mode,
         )
         notes = dict(row.objective_notes or {})
         history = notes.setdefault("lifecycle_history", [])

@@ -811,12 +811,16 @@ async def _persist_conditional_setup(
             meta["reason"] = "setup_locked_active_position"
             return None, meta
         _store_original_forecast(dup)
+        from app.services.entry_execution_settings import get_paper_entry_execution_config
+
+        paper_mode, _, _ = await get_paper_entry_execution_config(session)
         impact = apply_conditional_revision_to_setup_row(
             dup,
             plan=plan,
             run_id=run_id,
             structured=structured,
             revision_at=datetime.now(timezone.utc),
+            entry_mode=paper_mode,
         )
         meta["revision_impact"] = impact.value
         dup.expires_at = datetime.fromisoformat(plan["expires_at"])
@@ -828,6 +832,10 @@ async def _persist_conditional_setup(
         await session.flush()
         return dup, meta
 
+    from app.services.entry_execution_settings import get_paper_entry_execution_config
+
+    paper_mode, _, _ = await get_paper_entry_execution_config(session)
+    created_at = datetime.now(timezone.utc)
     expires_at = datetime.fromisoformat(plan["expires_at"])
     row = AiProposedSetup(
         setup_id=str(uuid.uuid4()),
@@ -846,8 +854,16 @@ async def _persist_conditional_setup(
         },
         last_tracked_candle_ms=0,
         monitor_cursor_ms=0,
+        created_at=created_at,
     )
-    apply_conditional_plan_to_setup_row(row, plan=plan, run_id=run_id, structured=structured)
+    apply_conditional_plan_to_setup_row(
+        row,
+        plan=plan,
+        run_id=run_id,
+        structured=structured,
+        created_at=created_at,
+        entry_mode=paper_mode,
+    )
     session.add(row)
     await session.flush()
     _store_original_forecast(row)
@@ -955,7 +971,8 @@ async def create_setup_from_structured(
         return None, meta
 
     from app.services.conditional_setup import resolve_immediate_confirmation_sequence
-    from app.domain.setup_monitor_boundary import first_eligible_bar_open_ms
+    from app.domain.setup_monitor_boundary import monitor_start_open_ms
+    from app.services.entry_execution_settings import get_paper_entry_execution_config
 
     inv_level = _parse_float(
         proposed.get("invalidation_level")
@@ -977,7 +994,8 @@ async def create_setup_from_structured(
         zone_hi = entry * 1.001
 
     created = _utc()
-    boundary = first_eligible_bar_open_ms(created, "5m")
+    paper_mode, _, _ = await get_paper_entry_execution_config(session)
+    boundary = monitor_start_open_ms(created, paper_mode)
 
     from app.domain.paper_execution_policy import HARD_MIN_AUTO_PAPER_NET_RR
     from app.domain.setup_lifecycle import REASON_NET_RR_BELOW_MIN, ready_state_for_direction, wait_state_for_direction
