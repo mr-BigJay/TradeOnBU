@@ -670,6 +670,65 @@ def test_burst_detection():
 
 
 @pytest.mark.asyncio
+async def test_fetch_not_truncated_when_count_below_limit():
+    await init_db()
+    now = int(time.time() * 1000)
+    since = now - 60_000
+    async with SessionLocal() as session:
+        for i in range(2):
+            ts = since + i * 1000
+            ev = NormalizedLiquidation(
+                source_exchange="bybit",
+                symbol="BTCUSDT",
+                event_timestamp_ms=ts,
+                received_timestamp_ms=now,
+                liquidated_position_side="long",
+                native_order_side="Buy",
+                price=80000.0,
+                quantity_btc=0.01,
+                estimated_notional_usd=1.0,
+                price_type="bankruptcy_price",
+                source_quality="observed",
+                dedupe_key=build_dedupe_key("bybit", "BTCUSDT", ts, "Buy", 80000.0, float(i)),
+            )
+            await insert_liquidation_event(session, ev)
+        await session.commit()
+        result = await fetch_events_since(session, symbol="BTCUSDT", since_ms=since, source="bybit", limit=5)
+        assert result.truncated is False
+        assert result.rows_returned == 2
+
+
+@pytest.mark.asyncio
+async def test_fetch_not_truncated_when_count_equals_limit():
+    await init_db()
+    now = int(time.time() * 1000)
+    since = now - 60_000
+    async with SessionLocal() as session:
+        for i in range(3):
+            ts = since + i * 1000
+            ev = NormalizedLiquidation(
+                source_exchange="bybit",
+                symbol="BTCUSDT",
+                event_timestamp_ms=ts,
+                received_timestamp_ms=now,
+                liquidated_position_side="long",
+                native_order_side="Buy",
+                price=80000.0,
+                quantity_btc=0.01,
+                estimated_notional_usd=1.0,
+                price_type="bankruptcy_price",
+                source_quality="observed",
+                dedupe_key=build_dedupe_key("bybit", "BTCUSDT", ts, "Buy", 80000.0, float(i)),
+            )
+            await insert_liquidation_event(session, ev)
+        await session.commit()
+        result = await fetch_events_since(session, symbol="BTCUSDT", since_ms=since, source="bybit", limit=3)
+        assert result.truncated is False
+        assert result.rows_returned == 3
+        assert result.matching_row_count is None
+
+
+@pytest.mark.asyncio
 async def test_fetch_truncation_detected_with_small_limit():
     await init_db()
     now = int(time.time() * 1000)
@@ -697,6 +756,121 @@ async def test_fetch_truncation_detected_with_small_limit():
         assert result.truncated is True
         assert result.rows_returned == 3
         assert result.matching_row_count == 10
+
+
+@pytest.mark.asyncio
+async def test_truncation_preserves_5m_suppresses_4h_derived():
+    await init_db()
+    now = int(time.time() * 1000)
+    since = now - 4 * 60 * 60 * 1000
+    async with SessionLocal() as session:
+        for i in range(12):
+            ts = since + (i + 1) * 120_000
+            ev = NormalizedLiquidation(
+                source_exchange="bybit",
+                symbol="BTCUSDT",
+                event_timestamp_ms=ts,
+                received_timestamp_ms=now,
+                liquidated_position_side="long",
+                native_order_side="Buy",
+                price=80000.0,
+                quantity_btc=0.01,
+                estimated_notional_usd=50.0 + i,
+                price_type="bankruptcy_price",
+                source_quality="observed",
+                dedupe_key=build_dedupe_key("bybit", "BTCUSDT", ts, "Buy", 80000.0, float(i)),
+            )
+            await insert_liquidation_event(session, ev)
+        for i in range(5):
+            ts = now - 320_000 + i * 40_000
+            ev = NormalizedLiquidation(
+                source_exchange="bybit",
+                symbol="BTCUSDT",
+                event_timestamp_ms=ts,
+                received_timestamp_ms=now,
+                liquidated_position_side="long",
+                native_order_side="Buy",
+                price=80000.0,
+                quantity_btc=0.01,
+                estimated_notional_usd=100.0 + i,
+                price_type="bankruptcy_price",
+                source_quality="observed",
+                dedupe_key=build_dedupe_key("bybit", "BTCUSDT", ts, "Buy", 80000.0, 100.0 + i),
+            )
+            await insert_liquidation_event(session, ev)
+        await record_source_message(
+            session,
+            "bybit",
+            connected=True,
+            connection_activity_at_ms=now,
+            subscription_confirmed=True,
+        )
+        st = (await session.execute(select(LiquidationSourceStatus).where(LiquidationSourceStatus.source_exchange == "bybit"))).scalar_one()
+        st.connected_since_ms = since
+        st.coverage_gaps = [{"start_ms": since, "end_ms": now}]
+        await session.commit()
+    with patch.object(get_settings(), "liquidation_intelligence_enabled", True), patch.object(
+        get_settings(), "liquidation_forecast_fetch_limit", 5
+    ):
+        async with SessionLocal() as session:
+            full = await build_liquidation_forecast_summary(session)
+    slim = compact_liquidation_for_llm(full)
+    w5 = full["bybit"]["windows"]["5m"]
+    w4 = full["bybit"]["windows"]["4h"]
+    assert w4["coverage"] == "truncated"
+    assert w5["coverage"] != "truncated"
+    assert w5["metrics"] is not None
+    assert w5["metrics"]["event_count"] >= 4
+    assert full["bybit"]["windows"]["15m"]["coverage"] == "truncated"
+    assert full["bybit"]["derived_analytics_quality"]["burst_metrics"] == "suppressed"
+
+
+@pytest.mark.asyncio
+async def test_truncation_suppresses_burst_and_clusters_when_inputs_affected():
+    await init_db()
+    now = int(time.time() * 1000)
+    since = now - 4 * 60 * 60 * 1000
+    async with SessionLocal() as session:
+        for i in range(15):
+            ts = now - (14 - i) * 60_000
+            ev = NormalizedLiquidation(
+                source_exchange="bybit",
+                symbol="BTCUSDT",
+                event_timestamp_ms=ts,
+                received_timestamp_ms=now,
+                liquidated_position_side="long",
+                native_order_side="Buy",
+                price=80000.0,
+                quantity_btc=0.01,
+                estimated_notional_usd=200.0,
+                price_type="bankruptcy_price",
+                source_quality="observed",
+                dedupe_key=build_dedupe_key("bybit", "BTCUSDT", ts, "Buy", 80000.0, float(i)),
+            )
+            await insert_liquidation_event(session, ev)
+        await record_source_message(
+            session,
+            "bybit",
+            connected=True,
+            connection_activity_at_ms=now,
+            subscription_confirmed=True,
+        )
+        st = (await session.execute(select(LiquidationSourceStatus).where(LiquidationSourceStatus.source_exchange == "bybit"))).scalar_one()
+        st.connected_since_ms = since
+        st.coverage_gaps = [{"start_ms": since, "end_ms": now}]
+        await session.commit()
+    with patch.object(get_settings(), "liquidation_intelligence_enabled", True), patch.object(
+        get_settings(), "liquidation_forecast_fetch_limit", 3
+    ):
+        async with SessionLocal() as session:
+            full = await build_liquidation_forecast_summary(session)
+    slim = compact_liquidation_for_llm(full)
+    assert full["bybit"]["windows"]["15m"]["coverage"] == "truncated"
+    assert full["bybit"]["windows"]["1h"]["coverage"] == "truncated"
+    assert full["bybit"]["derived_analytics_quality"]["burst_metrics"] == "suppressed"
+    assert slim["bybit"]["burst_metrics"].get("unreliable") is True
+    assert full["bybit"]["derived_analytics_quality"]["price_clusters"] == "suppressed"
+    assert slim["bybit"]["price_clusters"] == []
 
 
 @pytest.mark.asyncio

@@ -9,6 +9,7 @@ from app.config import get_settings
 from app.services.liquidation_intelligence.analytics import WINDOW_MS, build_per_source_analytics, compute_window_metrics
 from app.services.liquidation_intelligence.collector import get_liquidation_collector
 from app.services.liquidation_intelligence.fetch_result import FetchEventsResult
+from app.services.liquidation_intelligence.derived_quality import apply_derived_analytics_quality
 from app.services.liquidation_intelligence.gpt_packaging import build_combined_labeled_summary
 from app.services.liquidation_intelligence.health import build_windows_with_coverage, source_health_block
 from app.services.liquidation_intelligence.repository import all_source_status, fetch_events_since, latest_event_time
@@ -95,6 +96,12 @@ async def build_liquidation_forecast_summary(session: AsyncSession, *, symbol: s
                 source_status=st,
                 fetch_result=fetch,
             )
+        burst_metrics, price_clusters, derived_meta = apply_derived_analytics_quality(
+            windows=windows,
+            burst_metrics=analytics.get("burst_metrics", {}),
+            price_clusters=analytics.get("price_clusters", []),
+            fetch=fetch,
+        )
         if not events and conn in ("connected_idle", "connected_active", "connecting"):
             status = "connected_no_events"
         elif not events:
@@ -108,8 +115,9 @@ async def build_liquidation_forecast_summary(session: AsyncSession, *, symbol: s
             "status": status,
             "source_quality": quality_label,
             "windows": windows,
-            "burst_metrics": analytics.get("burst_metrics", {}),
-            "price_clusters": analytics.get("price_clusters", []),
+            "burst_metrics": burst_metrics,
+            "price_clusters": price_clusters,
+            "derived_analytics_quality": derived_meta,
             "event_query_quality": _query_quality_block(fetch, exchange),
         }
 

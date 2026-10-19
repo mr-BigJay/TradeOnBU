@@ -124,18 +124,19 @@ async def fetch_events_since(
         select(LiquidationEvent)
         .where(*filters)
         .order_by(desc(LiquidationEvent.event_timestamp_ms))
-        .limit(limit)
+        .limit(limit + 1)
     )
     rows = list((await session.execute(q)).scalars().all())
+    truncated = len(rows) > limit
+    if truncated:
+        rows = rows[:limit]
     rows.reverse()
     earliest = int(rows[0].event_timestamp_ms) if rows else None
-    truncated = False
     matching: int | None = None
-    if len(rows) >= limit:
-        matching = int((await session.execute(select(func.count()).select_from(LiquidationEvent).where(*filters))).scalar_one())
-        truncated = matching > limit
-    if not truncated and earliest is not None and earliest > since_ms and len(rows) >= limit:
-        truncated = True
+    if truncated:
+        matching = int(
+            (await session.execute(select(func.count()).select_from(LiquidationEvent).where(*filters))).scalar_one()
+        )
     return FetchEventsResult(
         events=rows,
         truncated=truncated,

@@ -65,8 +65,23 @@ def slim_source_block_for_llm(block: dict[str, Any] | None) -> dict[str, Any]:
             "row_limit": q.get("row_limit"),
         },
         "windows": slim_windows_for_llm(block.get("windows")),
-        "burst_metrics": block.get("burst_metrics") or {},
+        "derived_analytics_quality": block.get("derived_analytics_quality") or {},
+        "burst_metrics": _slim_burst(block.get("burst_metrics") or {}),
+        "price_clusters": _slim_clusters(block, block.get("price_clusters") or []),
     }
+
+
+def _slim_burst(burst: dict[str, Any]) -> dict[str, Any]:
+    if burst.get("unreliable"):
+        return {"unreliable": True, "reason": burst.get("reason")}
+    return burst
+
+
+def _slim_clusters(block: dict[str, Any], clusters: list[Any]) -> list[Any]:
+    meta = block.get("derived_analytics_quality") or {}
+    if meta.get("price_clusters") == "suppressed":
+        return []
+    return clusters[:3] if isinstance(clusters, list) else []
 
 
 def build_combined_labeled_windows(

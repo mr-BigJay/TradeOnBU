@@ -148,7 +148,7 @@ def _apply_query_truncation(
         return cov
     window_start = now_ms - WINDOW_MS[window_name]
     earliest = fetch.earliest_returned_ms
-    window_incomplete = earliest is None or window_start < earliest or window_name == "4h"
+    window_incomplete = earliest is None or window_start < earliest
     if not window_incomplete:
         return {
             **cov,
@@ -182,11 +182,13 @@ def build_windows_with_coverage(
         metrics = raw.get(name)
         cov = window_data_coverage(source_status, events, now_ms, name)
         cov = _apply_query_truncation(cov, window_name=name, now_ms=now_ms, fetch=fetch_result)
+        if cov.get("coverage") == "truncated":
+            out[name] = {**cov, "metrics": None}
+            continue
         if cov.get("metrics") is None and cov.get("coverage") in (
             "unknown",
             "empty",
             "observed_none",
-            "truncated",
         ):
             out[name] = {**cov, "metrics": None}
             continue
