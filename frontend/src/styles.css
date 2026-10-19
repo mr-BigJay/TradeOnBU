@@ -1835,16 +1835,24 @@ label {
 
 .forecast-chart-canvas {
   position: relative;
-  z-index: 3;
+  z-index: 1;
+}
+
+.forecast-chart-overlays {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+  overflow: hidden;
+  box-sizing: border-box;
 }
 
 .forecast-future-shade {
   position: absolute;
   top: 0;
   bottom: 0;
-  background: linear-gradient(90deg, rgba(0, 229, 255, 0.03), rgba(0, 120, 180, 0.12));
+  background: linear-gradient(90deg, rgba(0, 229, 255, 0.05), rgba(0, 120, 180, 0.14));
   pointer-events: none;
-  z-index: 1;
 }
 
 .forecast-boundary-line {
@@ -1852,9 +1860,10 @@ label {
   top: 0;
   bottom: 0;
   width: 0;
-  border-left: 1px dashed rgba(0, 229, 255, 0.55);
+  border-left: 1px dashed rgba(0, 229, 255, 0.65);
   pointer-events: none;
-  z-index: 2;
+  opacity: 0;
+  transition: opacity 0.12s ease;
 }
 
 .forecast-zone-label {
@@ -1863,16 +1872,15 @@ label {
   font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.14em;
-  color: rgba(0, 229, 255, 0.72);
+  color: rgba(0, 229, 255, 0.82);
   pointer-events: none;
-  z-index: 2;
   opacity: 0;
-  transition: opacity 0.15s ease;
+  transition: opacity 0.12s ease;
 }
 
 .forecast-point-tooltip {
   position: absolute;
-  z-index: 6;
+  z-index: 10;
   max-width: 220px;
   padding: 0.55rem 0.65rem;
   border-radius: 8px;

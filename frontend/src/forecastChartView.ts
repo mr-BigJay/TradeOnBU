@@ -1,9 +1,10 @@
 export type ForecastCandle = { time_ms: number; open: number; high: number; low: number; close: number };
 export type ForecastPointLike = { time: string; price: number };
 
-/** ~14 hourly candles of history + 6h forecast + padding → ~30% future band. */
+/** ~14 hourly candles of history + 6 forecast bars + padding on logical scale. */
 export const DEFAULT_HISTORY_CANDLES = 14;
-export const FUTURE_RANGE_PADDING_SEC = 3600;
+export const FUTURE_FORECAST_BARS = 6;
+export const FUTURE_LOGICAL_PADDING_BARS = 2;
 
 export function toUtcSec(iso: string): number {
   return Math.floor(new Date(iso).getTime() / 1000);
@@ -24,47 +25,64 @@ export function formatUsd(price: number): string {
   return `$${price.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
+/**
+ * Logical range for lightweight-charts: extends past last candle without fake timestamps.
+ * `to` includes ~6 forecast hourly bars plus padding so H6 is not glued to the right edge.
+ */
+export function computeInitialVisibleLogicalRange(
+  candleCount: number,
+  opts?: { historyCandles?: number; futureBars?: number; paddingBars?: number },
+): { from: number; to: number } | null {
+  if (candleCount <= 0) return null;
+  const historyCandles = opts?.historyCandles ?? DEFAULT_HISTORY_CANDLES;
+  const futureBars = opts?.futureBars ?? FUTURE_FORECAST_BARS;
+  const paddingBars = opts?.paddingBars ?? FUTURE_LOGICAL_PADDING_BARS;
+  const lastIdx = candleCount - 1;
+  return {
+    from: Math.max(0, lastIdx - (historyCandles - 1)),
+    to: lastIdx + futureBars + paddingBars,
+  };
+}
+
+export function isXInsidePlot(x: number | null | undefined, plotWidth: number): x is number {
+  return x != null && x >= 0 && x <= plotWidth;
+}
+
+/** @deprecated time-based visible range cannot extrapolate past last bar in LWC v4 */
 export function computeInitialVisibleRange(
   candles: ForecastCandle[],
   anchorTimeIso: string,
   forecastPoints: ForecastPointLike[],
-  opts?: { historyCandles?: number; futurePaddingSec?: number },
 ): { from: number; to: number } | null {
-  if (!anchorTimeIso || forecastPoints.length < 6) return null;
-  const historyCandles = opts?.historyCandles ?? DEFAULT_HISTORY_CANDLES;
-  const futurePaddingSec = opts?.futurePaddingSec ?? FUTURE_RANGE_PADDING_SEC;
-  const anchorSec = toUtcSec(anchorTimeIso);
-  const lastForecastSec = toUtcSec(forecastPoints[5].time);
-  const to = lastForecastSec + futurePaddingSec;
-
-  const candleTimes = candles.map((c) => Math.floor(c.time_ms / 1000)).sort((a, b) => a - b);
-  let from: number;
-  if (candleTimes.length) {
-    let idx = candleTimes.findIndex((t) => t > anchorSec);
-    if (idx === -1) idx = candleTimes.length - 1;
-    else idx = Math.max(0, idx - 1);
-    const startIdx = Math.max(0, idx - (historyCandles - 1));
-    from = candleTimes[startIdx];
-    const minFrom = anchorSec - historyCandles * 3600;
-    from = Math.max(candleTimes[0], Math.min(from, minFrom));
-  } else {
-    from = anchorSec - historyCandles * 3600;
-  }
-  if (from >= to) return null;
-  return { from, to };
+  void candles;
+  void anchorTimeIso;
+  void forecastPoints;
+  return null;
 }
 
-/** Match crosshair time to an hourly forecast point (H1–H6). */
-export function findForecastPointIndex(
-  crosshairTimeSec: number,
-  forecastPoints: ForecastPointLike[],
-  toleranceSec = 1200,
+/** Pixel hit test: show tooltip only when crosshair is near the marker (not just same time). */
+export function findNearestForecastPointByPixel(
+  points: ForecastPointLike[],
+  coords: { x: number | null; y: number | null }[],
+  crosshairX: number,
+  crosshairY: number,
+  maxDistancePx = 22,
 ): number | null {
-  for (let i = 0; i < forecastPoints.length; i++) {
-    const ptSec = toUtcSec(forecastPoints[i].time);
-    if (Math.abs(ptSec - crosshairTimeSec) <= toleranceSec) return i;
+  let best: number | null = null;
+  let bestDist = maxDistancePx;
+  for (let i = 0; i < points.length; i++) {
+    const x = coords[i]?.x;
+    const y = coords[i]?.y;
+    if (x == null || y == null) continue;
+    const dx = crosshairX - x;
+    const dy = crosshairY - y;
+    const d = Math.hypot(dx, dy);
+    if (d <= bestDist) {
+      bestDist = d;
+      best = i;
+    }
   }
-  return null;
+  return best;
 }
 
 export function buildForecastPath(

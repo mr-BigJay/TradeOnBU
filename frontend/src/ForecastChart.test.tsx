@@ -2,27 +2,44 @@ import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ForecastChart } from "./ForecastChart";
 
+const mockSetVisibleLogicalRange = vi.fn();
 const mockSetVisibleRange = vi.fn();
 const mockSetData = vi.fn();
 const mockSetMarkers = vi.fn();
 const mockSubscribeVisibleTimeRangeChange = vi.fn();
 const mockUnsubscribeVisibleTimeRangeChange = vi.fn();
+const mockSubscribeVisibleLogicalRangeChange = vi.fn();
+const mockUnsubscribeVisibleLogicalRangeChange = vi.fn();
 const mockSubscribeCrosshairMove = vi.fn();
 const mockUnsubscribeCrosshairMove = vi.fn();
 const mockTimeToCoordinate = vi.fn(() => 280);
+const mockPriceToCoordinate = vi.fn(() => 200);
+const mockTimeScaleWidth = vi.fn(() => 640);
+const mockTimeScaleHeight = vi.fn(() => 28);
+const mockPriceScaleWidth = vi.fn(() => 56);
 
 vi.mock("lightweight-charts", () => ({
   createChart: vi.fn(() => ({
     addCandlestickSeries: vi.fn(() => ({ setData: mockSetData })),
-    addLineSeries: vi.fn(() => ({ setData: mockSetData, setMarkers: mockSetMarkers })),
+    addLineSeries: vi.fn(() => ({
+      setData: mockSetData,
+      setMarkers: mockSetMarkers,
+      priceToCoordinate: mockPriceToCoordinate,
+    })),
     applyOptions: vi.fn(),
     remove: vi.fn(),
+    priceScale: vi.fn(() => ({ width: mockPriceScaleWidth })),
     timeScale: vi.fn(() => ({
       setVisibleRange: mockSetVisibleRange,
+      setVisibleLogicalRange: mockSetVisibleLogicalRange,
       fitContent: vi.fn(),
       timeToCoordinate: mockTimeToCoordinate,
+      width: mockTimeScaleWidth,
+      height: mockTimeScaleHeight,
       subscribeVisibleTimeRangeChange: mockSubscribeVisibleTimeRangeChange,
       unsubscribeVisibleTimeRangeChange: mockUnsubscribeVisibleTimeRangeChange,
+      subscribeVisibleLogicalRangeChange: mockSubscribeVisibleLogicalRangeChange,
+      unsubscribeVisibleLogicalRangeChange: mockUnsubscribeVisibleLogicalRangeChange,
     })),
     subscribeCrosshairMove: mockSubscribeCrosshairMove,
     unsubscribeCrosshairMove: mockUnsubscribeCrosshairMove,
@@ -80,13 +97,15 @@ describe("ForecastChart", () => {
     vi.restoreAllMocks();
   });
 
-  it("renders forecast zone chrome and sets focused visible range", async () => {
-    render(<ForecastChart refreshKey={0} />);
+  it("renders overlay layer above canvas and uses logical visible range", async () => {
+    const { container } = render(<ForecastChart refreshKey={0} />);
     expect(await screen.findByText("AI FORECAST")).toBeTruthy();
-    await waitFor(() => expect(mockSetVisibleRange).toHaveBeenCalled());
-    const arg = mockSetVisibleRange.mock.calls[0][0];
-    expect(arg.to - arg.from).toBeGreaterThan(3600 * 10);
-    expect(mockSetMarkers).toHaveBeenCalled();
+    expect(container.querySelector(".forecast-chart-overlays")).toBeTruthy();
+    expect(container.querySelector(".forecast-chart-canvas")).toBeTruthy();
+    await waitFor(() => expect(mockSetVisibleLogicalRange).toHaveBeenCalled());
+    expect(mockSetVisibleRange).not.toHaveBeenCalled();
+    const logical = mockSetVisibleLogicalRange.mock.calls[0][0];
+    expect(logical.to - logical.from).toBeGreaterThan(10);
     const markers = mockSetMarkers.mock.calls[0][0];
     expect(markers).toHaveLength(6);
     expect(markers.every((m: { text?: string }) => !m.text)).toBe(true);
@@ -102,8 +121,7 @@ describe("ForecastChart", () => {
     });
     const { container } = render(<ForecastChart />);
     expect(await screen.findByRole("heading", { name: /مسیر پیش‌بینی/ })).toBeTruthy();
-    const label = container.querySelector(".forecast-zone-label");
-    expect(label).toBeTruthy();
-    expect((label as HTMLElement).style.opacity).toBe("0");
+    const label = container.querySelector(".forecast-zone-label") as HTMLElement;
+    expect(label.style.opacity).toBe("0");
   });
 });

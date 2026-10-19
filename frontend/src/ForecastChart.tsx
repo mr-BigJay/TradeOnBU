@@ -11,10 +11,11 @@ import {
 import { apiFetch } from "./api";
 import {
   buildForecastPath,
-  computeInitialVisibleRange,
-  findForecastPointIndex,
+  computeInitialVisibleLogicalRange,
+  findNearestForecastPointByPixel,
   forecastHourLabel,
   formatUsd,
+  isXInsidePlot,
   pctChangeFromAnchor,
   toUtcSec,
 } from "./forecastChartView";
@@ -40,15 +41,24 @@ type ActiveForecast = {
   runId: string | null;
 };
 
+type TooltipState = {
+  x: number;
+  y: number;
+  pointIndex: number;
+  point: ForecastPoint;
+  anchorPrice: number;
+};
+
 const FORECAST_COLOR = "#00e5ff";
+const TOOLTIP_HIT_PX = 22;
 
 export function ForecastChart({ refreshKey = 0 }: { refreshKey?: number }) {
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const overlaysRef = useRef<HTMLDivElement | null>(null);
   const overlayRef = useRef<HTMLDivElement | null>(null);
   const boundaryRef = useRef<HTMLDivElement | null>(null);
   const zoneLabelRef = useRef<HTMLDivElement | null>(null);
-  const tooltipRef = useRef<HTMLDivElement | null>(null);
 
   const chartRef = useRef<IChartApi | null>(null);
   const candleRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
@@ -62,73 +72,91 @@ export function ForecastChart({ refreshKey = 0 }: { refreshKey?: number }) {
   const [error, setError] = useState("");
   const [meta, setMeta] = useState<ChartPayload | null>(null);
   const [loading, setLoading] = useState(true);
-  const [tooltip, setTooltip] = useState<{ x: number; y: number; html: string } | null>(null);
+  const [tooltip, setTooltip] = useState<TooltipState | null>(null);
 
   const layoutForecastChrome = useCallback(() => {
     const chart = chartRef.current;
     const wrap = wrapRef.current;
+    const overlays = overlaysRef.current;
     const overlay = overlayRef.current;
     const boundary = boundaryRef.current;
     const label = zoneLabelRef.current;
     const anchorTime = anchorTimeRef.current;
 
-    if (!chart || !wrap || !overlay || !boundary || !label) return;
+    if (!chart || !wrap || !overlays || !overlay || !boundary || !label) return;
 
-    if (!anchorTime) {
+    const plotWidth = chart.timeScale().width();
+    const timeScaleHeight = chart.timeScale().height();
+    const priceScaleWidth = chart.priceScale("right").width();
+
+    overlays.style.paddingRight = `${priceScaleWidth}px`;
+    overlays.style.paddingBottom = `${timeScaleHeight}px`;
+
+    if (!anchorTime || plotWidth <= 0) {
       overlay.style.width = "0px";
-      boundary.style.left = "0px";
+      boundary.style.opacity = "0";
       label.style.opacity = "0";
       return;
     }
 
     const anchorSec = toUtcSec(anchorTime) as UTCTimestamp;
-    const x = chart.timeScale().timeToCoordinate(anchorSec);
-    if (x == null) {
+    const anchorX = chart.timeScale().timeToCoordinate(anchorSec);
+
+    if (!isXInsidePlot(anchorX, plotWidth)) {
       overlay.style.width = "0px";
+      boundary.style.opacity = "0";
+      label.style.opacity = "0";
       return;
     }
 
-    const left = Math.max(0, x);
+    const left = anchorX;
     overlay.style.left = `${left}px`;
-    overlay.style.width = `${Math.max(0, wrap.clientWidth - left)}px`;
+    overlay.style.width = `${Math.max(0, plotWidth - left)}px`;
     boundary.style.left = `${left}px`;
+    boundary.style.opacity = "1";
     label.style.left = `${left + 10}px`;
     label.style.opacity = "1";
   }, []);
 
   const handleCrosshairMove = useCallback((param: MouseEventParams<Time>) => {
     const wrap = wrapRef.current;
+    const chart = chartRef.current;
+    const line = lineRef.current;
     const forecast = activeForecastRef.current;
-    if (!wrap || !forecast || !param.point || param.time === undefined) {
+
+    if (!wrap || !chart || !line || !forecast || !param.point) {
       setTooltip(null);
       return;
     }
 
-    const idx = findForecastPointIndex(param.time as number, forecast.points);
+    const coords = forecast.points.map((p) => ({
+      x: chart.timeScale().timeToCoordinate(toUtcSec(p.time) as UTCTimestamp),
+      y: line.priceToCoordinate(p.price),
+    }));
+
+    const idx = findNearestForecastPointByPixel(
+      forecast.points,
+      coords,
+      param.point.x,
+      param.point.y,
+      TOOLTIP_HIT_PX,
+    );
+
     if (idx === null) {
       setTooltip(null);
       return;
     }
 
     const pt = forecast.points[idx];
-    const utc = new Date(pt.time);
-    const local = new Date(pt.time);
-    const title = `${forecastHourLabel(idx)} — AI Forecast`;
-    const html = [
-      `<div class="forecast-point-tooltip__title">${title}</div>`,
-      `<div class="forecast-point-tooltip__row">Predicted: <strong>${formatUsd(pt.price)}</strong></div>`,
-      `<div class="forecast-point-tooltip__row">Change from Anchor: <strong>${pctChangeFromAnchor(pt.price, forecast.anchorPrice)}</strong></div>`,
-      `<div class="forecast-point-tooltip__muted">UTC: ${utc.toISOString().replace("T", " ").slice(0, 16)}</div>`,
-      `<div class="forecast-point-tooltip__muted">Local: ${local.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}</div>`,
-    ].join("");
-
     const pad = 12;
-    const maxX = wrap.clientWidth - 200;
-    const maxY = wrap.clientHeight - 120;
+    const maxX = wrap.clientWidth - 220;
+    const maxY = wrap.clientHeight - 130;
     setTooltip({
+      pointIndex: idx,
+      point: pt,
+      anchorPrice: forecast.anchorPrice,
       x: Math.min(maxX, Math.max(pad, param.point.x + pad)),
       y: Math.min(maxY, Math.max(pad, param.point.y - 8)),
-      html,
     });
   }, []);
 
@@ -140,7 +168,7 @@ export function ForecastChart({ refreshKey = 0 }: { refreshKey?: number }) {
       layout: { background: { color: "#0c1224" }, textColor: "#d5def5" },
       grid: { vertLines: { color: "#1b2640" }, horzLines: { color: "#1b2640" } },
       height: 420,
-      timeScale: { timeVisible: true, secondsVisible: false, rightOffset: 6, barSpacing: 12 },
+      timeScale: { timeVisible: true, secondsVisible: false, rightOffset: 4, barSpacing: 12 },
       crosshair: { mode: 1, vertLine: { width: 1, style: LineStyle.Dashed, color: "#4a5a78" } },
       handleScroll: { horzTouchDrag: true, vertTouchDrag: false },
       handleScale: { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
@@ -171,6 +199,7 @@ export function ForecastChart({ refreshKey = 0 }: { refreshKey?: number }) {
       layoutForecastChrome();
     };
     chart.timeScale().subscribeVisibleTimeRangeChange(onRange);
+    chart.timeScale().subscribeVisibleLogicalRangeChange(onRange);
     chart.subscribeCrosshairMove(handleCrosshairMove);
 
     const ro = new ResizeObserver(() => {
@@ -184,6 +213,7 @@ export function ForecastChart({ refreshKey = 0 }: { refreshKey?: number }) {
     return () => {
       ro.disconnect();
       chart.timeScale().unsubscribeVisibleTimeRangeChange(onRange);
+      chart.timeScale().unsubscribeVisibleLogicalRangeChange(onRange);
       chart.unsubscribeCrosshairMove(handleCrosshairMove);
       chart.remove();
       chartRef.current = null;
@@ -198,6 +228,7 @@ export function ForecastChart({ refreshKey = 0 }: { refreshKey?: number }) {
 
   useEffect(() => {
     userRangeRef.current = false;
+    lastAppliedRunRef.current = null;
   }, [refreshKey]);
 
   useEffect(() => {
@@ -238,9 +269,7 @@ export function ForecastChart({ refreshKey = 0 }: { refreshKey?: number }) {
             runId: data.run_id ?? null,
           };
           const path = buildForecastPath(data.anchor_time!, data.anchor_price!, data.forecast_points);
-          lineRef.current.setData(
-            path.map((p) => ({ time: p.time as UTCTimestamp, value: p.value }))
-          );
+          lineRef.current.setData(path.map((p) => ({ time: p.time as UTCTimestamp, value: p.value })));
           lineRef.current.setMarkers(
             data.forecast_points.map((p) => ({
               time: toUtcSec(p.time) as UTCTimestamp,
@@ -252,19 +281,20 @@ export function ForecastChart({ refreshKey = 0 }: { refreshKey?: number }) {
           );
 
           const runKey = data.run_id ?? data.generated_at ?? "";
-          const shouldSetRange = !userRangeRef.current || runKey !== lastAppliedRunRef.current;
+          const isNewRun = runKey !== lastAppliedRunRef.current;
+          const shouldSetRange = !isPoll && (!userRangeRef.current || isNewRun);
+
           if (shouldSetRange) {
-            const range = computeInitialVisibleRange(candles, data.anchor_time!, data.forecast_points);
-            if (range) {
+            const logical = computeInitialVisibleLogicalRange(candles.length);
+            if (logical) {
               suppressRangeRef.current = true;
-              chartRef.current.timeScale().setVisibleRange({
-                from: range.from as UTCTimestamp,
-                to: range.to as UTCTimestamp,
-              });
+              chartRef.current.timeScale().setVisibleLogicalRange(logical);
               requestAnimationFrame(() => {
                 suppressRangeRef.current = false;
+                layoutForecastChrome();
               });
               lastAppliedRunRef.current = runKey;
+              if (isNewRun) userRangeRef.current = false;
             }
           }
           layoutForecastChrome();
@@ -274,7 +304,7 @@ export function ForecastChart({ refreshKey = 0 }: { refreshKey?: number }) {
           lineRef.current.setData([]);
           lineRef.current.setMarkers([]);
           setTooltip(null);
-          if (!userRangeRef.current) {
+          if (!isPoll && !userRangeRef.current) {
             chartRef.current.timeScale().fitContent();
           }
           layoutForecastChrome();
@@ -306,20 +336,38 @@ export function ForecastChart({ refreshKey = 0 }: { refreshKey?: number }) {
         <p className="hint">آخرین پیش‌بینی: {new Date(meta.generated_at).toLocaleString("fa-IR")}</p>
       )}
       <div className="forecast-chart-wrap" ref={wrapRef}>
-        <div className="forecast-future-shade" ref={overlayRef} aria-hidden />
-        <div className="forecast-boundary-line" ref={boundaryRef} aria-hidden />
-        <div className="forecast-zone-label" ref={zoneLabelRef}>
-          AI FORECAST
+        <div className="forecast-chart-canvas chart-wrap" ref={containerRef} />
+        <div className="forecast-chart-overlays" ref={overlaysRef}>
+          <div className="forecast-future-shade" ref={overlayRef} aria-hidden />
+          <div className="forecast-boundary-line" ref={boundaryRef} aria-hidden />
+          <div className="forecast-zone-label" ref={zoneLabelRef}>
+            AI FORECAST
+          </div>
+          {tooltip && (
+            <div className="forecast-point-tooltip" style={{ left: tooltip.x, top: tooltip.y }}>
+              <div className="forecast-point-tooltip__title">
+                {forecastHourLabel(tooltip.pointIndex)} — AI Forecast
+              </div>
+              <div className="forecast-point-tooltip__row">
+                Predicted: <strong>{formatUsd(tooltip.point.price)}</strong>
+              </div>
+              <div className="forecast-point-tooltip__row">
+                Change from Anchor:{" "}
+                <strong>{pctChangeFromAnchor(tooltip.point.price, tooltip.anchorPrice)}</strong>
+              </div>
+              <div className="forecast-point-tooltip__muted">
+                UTC: {new Date(tooltip.point.time).toISOString().replace("T", " ").slice(0, 16)}
+              </div>
+              <div className="forecast-point-tooltip__muted">
+                Local:{" "}
+                {new Date(tooltip.point.time).toLocaleString(undefined, {
+                  dateStyle: "medium",
+                  timeStyle: "short",
+                })}
+              </div>
+            </div>
+          )}
         </div>
-        {tooltip && (
-          <div
-            ref={tooltipRef}
-            className="forecast-point-tooltip"
-            style={{ left: tooltip.x, top: tooltip.y }}
-            dangerouslySetInnerHTML={{ __html: tooltip.html }}
-          />
-        )}
-        <div className="chart-wrap forecast-chart-canvas" ref={containerRef} />
       </div>
       {meta?.collector_freshness && (
         <p className="hint" style={{ fontSize: "0.8rem" }}>
