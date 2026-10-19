@@ -35,11 +35,18 @@ async def record_source_message(
     duplicate_delta: int = 0,
     reconnect_delta: int = 0,
     message_at_ms: int | None = None,
+    heartbeat_at_ms: int | None = None,
+    subscription_confirmed: bool | None = None,
 ) -> None:
     st = await ensure_source_status(session, source)
     st.connected = connected
     if message_at_ms is not None:
         st.last_message_at_ms = message_at_ms
+        st.last_event_at_ms = message_at_ms
+    if heartbeat_at_ms is not None:
+        st.last_heartbeat_at_ms = heartbeat_at_ms
+    if subscription_confirmed is not None:
+        st.subscription_confirmed = subscription_confirmed
     st.events_received = int(st.events_received or 0) + received_delta
     st.events_rejected = int(st.events_rejected or 0) + rejected_delta
     st.duplicates = int(st.duplicates or 0) + duplicate_delta
@@ -51,12 +58,29 @@ async def record_source_message(
     st.updated_at = datetime.now(timezone.utc)
 
 
-async def insert_liquidation_event(session: AsyncSession, ev: NormalizedLiquidation) -> bool:
-    """Returns True if inserted, False if duplicate."""
-    stmt = sqlite_insert(LiquidationEvent).values(**ev.to_row())
+async def insert_liquidation_event(session: AsyncSession, ev: NormalizedLiquidation) -> tuple[bool, bool]:
+    """Returns (inserted, updated). Binance order snapshots upsert cumulative z without double-count rows."""
+    row = ev.to_row()
+    if ev.source_exchange == "binance" and ev.exchange_order_id:
+        existing = (
+            await session.execute(select(LiquidationEvent).where(LiquidationEvent.dedupe_key == ev.dedupe_key))
+        ).scalar_one_or_none()
+        if existing is not None:
+            new_z = float(ev.cumulative_qty or ev.quantity_btc)
+            old_z = float(existing.quantity_btc)
+            if new_z <= old_z:
+                return False, False
+            existing.quantity_btc = new_z
+            existing.price = float(ev.price)
+            existing.estimated_notional_usd = float(ev.estimated_notional_usd)
+            existing.event_timestamp_ms = int(ev.event_timestamp_ms)
+            existing.received_timestamp_ms = int(ev.received_timestamp_ms)
+            existing.source_quality = ev.source_quality
+            return False, True
+    stmt = sqlite_insert(LiquidationEvent).values(**row)
     stmt = stmt.on_conflict_do_nothing(index_elements=["dedupe_key"])
     result = await session.execute(stmt)
-    return bool(result.rowcount)
+    return bool(result.rowcount), False
 
 
 async def fetch_events_since(
@@ -67,15 +91,18 @@ async def fetch_events_since(
     source: str | None = None,
     limit: int = 50_000,
 ) -> list[LiquidationEvent]:
+    """Fetch newest events in range (cap at limit) in chronological order for analytics."""
     q = (
         select(LiquidationEvent)
         .where(LiquidationEvent.symbol == symbol, LiquidationEvent.event_timestamp_ms >= since_ms)
-        .order_by(LiquidationEvent.event_timestamp_ms)
+        .order_by(desc(LiquidationEvent.event_timestamp_ms))
         .limit(limit)
     )
     if source:
         q = q.where(LiquidationEvent.source_exchange == source)
-    return list((await session.execute(q)).scalars().all())
+    rows = list((await session.execute(q)).scalars().all())
+    rows.reverse()
+    return rows
 
 
 async def latest_event_time(session: AsyncSession, symbol: str) -> int | None:

@@ -16,6 +16,10 @@ Optional retention (days):
 LIQUIDATION_RAW_RETENTION_DAYS=7
 LIQUIDATION_ROLLUP_RETENTION_DAYS=30
 LIQUIDATION_STALE_AFTER_SECONDS=300
+LIQUIDATION_BINANCE_WS_URL=wss://fstream.binance.com/market/ws/btcusdt@forceOrder
+LIQUIDATION_BYBIT_WS_URL=wss://stream.bybit.com/v5/public/linear
+LIQUIDATION_WS_RECV_IDLE_SECONDS=120
+LIQUIDATION_WS_MAX_QUEUE=500
 ```
 
 Restart the backend container. The collector does **not** call OpenAI and does not alter ICT scheduling.
@@ -32,7 +36,7 @@ Authenticated dashboard API (same key as other GUI routes):
 | Source | Feed | Notes |
 |--------|------|--------|
 | Bybit | `allLiquidation.BTCUSDT` on linear public WS | ~500ms pushes; `Buy` = long liquidated; **bankruptcy price** (not guaranteed fill for entire position) |
-| Binance | `btcusdt@forceOrder` | **Sampled** (~1 order / 1000ms max) — not a full liquidation tape |
+| Binance | `/market/ws/btcusdt@forceOrder` (USD-M) | **Sampled** (~1 order / 1000ms max); avg fill price; COIN-M not mixed |
 
 **Real liquidations vs zones:** This module stores **observed events only**, not estimated future liquidation heatmaps.
 

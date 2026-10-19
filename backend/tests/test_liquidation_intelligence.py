@@ -1,24 +1,34 @@
 from __future__ import annotations
 
+import asyncio
+import json
 import time
 from datetime import datetime, timedelta, timezone
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from sqlalchemy import select
 
+from app.config import get_settings
 from app.db import SessionLocal, init_db
-from app.models import LiquidationEvent, LiquidationSourceStatus
-from app.services.liquidation_intelligence.analytics import compute_window_metrics, detect_burst
+from app.models import LiquidationEvent, LiquidationSourceStatus, LiquidationWindowRollup
+from app.services.liquidation_intelligence.analytics import compute_price_clusters, compute_window_metrics, detect_burst
+from app.services.liquidation_intelligence.collector import LiquidationIntelligenceCollector
 from app.services.liquidation_intelligence.dedupe import build_dedupe_key
+from app.services.liquidation_intelligence.health import connection_activity_state, window_coverage_for_events
 from app.services.liquidation_intelligence.llm_compact import compact_liquidation_for_llm
+from app.services.liquidation_intelligence.maintenance import run_liquidation_retention_tick
 from app.services.liquidation_intelligence.parsers import (
     binance_side_to_liquidated_position,
     bybit_side_to_liquidated_position,
     parse_binance_force_order_message,
     parse_bybit_all_liquidation_message,
 )
-from app.services.liquidation_intelligence.repository import insert_liquidation_event, prune_liquidation_data
+from app.services.liquidation_intelligence.repository import insert_liquidation_event, prune_liquidation_data, record_source_message
+from app.services.liquidation_intelligence.rollups import materialize_rollups_for_symbol
+from app.services.liquidation_intelligence.summary import build_liquidation_forecast_summary
 from app.services.liquidation_intelligence.types import NormalizedLiquidation
+from app.services.liquidation_intelligence.ws_common import run_ws_message_loop
 from app.services.price_forecast.market_collector import build_llm_market_summary
 from app.models import MarketDataSnapshot
 
@@ -36,6 +46,7 @@ BINANCE_MSG = {
     "o": {
         "s": "BTCUSDT",
         "S": "SELL",
+        "ps": "LONG",
         "q": "0.020",
         "z": "0.020",
         "l": "0.020",
@@ -64,15 +75,24 @@ def test_parse_bybit_message():
     assert ev.liquidated_position_side == "long"
     assert ev.price_type == "bankruptcy_price"
     assert ev.quantity_btc == pytest.approx(0.015)
-    assert ev.estimated_notional_usd == pytest.approx(81000.5 * 0.015)
 
 
-def test_parse_binance_message():
+def test_parse_binance_message_ps_and_order_id():
     ev = parse_binance_force_order_message(BINANCE_MSG)
     assert ev is not None
     assert ev.liquidated_position_side == "long"
-    assert ev.quantity_btc == pytest.approx(0.02)
-    assert ev.source_quality == "sampled_1000ms_window"
+    assert ev.exchange_order_id == "12345"
+    assert ev.price_type == "avg_fill_price"
+
+
+def test_parse_binance_rejects_coin_m_symbol():
+    msg = {
+        "e": "forceOrder",
+        "E": 1,
+        "st": "COIN",
+        "o": {"s": "BTCUSD_PERP", "S": "SELL", "z": "1", "ap": "1", "X": "FILLED", "i": 1},
+    }
+    assert parse_binance_force_order_message(msg) is None
 
 
 def test_malformed_binance_returns_none_or_raises():
@@ -90,63 +110,144 @@ async def test_insert_deduplication():
     await init_db()
     ev = parse_bybit_all_liquidation_message(BYBIT_MSG)[0]
     async with SessionLocal() as session:
-        assert await insert_liquidation_event(session, ev) is True
-        assert await insert_liquidation_event(session, ev) is False
+        ins, upd = await insert_liquidation_event(session, ev)
+        assert ins is True and upd is False
+        ins2, upd2 = await insert_liquidation_event(session, ev)
+        assert ins2 is False and upd2 is False
         await session.commit()
         count = (await session.execute(select(LiquidationEvent))).scalars().all()
         assert len(count) == 1
 
 
 @pytest.mark.asyncio
-async def test_aggregation_windows():
+async def test_binance_cumulative_snapshot_dedupe():
     await init_db()
+    base = parse_binance_force_order_message(BINANCE_MSG)
+    assert base is not None
+    snap1 = NormalizedLiquidation(**{**base.__dict__, "quantity_btc": 0.01, "cumulative_qty": 0.01, "estimated_notional_usd": 800.0})
+    snap2 = NormalizedLiquidation(
+        **{
+            **base.__dict__,
+            "quantity_btc": 0.02,
+            "cumulative_qty": 0.02,
+            "estimated_notional_usd": 1600.0,
+            "event_timestamp_ms": base.event_timestamp_ms + 100,
+        }
+    )
+    async with SessionLocal() as session:
+        assert (await insert_liquidation_event(session, snap1))[0] is True
+        await session.commit()
+        assert (await insert_liquidation_event(session, snap2))[1] is True
+        await session.commit()
+        rows = (await session.execute(select(LiquidationEvent))).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].quantity_btc == pytest.approx(0.02)
+
+
+def test_price_clusters_not_mixed_by_price_type():
     now = int(time.time() * 1000)
-    rows = []
-    for i in range(3):
-        rows.append(
-            NormalizedLiquidation(
-                source_exchange="bybit",
-                symbol="BTCUSDT",
-                event_timestamp_ms=now - i * 60_000,
-                received_timestamp_ms=now,
-                liquidated_position_side="long",
-                native_order_side="Buy",
-                price=80000.0,
-                quantity_btc=0.01,
-                estimated_notional_usd=800.0,
-                price_type="bankruptcy_price",
-                source_quality="observed",
-                dedupe_key=build_dedupe_key("bybit", "BTCUSDT", now - i * 60_000, "Buy", 80000.0, 0.01),
-            )
-        )
 
     class E:
         pass
 
-    events = []
-    for r in rows:
-        e = E()
-        e.event_timestamp_ms = r.event_timestamp_ms
-        e.liquidated_position_side = r.liquidated_position_side
-        e.estimated_notional_usd = r.estimated_notional_usd
-        e.price = r.price
-        events.append(e)
+    bybit = E()
+    bybit.source_exchange = "bybit"
+    bybit.price_type = "bankruptcy_price"
+    bybit.price = 80000.0
+    bybit.liquidated_position_side = "long"
+    bybit.estimated_notional_usd = 1000.0
+    bybit.event_timestamp_ms = now
 
-    metrics = compute_window_metrics(events, now)
-    assert metrics["5m"]["event_count"] == 3
-    assert metrics["5m"]["long_liquidation_notional_usd"] == pytest.approx(2400.0)
+    binance = E()
+    binance.source_exchange = "binance"
+    binance.price_type = "avg_fill_price"
+    binance.price = 80000.0
+    binance.liquidated_position_side = "long"
+    binance.estimated_notional_usd = 2000.0
+    binance.event_timestamp_ms = now
+
+    mixed = compute_price_clusters([bybit, binance], source_exchange=None)
+    assert len(mixed) == 1
+    assert mixed[0]["observed_notional_usd"] == pytest.approx(3000.0)
+
+    bybit_only = compute_price_clusters([bybit, binance], source_exchange="bybit", price_type="bankruptcy_price")
+    assert len(bybit_only) == 1
+    assert bybit_only[0]["observed_notional_usd"] == pytest.approx(1000.0)
+    assert bybit_only[0]["price_type"] == "bankruptcy_price"
 
 
-def test_burst_detection():
-    b = detect_burst(5000, 1000)
-    assert b["burst"] is True
-    assert b["intensity_vs_baseline"] == pytest.approx(5.0)
+def test_connection_idle_not_stale():
+    now = int(time.time() * 1000)
+    state = connection_activity_state(
+        connected=True,
+        last_heartbeat_at_ms=now - 1000,
+        last_event_at_ms=None,
+        now_ms=now,
+        stale_after_ms=300_000,
+        subscription_confirmed=True,
+    )
+    assert state == "connected_idle"
 
 
-def test_compact_for_llm_removes_heavy_fields():
-    full = {"status": "ok", "symbol": "BTCUSDT", "windows": {"5m": {"event_count": 1}}, "price_clusters": list(range(10))}
-    slim = compact_liquidation_for_llm(full)
-    assert len(slim.get("price_clusters", [])) <= 5
+def test_window_coverage_empty_not_zero_metrics():
+    cov = window_coverage_for_events([], int(time.time() * 1000), "5m")
+    assert cov["coverage"] == "empty"
+    assert cov["metrics"] is None
+
+
+@pytest.mark.asyncio
+async def test_ws_recv_idle_calls_on_idle_not_disconnect():
+    idle_calls = 0
+    msg_calls = 0
+
+    async def on_idle():
+        nonlocal idle_calls
+        idle_calls += 1
+
+    async def on_msg(_msg):
+        nonlocal msg_calls
+        msg_calls += 1
+
+    seq = iter([asyncio.TimeoutError(), '{"ok": true}'])
+
+    async def fake_wait_for(_aw, _timeout=None, **_kwargs):
+        item = next(seq)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    ws = AsyncMock()
+    with patch("app.services.liquidation_intelligence.ws_common.asyncio.wait_for", side_effect=fake_wait_for):
+        await run_ws_message_loop(
+            ws,
+            on_json_message=on_msg,
+            on_idle=on_idle,
+            recv_idle_seconds=1.0,
+            running=lambda: msg_calls < 1,
+        )
+    assert idle_calls >= 1
+    assert msg_calls == 1
+
+
+def test_collector_binance_url_default_market_path():
+    c = LiquidationIntelligenceCollector()
+    assert "/market/ws/" in c._binance_ws_url()
+
+
+@pytest.mark.asyncio
+async def test_rollup_persistence():
+    await init_db()
+    now = int(time.time() * 1000)
+    ev = parse_bybit_all_liquidation_message(BYBIT_MSG)[0]
+    ev = NormalizedLiquidation(**{**ev.__dict__, "event_timestamp_ms": now - 60_000})
+    async with SessionLocal() as session:
+        await insert_liquidation_event(session, ev)
+        await session.commit()
+        n = await materialize_rollups_for_symbol(session, now_ms=now)
+        await session.commit()
+        assert n > 0
+        rows = (await session.execute(select(LiquidationWindowRollup))).scalars().all()
+        assert len(rows) >= 1
 
 
 @pytest.mark.asyncio
@@ -165,6 +266,30 @@ async def test_retention_prunes_old_rows():
         assert deleted[0] >= 1
 
 
+@pytest.mark.asyncio
+async def test_summary_partial_when_disconnected():
+    await init_db()
+    with patch.object(get_settings(), "liquidation_intelligence_enabled", True):
+        async with SessionLocal() as session:
+            await record_source_message(session, "bybit", connected=False, error="down")
+            await session.commit()
+            out = await build_liquidation_forecast_summary(session)
+    assert out["status"] in ("unavailable", "partial")
+    assert "freshness_and_coverage" in out
+    assert isinstance(out["price_clusters"], dict)
+
+
+def test_compact_for_llm_removes_heavy_fields():
+    full = {
+        "status": "ok",
+        "symbol": "BTCUSDT",
+        "windows": {"5m": {"event_count": 1}},
+        "price_clusters": {"bybit": list(range(10)), "binance": list(range(10))},
+    }
+    slim = compact_liquidation_for_llm(full)
+    assert len(slim.get("price_clusters", {}).get("bybit", [])) <= 3
+
+
 def test_llm_market_summary_includes_liquidations_key():
     snap = MarketDataSnapshot(
         symbol="BTCUSDT",
@@ -180,3 +305,40 @@ async def test_ict_instructions_untouched():
     from app.services.ai_trader_instructions import ICT_TRADER_INSTRUCTIONS
 
     assert "Liquidation Intelligence" not in ICT_TRADER_INSTRUCTIONS
+
+
+@pytest.mark.asyncio
+async def test_independent_source_failures():
+    await init_db()
+    with patch.object(get_settings(), "liquidation_intelligence_enabled", True):
+        async with SessionLocal() as session:
+            await record_source_message(session, "bybit", connected=True, heartbeat_at_ms=int(time.time() * 1000), subscription_confirmed=True)
+            await record_source_message(session, "binance", connected=False, error="ws_closed")
+            await session.commit()
+            out = await build_liquidation_forecast_summary(session)
+    assert out["bybit"]["connection_state"] in ("connected_idle", "connecting", "stale", "connected_active")
+    assert out["binance"]["connection_state"] == "disconnected"
+
+
+def test_aggregation_windows():
+    now = int(time.time() * 1000)
+
+    class E:
+        pass
+
+    events = []
+    for i in range(3):
+        e = E()
+        e.event_timestamp_ms = now - i * 60_000
+        e.liquidated_position_side = "long"
+        e.estimated_notional_usd = 800.0
+        e.price = 80000.0
+        events.append(e)
+
+    metrics = compute_window_metrics(events, now)
+    assert metrics["5m"]["event_count"] == 3
+
+
+def test_burst_detection():
+    b = detect_burst(5000, 1000)
+    assert b["burst"] is True

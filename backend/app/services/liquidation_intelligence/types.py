@@ -19,6 +19,8 @@ class NormalizedLiquidation:
     source_quality: str
     dedupe_key: str
     notes: str = ""
+    exchange_order_id: str | None = None
+    cumulative_qty: float | None = None
 
     def to_row(self) -> dict[str, Any]:
         return {
@@ -34,4 +36,5 @@ class NormalizedLiquidation:
             "estimated_notional_usd": self.estimated_notional_usd,
             "price_type": self.price_type,
             "source_quality": self.source_quality,
+            "exchange_order_id": self.exchange_order_id,
         }

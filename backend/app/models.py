@@ -575,6 +575,7 @@ class LiquidationEvent(Base):
     estimated_notional_usd: Mapped[float] = mapped_column(Float)
     price_type: Mapped[str] = mapped_column(String(32))
     source_quality: Mapped[str] = mapped_column(String(32), default="observed")
+    exchange_order_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
 
 
@@ -588,6 +589,9 @@ class LiquidationSourceStatus(Base):
     source_exchange: Mapped[str] = mapped_column(String(16), index=True)
     connected: Mapped[bool] = mapped_column(default=False)
     last_message_at_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_event_at_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_heartbeat_at_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    subscription_confirmed: Mapped[bool] = mapped_column(default=False)
     events_received: Mapped[int] = mapped_column(Integer, default=0)
     events_rejected: Mapped[int] = mapped_column(Integer, default=0)
     duplicates: Mapped[int] = mapped_column(Integer, default=0)

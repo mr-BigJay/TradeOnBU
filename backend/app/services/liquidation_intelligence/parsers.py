@@ -86,19 +86,50 @@ def parse_bybit_all_liquidation_message(msg: dict[str, Any], *, symbol: str = "B
     return out
 
 
+def _binance_contract_is_usd_m(order: dict[str, Any], sym: str, *, target_symbol: str) -> bool:
+    """Reject COIN-M / inverse contracts; USD-M BTCUSDT only."""
+    sym_u = sym.upper()
+    if sym_u != target_symbol.upper():
+        return False
+    if sym_u.endswith("_PERP") or sym_u.endswith("USD_PERP") or "USD_" in sym_u and not sym_u.endswith("USDT"):
+        return False
+    st = str(order.get("st") or msg_contract_type(order) or "").upper()
+    if st in ("COIN", "COIN_M", "INVERSE", "DELIVERY"):
+        return False
+    return True
+
+
+def msg_contract_type(order: dict[str, Any]) -> str:
+    return str(order.get("st") or order.get("ct") or "")
+
+
+def _liquidated_side_from_binance(*, order_side: str, position_side: str | None) -> str:
+    ps = (position_side or "").strip().upper()
+    if ps == "LONG":
+        return "long"
+    if ps == "SHORT":
+        return "short"
+    return binance_side_to_liquidated_position(order_side)
+
+
 def parse_binance_force_order_message(msg: dict[str, Any], *, symbol: str = "BTCUSDT") -> NormalizedLiquidation | None:
     if str(msg.get("e") or "").lower() != "forceorder":
+        return None
+    stream_st = str(msg.get("st") or "").upper()
+    if stream_st in ("COIN", "COIN_M", "INVERSE"):
         return None
     order = msg.get("o")
     if not isinstance(order, dict):
         raise LiquidationParseError("binance_missing_order")
     sym = str(order.get("s") or "").upper()
-    if sym != symbol.upper():
+    if not _binance_contract_is_usd_m(order, sym, target_symbol=symbol):
         return None
     received_ms = int(time.time() * 1000)
     event_ms = int(msg.get("E") or order.get("T") or 0)
     status = str(order.get("X") or "").upper()
     native = str(order.get("S") or "")
+    position_side = str(order.get("ps") or msg.get("ps") or "") or None
+    order_id = order.get("i")
     try:
         executed = float(order.get("z") or order.get("l") or 0)
         avg_price = float(order.get("ap") or order.get("p") or 0)
@@ -108,17 +139,15 @@ def parse_binance_force_order_message(msg: dict[str, Any], *, symbol: str = "BTC
         return None
     if not _finite_pos(executed) or not _finite_pos(avg_price) or event_ms <= 0:
         return None
-    liq_side = binance_side_to_liquidated_position(native)
+    liq_side = _liquidated_side_from_binance(order_side=native, position_side=position_side)
     quality = "sampled_1000ms_window" if status == "FILLED" else "partial_execution"
-    dedupe = build_dedupe_key(
-        "binance",
-        sym,
-        event_ms,
-        native,
-        avg_price,
-        executed,
-        extra=str(order.get("i") or order.get("c") or ""),
-    )
+    if order_id is not None:
+        dedupe = build_dedupe_key("binance", sym, 0, "order", 0.0, 0.0, extra=str(order_id))
+    else:
+        dedupe = build_dedupe_key("binance", sym, event_ms, native, avg_price, executed, extra="")
+    notes = "Binance forceOrder stream may omit liquidations within the same 1000ms window"
+    if order_id is None:
+        notes += "; no stable order id — cumulative z dedupe may be incomplete"
     return NormalizedLiquidation(
         source_exchange="binance",
         symbol=sym,
@@ -132,5 +161,7 @@ def parse_binance_force_order_message(msg: dict[str, Any], *, symbol: str = "BTC
         price_type="avg_fill_price",
         source_quality=quality,
         dedupe_key=dedupe,
-        notes="Binance forceOrder stream may omit liquidations within the same 1000ms window",
+        notes=notes,
+        exchange_order_id=str(order_id) if order_id is not None else None,
+        cumulative_qty=executed,
     )
