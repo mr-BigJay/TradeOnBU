@@ -4,8 +4,10 @@ import {
   computeInitialVisibleLogicalRange,
   findNearestForecastPointByPixel,
   forecastHourLabel,
+  clampTooltipInPlotArea,
   isXInsidePlot,
   pctChangeFromAnchor,
+  plotAreaInsetStyle,
 } from "./forecastChartView";
 
 describe("forecastChartView", () => {
@@ -52,6 +54,18 @@ describe("forecastChartView", () => {
     expect(isXInsidePlot(-1, 400)).toBe(false);
     expect(isXInsidePlot(401, 400)).toBe(false);
     expect(isXInsidePlot(null, 400)).toBe(false);
+  });
+
+  it("plot area inset excludes price and time scales", () => {
+    const inset = plotAreaInsetStyle(56, 28);
+    expect(inset.right).toBe("56px");
+    expect(inset.bottom).toBe("28px");
+  });
+
+  it("clamps tooltip inside plot box", () => {
+    const out = clampTooltipInPlotArea(500, 400, 640, 392, { tooltipWidth: 220, tooltipHeight: 118, pad: 8 });
+    expect(out.x).toBeLessThanOrEqual(640 - 220 - 8);
+    expect(out.y).toBeLessThanOrEqual(392 - 118 - 8);
   });
 
   it("formats labels and pct change", () => {

@@ -15,8 +15,13 @@ import {
   findNearestForecastPointByPixel,
   forecastHourLabel,
   formatUsd,
+  clampTooltipInPlotArea,
+  forecastRunKey,
+  isNewForecastRun,
   isXInsidePlot,
   pctChangeFromAnchor,
+  plotAreaInsetStyle,
+  shouldApplyForecastVisibleRange,
   toUtcSec,
 } from "./forecastChartView";
 
@@ -89,8 +94,12 @@ export function ForecastChart({ refreshKey = 0 }: { refreshKey?: number }) {
     const timeScaleHeight = chart.timeScale().height();
     const priceScaleWidth = chart.priceScale("right").width();
 
-    overlays.style.paddingRight = `${priceScaleWidth}px`;
-    overlays.style.paddingBottom = `${timeScaleHeight}px`;
+    const inset = plotAreaInsetStyle(priceScaleWidth, timeScaleHeight);
+    overlays.style.top = inset.top;
+    overlays.style.left = inset.left;
+    overlays.style.right = inset.right;
+    overlays.style.bottom = inset.bottom;
+    overlays.style.padding = "0";
 
     if (!anchorTime || plotWidth <= 0) {
       overlay.style.width = "0px";
@@ -111,7 +120,8 @@ export function ForecastChart({ refreshKey = 0 }: { refreshKey?: number }) {
 
     const left = anchorX;
     overlay.style.left = `${left}px`;
-    overlay.style.width = `${Math.max(0, plotWidth - left)}px`;
+    const plotAreaWidth = overlays.clientWidth;
+    overlay.style.width = `${Math.max(0, plotAreaWidth - left)}px`;
     boundary.style.left = `${left}px`;
     boundary.style.opacity = "1";
     label.style.left = `${left + 10}px`;
@@ -119,12 +129,12 @@ export function ForecastChart({ refreshKey = 0 }: { refreshKey?: number }) {
   }, []);
 
   const handleCrosshairMove = useCallback((param: MouseEventParams<Time>) => {
-    const wrap = wrapRef.current;
+    const overlays = overlaysRef.current;
     const chart = chartRef.current;
     const line = lineRef.current;
     const forecast = activeForecastRef.current;
 
-    if (!wrap || !chart || !line || !forecast || !param.point) {
+    if (!overlays || !chart || !line || !forecast || !param.point) {
       setTooltip(null);
       return;
     }
@@ -148,15 +158,18 @@ export function ForecastChart({ refreshKey = 0 }: { refreshKey?: number }) {
     }
 
     const pt = forecast.points[idx];
-    const pad = 12;
-    const maxX = wrap.clientWidth - 220;
-    const maxY = wrap.clientHeight - 130;
+    const offset = clampTooltipInPlotArea(
+      param.point.x + 12,
+      param.point.y - 8,
+      overlays.clientWidth,
+      overlays.clientHeight,
+    );
     setTooltip({
       pointIndex: idx,
       point: pt,
       anchorPrice: forecast.anchorPrice,
-      x: Math.min(maxX, Math.max(pad, param.point.x + pad)),
-      y: Math.min(maxY, Math.max(pad, param.point.y - 8)),
+      x: offset.x,
+      y: offset.y,
     });
   }, []);
 
@@ -280,9 +293,14 @@ export function ForecastChart({ refreshKey = 0 }: { refreshKey?: number }) {
             }))
           );
 
-          const runKey = data.run_id ?? data.generated_at ?? "";
-          const isNewRun = runKey !== lastAppliedRunRef.current;
-          const shouldSetRange = !isPoll && (!userRangeRef.current || isNewRun);
+          const runKey = forecastRunKey(data);
+          const isNewRun = isNewForecastRun(runKey, lastAppliedRunRef.current);
+          const shouldSetRange = shouldApplyForecastVisibleRange({
+            isPoll,
+            userAdjustedRange: userRangeRef.current,
+            isNewRun,
+            hasForecast: true,
+          });
 
           if (shouldSetRange) {
             const logical = computeInitialVisibleLogicalRange(candles.length);
@@ -294,7 +312,7 @@ export function ForecastChart({ refreshKey = 0 }: { refreshKey?: number }) {
                 layoutForecastChrome();
               });
               lastAppliedRunRef.current = runKey;
-              if (isNewRun) userRangeRef.current = false;
+              userRangeRef.current = false;
             }
           }
           layoutForecastChrome();

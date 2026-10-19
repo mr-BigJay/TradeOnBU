@@ -48,6 +48,64 @@ export function isXInsidePlot(x: number | null | undefined, plotWidth: number): 
   return x != null && x >= 0 && x <= plotWidth;
 }
 
+/** Position overlay root to the chart plot area (exclude price + time scales). */
+export function plotAreaInsetStyle(priceScaleWidth: number, timeScaleHeight: number): {
+  top: string;
+  left: string;
+  right: string;
+  bottom: string;
+} {
+  return {
+    top: "0px",
+    left: "0px",
+    right: `${Math.max(0, priceScaleWidth)}px`,
+    bottom: `${Math.max(0, timeScaleHeight)}px`,
+  };
+}
+
+export function clampTooltipInPlotArea(
+  x: number,
+  y: number,
+  plotWidth: number,
+  plotHeight: number,
+  opts?: { tooltipWidth?: number; tooltipHeight?: number; pad?: number },
+): { x: number; y: number } {
+  const tw = opts?.tooltipWidth ?? 220;
+  const th = opts?.tooltipHeight ?? 118;
+  const pad = opts?.pad ?? 8;
+  return {
+    x: Math.min(Math.max(pad, x), Math.max(pad, plotWidth - tw - pad)),
+    y: Math.min(Math.max(pad, y), Math.max(pad, plotHeight - th - pad)),
+  };
+}
+
+/**
+ * When to call setVisibleLogicalRange after /chart data arrives.
+ * - New run (incl. scheduler poll): always recenter.
+ * - Poll, same run: keep user zoom.
+ * - Initial/manual load: recenter unless user already zoomed (same session).
+ */
+export function shouldApplyForecastVisibleRange(args: {
+  isPoll: boolean;
+  userAdjustedRange: boolean;
+  isNewRun: boolean;
+  hasForecast: boolean;
+}): boolean {
+  if (!args.hasForecast) return false;
+  if (args.isNewRun) return true;
+  if (args.isPoll) return false;
+  return !args.userAdjustedRange;
+}
+
+export function forecastRunKey(data: { run_id?: string | null; generated_at?: string | null }): string {
+  return (data.run_id ?? data.generated_at ?? "").trim();
+}
+
+export function isNewForecastRun(runKey: string, lastAppliedRunKey: string | null): boolean {
+  if (!runKey) return false;
+  return runKey !== (lastAppliedRunKey ?? "");
+}
+
 /** @deprecated time-based visible range cannot extrapolate past last bar in LWC v4 */
 export function computeInitialVisibleRange(
   candles: ForecastCandle[],

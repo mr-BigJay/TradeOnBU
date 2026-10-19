@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "vitest run"
+    "test": "vitest run",
+    "capture-forecast-chart": "node scripts/capture-forecast-chart.mjs",
+    "verify-forecast-overlay-bounds": "node scripts/verify-forecast-overlay-bounds.mjs"
   },
   "dependencies": {
     "lightweight-charts": "^4.2.2",
