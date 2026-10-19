@@ -94,9 +94,12 @@ async def fetch_monitor_5m_bundle(
         return bundle, {"fetch_mode": "recent_window", "per_setup": [], "aggregate_limit": DEFAULT_MONITOR_KLINE_LIMIT}
 
     plans: list[MonitorFetchPlan] = []
+    from app.domain.setup_monitor_boundary import five_m_monitor_anchor_ms
+
     for setup in setups:
-        boundary = _monitor_boundary_ms(setup)
-        cursor = _monitor_cursor_effective(setup, boundary)
+        confirm_boundary = _monitor_boundary_ms(setup)
+        boundary = five_m_monitor_anchor_ms(confirm_boundary)
+        cursor = _monitor_cursor_effective(setup, confirm_boundary)
         plans.append(
             live_monitor_fetch_plan(
                 setup_id=setup.setup_id,
@@ -162,8 +165,11 @@ async def fetch_replay_5m_bundle(
         return bundle, {"fetch_mode": "replay_empty", "per_setup": []}
 
     plans: list[MonitorFetchPlan] = []
+    from app.domain.setup_monitor_boundary import five_m_monitor_anchor_ms
+
     for setup in setups:
-        boundary = _monitor_boundary_ms(setup)
+        confirm_boundary = _monitor_boundary_ms(setup)
+        boundary = five_m_monitor_anchor_ms(confirm_boundary)
         plans.append(
             replay_fetch_plan(
                 setup_id=setup.setup_id,

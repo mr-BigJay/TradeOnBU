@@ -142,6 +142,8 @@ async def maybe_auto_open_paper_position(
     symbol: str,
     commit: bool = True,
     require_ai_flags: bool = True,
+    allow_pre_entry_without_touch: bool = False,
+    entry_mode: str | None = None,
 ) -> dict[str, Any]:
     """
     Create a pending limit paper order from a validated AI setup when auto mode is enabled.
@@ -166,11 +168,24 @@ async def maybe_auto_open_paper_position(
         meta["reason"] = "wallet_not_initialized"
         return meta
 
-    from app.services.conditional_revision import objective_confirmations_satisfied
+    from app.domain.entry_execution import normalize_entry_mode
+    from app.services.conditional_revision import objective_confirmations_satisfied_for_order
+    from app.services.entry_execution_settings import get_paper_entry_execution_config
+
+    _mode_cfg, _shadow, dry_run = await get_paper_entry_execution_config(session)
+    if dry_run:
+        meta["skipped"] = True
+        meta["reason"] = "paper_entry_dry_run"
+        return meta
+
+    mode = normalize_entry_mode(entry_mode) if entry_mode is not None else _mode_cfg
 
     lifecycle_upper = (setup.lifecycle_state or "").upper()
     if lifecycle_upper in (READY_LONG, READY_SHORT):
-        ok_conf, conf_reason = objective_confirmations_satisfied(setup)
+        ok_conf, conf_reason = objective_confirmations_satisfied_for_order(
+            setup,
+            allow_pre_entry_without_touch=allow_pre_entry_without_touch,
+        )
         if not ok_conf:
             meta["skipped"] = True
             meta["reason"] = conf_reason or "missing_confirmations"
@@ -266,12 +281,16 @@ async def maybe_auto_open_paper_position(
     ict_snapshot = build_ict_entry_audit_snapshot(structured=structured, setup=setup, validation=validation)
     pos = await svc.get_position_by_public_id(session, result.position_id)
     if pos:
+        pipe = (setup.objective_notes or {}).get("execution_pipeline") or {}
         pos.extra = {
-            **pos.extra,
+            **(pos.extra or {}),
             "auto_paper": True,
             "ai_run_id": run_id,
             "source": "gpt_auto_paper",
             "ict_entry_snapshot": ict_snapshot,
+            "paper_entry_mode": mode,
+            "execution_pipeline_state": pipe.get("state"),
+            "pre_entry_order": bool(allow_pre_entry_without_touch),
         }
         await session.flush()
 

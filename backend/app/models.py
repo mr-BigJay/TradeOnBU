@@ -75,6 +75,9 @@ class RuntimeSettings(Base):
     slippage_bps: Mapped[float] = mapped_column(Float, default=5.0)
     max_simultaneous_positions: Mapped[int] = mapped_column(Integer, default=3)
     paper_trading_paused: Mapped[bool] = mapped_column(default=False)
+    paper_entry_mode: Mapped[str] = mapped_column(String(16), default="STRICT")
+    balanced_entry_shadow_mode: Mapped[bool] = mapped_column(default=False)
+    paper_entry_dry_run: Mapped[bool] = mapped_column(default=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 

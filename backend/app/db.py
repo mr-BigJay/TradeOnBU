@@ -96,6 +96,9 @@ SIGNAL_MIGRATIONS = [
     "ALTER TABLE liquidation_source_status ADD COLUMN last_connection_activity_at_ms INTEGER",
     "ALTER TABLE liquidation_source_status ADD COLUMN connected_since_ms INTEGER",
     "ALTER TABLE liquidation_source_status ADD COLUMN coverage_gaps JSON",
+    "ALTER TABLE runtime_settings ADD COLUMN paper_entry_mode VARCHAR(16) DEFAULT 'STRICT'",
+    "ALTER TABLE runtime_settings ADD COLUMN balanced_entry_shadow_mode BOOLEAN DEFAULT 0",
+    "ALTER TABLE runtime_settings ADD COLUMN paper_entry_dry_run BOOLEAN DEFAULT 0",
 ]
 
 LEGACY_SETUP_BACKFILL = """

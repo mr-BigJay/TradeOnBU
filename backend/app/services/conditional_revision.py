@@ -200,6 +200,32 @@ def _drop_sequence_suffix(
         evidence.pop(tok, None)
 
 
+def objective_confirmations_satisfied_for_order(
+    row: Any,
+    *,
+    allow_pre_entry_without_touch: bool = False,
+) -> tuple[bool, str | None]:
+    """Unified policy for order creation (STRICT full path or BALANCED pre-entry)."""
+    from app.services.confirmation_policy import order_entry_allowed, resolve_confirmation_policy
+
+    conf = row.confirmation_state or {}
+    sequence = conf.get("sequence") or conf.get("required") or []
+    if not isinstance(sequence, list) or not sequence:
+        return False, REASON_MISSING_CONFIRMATIONS
+    policy = resolve_confirmation_policy(
+        sequence=[str(x) for x in sequence],
+        structured=row.structured_snapshot or {},
+        plan=getattr(row, "conditional_plan", None) or {},
+    )
+    return order_entry_allowed(
+        policy,
+        conf,
+        allow_pre_entry_without_touch=allow_pre_entry_without_touch,
+        zone_lo=float(row.entry_zone_low) if row.entry_zone_low is not None else None,
+        zone_hi=float(row.entry_zone_high) if row.entry_zone_high is not None else None,
+    )
+
+
 def objective_confirmations_satisfied(row: Any) -> tuple[bool, str | None]:
     """Objective ICT sequence complete, ordered, and entry touch evidenced for current zone."""
     from app.services.ict_confirmation_engine import ConfirmationProgress, all_required_met
@@ -392,6 +418,7 @@ def apply_conditional_revision_to_setup_row(
     run_id: int,
     structured: dict[str, Any],
     revision_at: datetime | None = None,
+    entry_mode: str = "STRICT",
 ) -> RevisionImpact:
     """Apply a duplicate conditional revision; preserve monitor + confirmations when safe."""
     impact = assess_conditional_revision_impact(row, plan)
@@ -411,6 +438,7 @@ def apply_conditional_revision_to_setup_row(
             run_id=run_id,
             structured=structured,
             created_at=revision_time,
+            entry_mode=entry_mode,
         )
         notes = dict(row.objective_notes or {})
         history = notes.setdefault("lifecycle_history", [])

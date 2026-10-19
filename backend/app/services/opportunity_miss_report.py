@@ -49,6 +49,15 @@ from app.domain.setup_lifecycle import (
     ICT_CONFIRMED_LONG,
     ICT_CONFIRMED_SHORT,
 )
+from app.domain.entry_execution import (
+    AUDIT_DIRECTION_CORRECT,
+    AUDIT_EXECUTED_LOSS,
+    AUDIT_EXECUTED_OPEN,
+    AUDIT_EXECUTED_PROFIT,
+    AUDIT_MISSED_EXECUTABLE,
+    AUDIT_ORDER_UNFILLED,
+    AUDIT_POTENTIAL_NOT_EXECUTABLE,
+)
 from app.models import AiProposedSetup
 from app.services.opportunity_timeline import build_setup_timeline
 
@@ -202,6 +211,71 @@ def classify_setup_outcome(
     return classify_execution_outcome(setup, timeline=timeline, replay_diff=replay_diff)
 
 
+def _closed_net_pnl(pos: dict[str, Any]) -> float | None:
+    pnl = pos.get("net_pnl_usdt")
+    if pnl is None:
+        return None
+    try:
+        return float(pnl)
+    except (TypeError, ValueError):
+        return None
+
+
+def classify_user_audit_bucket(
+    setup: AiProposedSetup,
+    *,
+    timeline: dict[str, Any],
+    execution_outcome: str,
+) -> str:
+    """
+    User-facing buckets with strict PnL: closed != TP hit; profit requires net_pnl > 0.
+    """
+    pos_hint = timeline.get("paper_orders") or []
+    filled = _had_real_fill(pos_hint)
+    pipe = (setup.objective_notes or {}).get("execution_pipeline") or {}
+
+    if filled:
+        closed_rows = [
+            p
+            for p in pos_hint
+            if (p.get("status") or "").lower() in ("closed", "tp_hit", "sl_hit")
+            and p.get("fill_price") is not None
+        ]
+        if closed_rows:
+            pnl = _closed_net_pnl(closed_rows[-1])
+            if pnl is not None:
+                if pnl > 0:
+                    return AUDIT_EXECUTED_PROFIT
+                if pnl < 0:
+                    return AUDIT_EXECUTED_LOSS
+                return AUDIT_EXECUTED_OPEN
+        open_rows = [p for p in pos_hint if (p.get("status") or "").lower() == "open"]
+        if open_rows:
+            return AUDIT_EXECUTED_OPEN
+
+    pending = [p for p in pos_hint if (p.get("status") or "").lower() == "pending_entry"]
+    if pending and not filled:
+        return AUDIT_ORDER_UNFILLED
+    if execution_outcome == OUTCOME_LIMIT_NOT_FILLED:
+        return AUDIT_ORDER_UNFILLED
+    if execution_outcome in (OUTCOME_POTENTIAL_MISSED, OUTCOME_ENGINE_DELAY):
+        return AUDIT_MISSED_EXECUTABLE
+    if execution_outcome in (
+        OUTCOME_CONFIRMATION_INCOMPLETE,
+        OUTCOME_NET_RR_BELOW_MIN,
+        OUTCOME_INVALIDATED,
+        OUTCOME_MARKET_DATA_GAP_STALE,
+        OUTCOME_ORDER_REJECTED,
+        OUTCOME_AMBIGUOUS_CHRONOLOGY,
+    ):
+        return AUDIT_POTENTIAL_NOT_EXECUTABLE
+    if timeline.get("price_reached_tp_without_entry"):
+        return AUDIT_DIRECTION_CORRECT
+    if pipe.get("full_confirmations") and execution_outcome != OUTCOME_ORDER_CREATED:
+        return AUDIT_MISSED_EXECUTABLE
+    return AUDIT_DIRECTION_CORRECT
+
+
 def _replay_unavailable_for_row(*, replay_status: str, execution_outcome: str) -> bool:
     if replay_status in (REPLAY_STATUS_INSUFFICIENT_HISTORY, REPLAY_STATUS_SEQUENCE_LIMITED):
         return True
@@ -245,13 +319,19 @@ async def build_miss_audit_report(
         replay_diff = replay_by_setup.get(setup.setup_id)
         execution_outcome = classify_execution_outcome(setup, timeline=timeline, replay_diff=replay_diff)
         replay_status = derive_replay_status(replay_diff)
+        user_bucket = classify_user_audit_bucket(
+            setup, timeline=timeline, execution_outcome=execution_outcome
+        )
+        pipe = (setup.objective_notes or {}).get("execution_pipeline") or {}
         entry = {
             "setup_id": setup.setup_id,
             "execution_outcome": execution_outcome,
+            "user_audit_bucket": user_bucket,
             "replay_status": replay_status,
             "outcome": execution_outcome,
             "lifecycle_state": setup.lifecycle_state,
             "rejection_reason": setup.last_rejection_reason,
+            "execution_pipeline": pipe,
             "timeline": timeline,
             "replay_diff": replay_diff,
             "chronology_advisories": chronology_advisories(replay_diff),

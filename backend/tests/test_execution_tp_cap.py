@@ -171,7 +171,7 @@ async def test_auto_paper_to_sim_position_caps_34_rr_integration():
         validation = {"ai_decision": "LONG", "acceptable_rr": True}
         structured = dict(setup.structured_snapshot or {})
         with patch(
-            "app.services.conditional_revision.objective_confirmations_satisfied",
+            "app.services.conditional_revision.objective_confirmations_satisfied_for_order",
             return_value=(True, None),
         ):
             meta = await maybe_auto_open_paper_position(

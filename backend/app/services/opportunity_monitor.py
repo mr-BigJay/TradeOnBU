@@ -41,14 +41,13 @@ from app.domain.execution_order_policy import (
     reconcile_pending_ai_limit_order,
     verify_five_m_for_pending_fills,
 )
-from app.domain.setup_monitor_boundary import first_eligible_bar_open_ms
+from app.domain.setup_monitor_boundary import (
+    first_eligible_bar_open_ms,
+    five_m_monitor_anchor_ms,
+)
 from app.domain.time_utils import ensure_utc
 from app.models import AiProposedSetup, SimPosition
-from app.services.ict_confirmation_engine import (
-    _check_invalidation_on_bar,
-    all_required_met,
-    process_bar_sequential,
-)
+from app.services.ict_confirmation_engine import _check_invalidation_on_bar
 from app.services.position.position_service import SimPositionService
 from app.services.market_data import MarketDataService
 from app.services.monitor_kline_backfill import (
@@ -67,6 +66,32 @@ from app.services.opportunity_monitor_lock import (
     refresh_opportunity_monitor_lock,
     release_opportunity_monitor_lock,
     try_acquire_opportunity_monitor_lock,
+)
+from app.domain.entry_execution import ENTRY_MODE_BALANCED, ENTRY_MODE_STRICT
+from app.services.balanced_confirmation_engine import (
+    apply_balanced_progress_to_state,
+    process_balanced_new_closed_1m_bars,
+    strict_apply_5m_bar,
+)
+from app.services.confirmation_policy import promotion_ready
+from app.services.entry_execution_pipeline import (
+    balanced_promotion_ready,
+    policy_for_setup,
+    strict_promotion_ready,
+    sync_pipeline_after_monitor,
+)
+from app.services.entry_execution_mode_switch import reconcile_setup_entry_engine
+from app.services.entry_execution_settings import (
+    get_paper_entry_execution_config,
+    live_confirmation_engine_mode,
+    live_order_engine_mode,
+    paper_orders_allowed,
+    shadow_simulation_enabled,
+)
+from app.services.entry_execution_shadow import run_balanced_shadow_tick
+from app.services.monitor_1m_integrity import (
+    assess_1m_monitor_integrity,
+    balanced_1m_allows_new_orders,
 )
 from app.services.paper_auto_trading import maybe_auto_open_paper_position
 
@@ -332,16 +357,39 @@ async def _monitor_pending_structural_invalidation(
     setup.last_monitor_at = now
 
 
+def _promotion_confirmations_met(
+    *,
+    live_engine: str,
+    policy,
+    conf_state: dict[str, Any],
+) -> bool:
+    if live_engine == ENTRY_MODE_STRICT:
+        return strict_promotion_ready(policy=policy, confirmation_state=conf_state)
+    return balanced_promotion_ready(
+        policy=policy,
+        confirmation_state=conf_state,
+        allow_pre_entry=True,
+    )
+
+
 async def _attempt_ready_paper_order(
     session: AsyncSession,
     setup: AiProposedSetup,
     *,
     now: datetime,
     summary: dict[str, Any],
+    entry_mode: str = ENTRY_MODE_STRICT,
+    balanced_shadow: bool = False,
+    paper_entry_mode: str | None = None,
 ) -> bool:
     """Create paper order while READY; transition to PENDING_ENTRY only on success (atomic savepoint)."""
-    from app.services.conditional_revision import objective_confirmations_satisfied
+    from app.services.conditional_revision import objective_confirmations_satisfied_for_order
     from app.services.paper_auto_trading import _has_position_for_setup
+
+    order_engine = live_order_engine_mode(
+        paper_entry_mode or entry_mode,
+        balanced_shadow,
+    )
 
     if _setup_expired(setup, now):
         setup.status = "expired"
@@ -351,7 +399,33 @@ async def _attempt_ready_paper_order(
 
     append_timeline_event(setup, "paper_order_attempt", lifecycle=setup.lifecycle_state, at_ms=int(now.timestamp() * 1000))
 
-    conf_ok, reject_reason = objective_confirmations_satisfied(setup)
+    sequence = _confirmation_sequence(setup)
+    conf_state = setup.confirmation_state or {}
+    policy = policy_for_setup(setup, sequence)
+    allow_pre_entry = (
+        order_engine == ENTRY_MODE_BALANCED
+        and promotion_ready(policy, conf_state, allow_pre_entry=True)
+        and not promotion_ready(policy, conf_state, allow_pre_entry=False)
+    )
+
+    from app.services.runtime_settings import get_runtime_settings
+
+    runtime = await get_runtime_settings(session)
+    if not paper_orders_allowed(
+        dry_run=bool(getattr(runtime, "paper_entry_dry_run", False)),
+        paper_trading_paused=runtime.paper_trading_paused,
+    ):
+        append_timeline_event(
+            setup,
+            "paper_order_skipped_dry_run_or_pause",
+            at_ms=int(now.timestamp() * 1000),
+        )
+        return False
+
+    conf_ok, reject_reason = objective_confirmations_satisfied_for_order(
+        setup,
+        allow_pre_entry_without_touch=allow_pre_entry,
+    )
     if not conf_ok:
         setup.lifecycle_state = wait_state_for_direction(setup.direction)
         setup.last_rejection_reason = reject_reason or REASON_MISSING_CONFIRMATIONS
@@ -405,6 +479,8 @@ async def _attempt_ready_paper_order(
                 symbol=setup.symbol,
                 commit=False,
                 require_ai_flags=False,
+                allow_pre_entry_without_touch=allow_pre_entry,
+                entry_mode=order_engine,
             )
             if not auto.get("created"):
                 setup.lifecycle_state = ready_state_for_direction(direction)
@@ -488,6 +564,33 @@ def _eligible_closed_bars(
     return out
 
 
+def _monitor_1m_cursor_ms(setup: AiProposedSetup, boundary: int) -> int:
+    conf = setup.confirmation_state or {}
+    raw = conf.get("monitor_1m_cursor_ms")
+    if raw is not None and int(raw) >= boundary - 1:
+        return int(raw)
+    return boundary - 1
+
+
+def _eligible_new_closed_1m_bars(
+    setup: AiProposedSetup,
+    closed_1m: list,
+    now_ms: int,
+    boundary: int,
+) -> list:
+    cursor = _monitor_1m_cursor_ms(setup, boundary)
+    out = []
+    for bar in sorted(closed_1m, key=lambda c: c.time_ms):
+        if bar.time_ms < boundary:
+            continue
+        if bar.time_ms <= cursor:
+            continue
+        if now_ms < candle_close_ms(bar, "1m"):
+            continue
+        out.append(bar)
+    return out
+
+
 def _eligible_closed_bars_since_cursor(
     setup: AiProposedSetup,
     closed: list,
@@ -531,11 +634,25 @@ class OpportunityMonitorService:
         setups = list(result.scalars().all())
         summary: dict[str, Any] = {"checked": len(setups), "promoted": 0, "invalidated": 0, "expired": 0, "orders": 0}
 
+        paper_entry_mode, balanced_shadow, paper_entry_dry_run = await get_paper_entry_execution_config(session)
+        summary["paper_entry_mode"] = paper_entry_mode
+        summary["balanced_entry_shadow"] = balanced_shadow
+        summary["paper_entry_dry_run"] = paper_entry_dry_run
+
         bundle, fetch_meta = await fetch_monitor_5m_bundle(self.market, symbol, setups, now_ms=now_ms)
         kline_limit = fetch_meta.get("aggregate_limit", 120)
         summary["kline_limit"] = kline_limit
         summary["backfill_meta"] = fetch_meta.get("per_setup") or []
         summary["fetch_meta"] = fetch_meta
+
+        closed_1m: list = []
+        bundle_1m_complete = True
+        bundle_1m_gaps: list[int] = []
+        if paper_entry_mode == ENTRY_MODE_BALANCED:
+            bundle_1m = await self.market.fetch_kline_bundle(symbol, "1m", max(300, kline_limit * 5))
+            closed_1m = list(bundle_1m.closed or [])
+            bundle_1m_complete = bool(bundle_1m.data_complete)
+            bundle_1m_gaps = list(bundle_1m.gaps_remaining or [])
 
         if not bundle.closed:
             for setup in setups:
@@ -594,11 +711,12 @@ class OpportunityMonitorService:
                 setup.last_validation_result = {"ok": False, "reason": "missing_structured_monitor_requirements"}
                 continue
 
-            boundary = _monitor_boundary_ms(setup)
-            cursor_eff = _monitor_cursor_effective(setup, boundary)
+            confirm_boundary = _monitor_boundary_ms(setup)
+            five_m_boundary = five_m_monitor_anchor_ms(confirm_boundary)
+            cursor_eff = _monitor_cursor_effective(setup, confirm_boundary)
             fetch_plan = live_monitor_fetch_plan(
                 setup_id=setup.setup_id,
-                boundary_ms=boundary,
+                boundary_ms=five_m_boundary,
                 cursor_ms=cursor_eff,
                 now_ms=now_ms,
             )
@@ -610,7 +728,7 @@ class OpportunityMonitorService:
             skipped_opens = detect_skipped_closed_bars(
                 closed_bars=bundle.closed,
                 cursor_ms=cursor_eff,
-                boundary_ms=boundary,
+                boundary_ms=five_m_boundary,
                 now_ms=now_ms,
                 interval=MONITOR_INTERVAL,
             )
@@ -635,7 +753,7 @@ class OpportunityMonitorService:
                 jump = first_discontinuity_open_ms(
                     new_bars=new_bars,
                     cursor_ms=cursor_eff,
-                    boundary_ms=boundary,
+                    boundary_ms=five_m_boundary,
                     interval=MONITOR_INTERVAL,
                 )
                 if jump is not None:
@@ -686,73 +804,166 @@ class OpportunityMonitorService:
                             )
                             break
                     if setup.lifecycle_state in (READY_LONG, READY_SHORT):
-                        from app.services.conditional_revision import objective_confirmations_satisfied
-
-                        conf_ok, reject_reason = objective_confirmations_satisfied(setup)
-                        if not conf_ok:
+                        gap_live = live_confirmation_engine_mode(paper_entry_mode, balanced_shadow)
+                        gap_policy = policy_for_setup(setup, sequence)
+                        gap_conf = setup.confirmation_state or {}
+                        if not _promotion_confirmations_met(
+                            live_engine=gap_live,
+                            policy=gap_policy,
+                            conf_state=gap_conf,
+                        ):
                             setup.lifecycle_state = wait_state_for_direction(setup.direction)
-                            setup.last_rejection_reason = reject_reason or REASON_MISSING_CONFIRMATIONS
+                            setup.last_rejection_reason = REASON_MISSING_CONFIRMATIONS
                             setup.last_validation_result = {
                                 "ok": False,
-                                "reason": reject_reason or REASON_MISSING_CONFIRMATIONS,
-                                "missing": (setup.confirmation_state or {}).get("missing") or [],
+                                "reason": REASON_MISSING_CONFIRMATIONS,
+                                "missing": gap_conf.get("missing") or [],
                                 "ict_confirmed": False,
+                                "gap_suspend": True,
                             }
                     continue
                 if setup.lifecycle_state in (PENDING_ENTRY, POSITION_OPEN):
                     await _sync_position_lifecycle(session, setup)
                 continue
 
-            if not new_bars:
-                setup.last_monitor_at = now
-                if setup.lifecycle_state in (READY_LONG, READY_SHORT):
-                    if await _monitor_ready_structural_invalidation_before_order(
-                        session, setup, bundle, now_ms, now, summary
-                    ):
-                        continue
-                    await _attempt_ready_paper_order(session, setup, now=now, summary=summary)
-                continue
-
+            live_engine = live_confirmation_engine_mode(paper_entry_mode, balanced_shadow)
+            reconcile_setup_entry_engine(setup, live_engine=live_engine)
+            policy = policy_for_setup(setup, sequence)
             zone_lo, zone_hi = _zone_bounds(setup)
+            structured = setup.structured_snapshot or {}
             conf_state = dict(setup.confirmation_state or {})
+            new_1m: list = []
+            balanced_1m_integrity_ok = True
+            balanced_1m_order_ok = True
+            if paper_entry_mode == ENTRY_MODE_BALANCED and closed_1m:
+                cursor_1m = _monitor_1m_cursor_ms(setup, confirm_boundary)
+                stale_sec = int(get_effective_settings().market_data_stale_seconds or 120)
+                max_1m_age = max(90_000, min(330_000, stale_sec * 1000 + 30_000))
+                one_m_ok, one_m_reason, one_m_detail = assess_1m_monitor_integrity(
+                    closed_1m=closed_1m,
+                    data_complete=bundle_1m_complete,
+                    gaps_remaining=bundle_1m_gaps,
+                    boundary_ms=confirm_boundary,
+                    cursor_ms=cursor_1m,
+                    now_ms=now_ms,
+                    max_age_after_close_ms=max_1m_age,
+                )
+                notes = dict(setup.objective_notes or {})
+                notes["monitor_1m_integrity"] = {"ok": one_m_ok, "reason": one_m_reason, **one_m_detail}
+                setup.objective_notes = notes
+                balanced_1m_integrity_ok = one_m_ok
+                balanced_1m_order_ok = balanced_1m_allows_new_orders(ok=one_m_ok, reason=one_m_reason)
+                if one_m_ok:
+                    new_1m = _eligible_new_closed_1m_bars(setup, closed_1m, now_ms, confirm_boundary)
+                else:
+                    _record_market_data_health(
+                        setup,
+                        ok=False,
+                        reason=REASON_MISSING_MARKET_DATA,
+                        now=now,
+                        extra={"1m_integrity": one_m_reason, **one_m_detail},
+                    )
+            elif paper_entry_mode == ENTRY_MODE_BALANCED:
+                balanced_1m_integrity_ok = False
+                balanced_1m_order_ok = False
+                notes = dict(setup.objective_notes or {})
+                notes["monitor_1m_integrity"] = {"ok": False, "reason": "missing_1m_closed_bars"}
+                setup.objective_notes = notes
+
+            if shadow_simulation_enabled(paper_entry_mode, balanced_shadow) and new_1m:
+                run_balanced_shadow_tick(
+                    setup,
+                    policy=policy,
+                    new_1m_bars=new_1m,
+                    closed_5m=bundle.closed,
+                    closed_1m=closed_1m,
+                    zone_lo=zone_lo,
+                    zone_hi=zone_hi,
+                    invalidation_level=setup.invalidation_level,
+                    structured=structured,
+                    monitor_from_ms=confirm_boundary,
+                    now_ms=now_ms,
+                )
+
             invalidated = False
             inv_reason: str | None = None
 
+            if live_engine == ENTRY_MODE_BALANCED and new_1m:
+                progress_1m = process_balanced_new_closed_1m_bars(
+                    direction=setup.direction,
+                    policy=policy,
+                    confirmation_state=conf_state,
+                    new_1m_bars=new_1m,
+                    closed_5m=bundle.closed,
+                    closed_1m=closed_1m,
+                    zone_lo=zone_lo,
+                    zone_hi=zone_hi,
+                    invalidation_level=setup.invalidation_level,
+                    structured=structured,
+                    monitor_from_ms=confirm_boundary,
+                    now_ms=now_ms,
+                )
+                conf_state = apply_balanced_progress_to_state(
+                    conf_state,
+                    progress_1m,
+                    policy=policy,
+                    monitor_1m_cursor_ms=int(progress_1m.last_bar_ms),
+                )
+                if progress_1m.invalidated:
+                    invalidated = True
+                    inv_reason = progress_1m.invalidation_reason
+
             for bar in new_bars:
-                # Pre-creation bars supply swing context; confirmations only on bars >= boundary.
                 window = [
                     c
                     for c in bundle.closed
                     if c.time_ms <= bar.time_ms and now_ms >= candle_close_ms(c, MONITOR_INTERVAL)
                 ][-48:]
-                progress = process_bar_sequential(
+                if live_engine == ENTRY_MODE_STRICT:
+                    progress = strict_apply_5m_bar(
+                        direction=setup.direction,
+                        policy=policy,
+                        confirmation_state=conf_state,
+                        bar=bar,
+                        window=window,
+                        zone_lo=zone_lo,
+                        zone_hi=zone_hi,
+                        invalidation_level=setup.invalidation_level,
+                        structured=structured,
+                        monitor_from_ms=confirm_boundary,
+                    )
+                    conf_state = {
+                        **conf_state,
+                        **policy.as_state_fields(),
+                        "completed": progress.completed,
+                        "missing": progress.missing,
+                        "confirmation_timestamps": progress.confirmation_timestamps,
+                        "confirmation_evidence": progress.confirmation_evidence,
+                        "confirmation_engine": "STRICT",
+                    }
+                    if progress.invalidated:
+                        invalidated = True
+                        inv_reason = progress.invalidation_reason
+                        break
+                elif _check_invalidation_on_bar(
+                    bar,
                     direction=setup.direction,
-                    sequence=sequence,
-                    confirmation_state=conf_state,
-                    bar=bar,
-                    window=window,
-                    zone_lo=zone_lo,
-                    zone_hi=zone_hi,
                     invalidation_level=setup.invalidation_level,
-                    structured=setup.structured_snapshot or {},
-                    monitor_from_ms=boundary,
-                )
-                conf_state = {
-                    "sequence": sequence,
-                    "required": sequence,
-                    "completed": progress.completed,
-                    "missing": progress.missing,
-                    "confirmation_timestamps": progress.confirmation_timestamps,
-                    "confirmation_evidence": progress.confirmation_evidence,
-                }
-                if progress.invalidated:
+                ):
                     invalidated = True
-                    inv_reason = progress.invalidation_reason
+                    inv_reason = "structural_invalidation_level_breached"
                     break
                 setup.monitor_cursor_ms = bar.time_ms
 
             setup.confirmation_state = conf_state
             setup.last_monitor_at = now
+            sync_pipeline_after_monitor(
+                setup,
+                entry_mode=paper_entry_mode,
+                shadow=balanced_shadow,
+                policy=policy,
+                confirmation_state=conf_state,
+            )
 
             if invalidated:
                 setup.status = "invalidated"
@@ -768,22 +979,19 @@ class OpportunityMonitorService:
                 summary["invalidated"] += 1
                 continue
 
-            from app.services.ict_confirmation_engine import ConfirmationProgress
-
-            progress_check = ConfirmationProgress(
-                sequence=sequence,
-                completed=conf_state.get("completed") or [],
-                missing=conf_state.get("missing") or [],
-                confirmation_timestamps=conf_state.get("confirmation_timestamps") or {},
-            )
+            missing_list = conf_state.get("missing") or []
 
             if setup.lifecycle_state in (WAIT_LONG, WAIT_SHORT):
-                if not all_required_met(progress_check):
+                if not _promotion_confirmations_met(
+                    live_engine=live_engine,
+                    policy=policy,
+                    conf_state=conf_state,
+                ):
                     setup.last_rejection_reason = REASON_MISSING_CONFIRMATIONS
                     setup.last_validation_result = {
                         "ok": False,
                         "reason": REASON_MISSING_CONFIRMATIONS,
-                        "missing": progress_check.missing,
+                        "missing": missing_list,
                         "ict_confirmed": False,
                     }
                     continue
@@ -810,13 +1018,30 @@ class OpportunityMonitorService:
 
                 setup.lifecycle_state = ready_state_for_direction(setup.direction)
                 setup.last_rejection_reason = None
-                setup.last_validation_result = {"ok": True, "net_rr": net_rr, "promoted_at": now.isoformat()}
-                append_timeline_event(setup, "promoted_ready", net_rr=net_rr, at_ms=now_ms)
+                setup.last_validation_result = {
+                    "ok": True,
+                    "net_rr": net_rr,
+                    "promoted_at": now.isoformat(),
+                    "paper_entry_mode": paper_entry_mode,
+                    "live_engine": live_engine,
+                }
+                append_timeline_event(
+                    setup,
+                    "promoted_ready",
+                    net_rr=net_rr,
+                    at_ms=now_ms,
+                    paper_entry_mode=paper_entry_mode,
+                    live_engine=live_engine,
+                )
                 await log_setup_event(session, setup_id=setup.setup_id, event_type="promoted_ready", payload={"net_rr": net_rr})
                 summary["promoted"] += 1
 
             if setup.lifecycle_state in (ICT_CONFIRMED_LONG, ICT_CONFIRMED_SHORT):
-                if not all_required_met(progress_check):
+                if not _promotion_confirmations_met(
+                    live_engine=live_engine,
+                    policy=policy,
+                    conf_state=conf_state,
+                ):
                     setup.lifecycle_state = wait_state_for_direction(setup.direction)
                     setup.last_rejection_reason = REASON_MISSING_CONFIRMATIONS
                     continue
@@ -838,26 +1063,39 @@ class OpportunityMonitorService:
                     }
 
             if setup.lifecycle_state in (READY_LONG, READY_SHORT):
-                if not all_required_met(progress_check):
+                if not _promotion_confirmations_met(
+                    live_engine=live_engine,
+                    policy=policy,
+                    conf_state=conf_state,
+                ):
                     setup.lifecycle_state = wait_state_for_direction(setup.direction)
                     setup.last_rejection_reason = REASON_MISSING_CONFIRMATIONS
                     setup.last_validation_result = {
                         "ok": False,
                         "reason": REASON_MISSING_CONFIRMATIONS,
-                        "missing": progress_check.missing,
+                        "missing": missing_list,
                         "ict_confirmed": False,
                     }
                     continue
-                from app.services.conditional_revision import objective_confirmations_satisfied
+                from app.services.conditional_revision import objective_confirmations_satisfied_for_order
 
-                conf_ok, reject_reason = objective_confirmations_satisfied(setup)
+                order_engine = live_order_engine_mode(paper_entry_mode, balanced_shadow)
+                allow_pre = (
+                    order_engine == ENTRY_MODE_BALANCED
+                    and promotion_ready(policy, conf_state, allow_pre_entry=True)
+                    and not promotion_ready(policy, conf_state, allow_pre_entry=False)
+                )
+                conf_ok, reject_reason = objective_confirmations_satisfied_for_order(
+                    setup,
+                    allow_pre_entry_without_touch=allow_pre,
+                )
                 if not conf_ok:
                     setup.lifecycle_state = wait_state_for_direction(setup.direction)
                     setup.last_rejection_reason = reject_reason or REASON_MISSING_CONFIRMATIONS
                     setup.last_validation_result = {
                         "ok": False,
                         "reason": reject_reason or REASON_MISSING_CONFIRMATIONS,
-                        "missing": progress_check.missing,
+                        "missing": missing_list,
                         "ict_confirmed": False,
                     }
                     continue
@@ -878,7 +1116,30 @@ class OpportunityMonitorService:
                     session, setup, bundle, now_ms, now, summary
                 ):
                     continue
-                await _attempt_ready_paper_order(session, setup, now=now, summary=summary)
+                if order_engine == ENTRY_MODE_BALANCED and not balanced_1m_order_ok:
+                    integrity = (setup.objective_notes or {}).get("monitor_1m_integrity") or {}
+                    append_timeline_event(
+                        setup,
+                        "paper_order_skipped_1m_integrity",
+                        at_ms=now_ms,
+                        reason=integrity.get("reason"),
+                    )
+                    setup.last_validation_result = {
+                        "ok": True,
+                        "ready_for_paper": True,
+                        "order_skipped_reason": "balanced_1m_integrity",
+                        "1m_integrity": integrity,
+                    }
+                    continue
+                await _attempt_ready_paper_order(
+                    session,
+                    setup,
+                    now=now,
+                    summary=summary,
+                    entry_mode=live_engine,
+                    balanced_shadow=balanced_shadow,
+                    paper_entry_mode=paper_entry_mode,
+                )
 
         await session.flush()
         return summary

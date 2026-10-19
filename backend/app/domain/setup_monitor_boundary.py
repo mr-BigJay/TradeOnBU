@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from app.domain.candle_utils import interval_ms
+from app.domain.entry_execution import ENTRY_MODE_BALANCED, normalize_entry_mode
 from app.domain.time_utils import ensure_utc
 
 
@@ -14,6 +15,29 @@ def first_eligible_bar_open_ms(created_at: datetime, interval: str = "5m") -> in
     ms = int(created.timestamp() * 1000)
     step = interval_ms(interval)
     return ((ms // step) + 1) * step
+
+
+def monitor_start_open_ms(created_at: datetime, entry_mode: str = "STRICT") -> int:
+    """Monitor boundary at persist: 1m for BALANCED, 5m for STRICT (unchanged)."""
+    mode = normalize_entry_mode(entry_mode)
+    interval = "1m" if mode == ENTRY_MODE_BALANCED else "5m"
+    return first_eligible_bar_open_ms(created_at, interval)
+
+
+def interval_grid_first_open_at_or_after(open_ms: int, interval: str) -> int:
+    """First candle open on the exchange interval grid at or after open_ms."""
+    step = interval_ms(interval)
+    if open_ms % step == 0:
+        return open_ms
+    return ((open_ms // step) + 1) * step
+
+
+def five_m_monitor_anchor_ms(confirm_boundary_ms: int) -> int:
+    """
+    5m backfill/gap anchor for a confirmation boundary that may be 1m-aligned (BALANCED).
+    Example: confirm 12:01 → 5m grid anchor 12:05, not a false 12:01 5m expectation.
+    """
+    return interval_grid_first_open_at_or_after(confirm_boundary_ms, "5m")
 
 
 def bars_closed_at_or_before_ms(closed: list, persist_ms: int, interval: str = "5m") -> list:
