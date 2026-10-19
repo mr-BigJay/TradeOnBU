@@ -148,6 +148,23 @@ export function SettingsPage() {
           <label>
             <input type="checkbox" checked={strategy.scanning_enabled} onChange={(e) => setStrategy({ ...strategy, scanning_enabled: e.target.checked })} /> اسکن خودکار ICT
           </label>
+          <label>حالت تأیید ورود Paper</label>
+          <select
+            value={strategy.paper_entry_mode || "STRICT"}
+            onChange={(e) => setStrategy({ ...strategy, paper_entry_mode: e.target.value })}
+          >
+            <option value="STRICT">STRICT — رفتار فعلی (۵m، یک تأیید در هر کندل)</option>
+            <option value="BALANCED">BALANCED — تأیید ۱m و سفارش زودتر</option>
+          </select>
+          <label>
+            <input
+              type="checkbox"
+              checked={!!strategy.balanced_entry_shadow_mode}
+              disabled={(strategy.paper_entry_mode || "STRICT") !== "BALANCED"}
+              onChange={(e) => setStrategy({ ...strategy, balanced_entry_shadow_mode: e.target.checked })}
+            />{" "}
+            Shadow Mode (فقط BALANCED — بدون سفارش واقعی)
+          </label>
           <button type="submit">ذخیره</button>
         </form>
       )}

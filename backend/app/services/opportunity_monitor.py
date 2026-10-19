@@ -46,7 +46,6 @@ from app.domain.time_utils import ensure_utc
 from app.models import AiProposedSetup, SimPosition
 from app.services.ict_confirmation_engine import (
     _check_invalidation_on_bar,
-    all_required_met,
     process_bar_sequential,
 )
 from app.services.position.position_service import SimPositionService
@@ -68,6 +67,18 @@ from app.services.opportunity_monitor_lock import (
     release_opportunity_monitor_lock,
     try_acquire_opportunity_monitor_lock,
 )
+from app.domain.entry_execution import ENTRY_MODE_BALANCED, ENTRY_MODE_STRICT
+from app.services.balanced_confirmation_engine import (
+    advance_balanced_on_closed_5m_bar,
+    pre_entry_requirements_met,
+    required_confirmations_met,
+)
+from app.services.entry_execution_pipeline import (
+    balanced_promotion_ready,
+    strict_promotion_ready,
+    sync_pipeline_after_monitor,
+)
+from app.services.entry_execution_settings import get_paper_entry_execution_config
 from app.services.paper_auto_trading import maybe_auto_open_paper_position
 
 logger = logging.getLogger(__name__)
@@ -332,15 +343,38 @@ async def _monitor_pending_structural_invalidation(
     setup.last_monitor_at = now
 
 
+def _promotion_confirmations_met(
+    *,
+    entry_mode: str,
+    sequence: list[str],
+    conf_state: dict[str, Any],
+    structured: dict[str, Any],
+) -> bool:
+    if entry_mode == ENTRY_MODE_STRICT:
+        return strict_promotion_ready(
+            sequence=sequence,
+            confirmation_state=conf_state,
+            structured=structured,
+        )
+    return balanced_promotion_ready(
+        sequence=sequence,
+        confirmation_state=conf_state,
+        structured=structured,
+        allow_pre_entry=True,
+    )
+
+
 async def _attempt_ready_paper_order(
     session: AsyncSession,
     setup: AiProposedSetup,
     *,
     now: datetime,
     summary: dict[str, Any],
+    entry_mode: str = ENTRY_MODE_STRICT,
+    balanced_shadow: bool = False,
 ) -> bool:
     """Create paper order while READY; transition to PENDING_ENTRY only on success (atomic savepoint)."""
-    from app.services.conditional_revision import objective_confirmations_satisfied
+    from app.services.conditional_revision import objective_confirmations_satisfied_for_order
     from app.services.paper_auto_trading import _has_position_for_setup
 
     if _setup_expired(setup, now):
@@ -351,7 +385,43 @@ async def _attempt_ready_paper_order(
 
     append_timeline_event(setup, "paper_order_attempt", lifecycle=setup.lifecycle_state, at_ms=int(now.timestamp() * 1000))
 
-    conf_ok, reject_reason = objective_confirmations_satisfied(setup)
+    sequence = _confirmation_sequence(setup)
+    conf_state = setup.confirmation_state or {}
+    structured = setup.structured_snapshot or {}
+    allow_pre_entry = (
+        entry_mode == ENTRY_MODE_BALANCED
+        and pre_entry_requirements_met(
+            sequence=sequence,
+            confirmation_state=conf_state,
+            structured=structured,
+        )
+        and not required_confirmations_met(
+            sequence=sequence,
+            confirmation_state=conf_state,
+            structured=structured,
+        )
+    )
+
+    if entry_mode == ENTRY_MODE_BALANCED and balanced_shadow:
+        append_timeline_event(
+            setup,
+            "balanced_shadow_skip_order",
+            would_allow_pre_entry=allow_pre_entry,
+            at_ms=int(now.timestamp() * 1000),
+        )
+        setup.last_validation_result = {
+            **(setup.last_validation_result or {}),
+            "ok": True,
+            "shadow_mode": True,
+            "would_create_order": True,
+            "allow_pre_entry": allow_pre_entry,
+        }
+        return False
+
+    conf_ok, reject_reason = objective_confirmations_satisfied_for_order(
+        setup,
+        allow_pre_entry_without_touch=allow_pre_entry,
+    )
     if not conf_ok:
         setup.lifecycle_state = wait_state_for_direction(setup.direction)
         setup.last_rejection_reason = reject_reason or REASON_MISSING_CONFIRMATIONS
@@ -405,6 +475,8 @@ async def _attempt_ready_paper_order(
                 symbol=setup.symbol,
                 commit=False,
                 require_ai_flags=False,
+                allow_pre_entry_without_touch=allow_pre_entry,
+                entry_mode=entry_mode,
             )
             if not auto.get("created"):
                 setup.lifecycle_state = ready_state_for_direction(direction)
@@ -531,11 +603,20 @@ class OpportunityMonitorService:
         setups = list(result.scalars().all())
         summary: dict[str, Any] = {"checked": len(setups), "promoted": 0, "invalidated": 0, "expired": 0, "orders": 0}
 
+        paper_entry_mode, balanced_shadow = await get_paper_entry_execution_config(session)
+        summary["paper_entry_mode"] = paper_entry_mode
+        summary["balanced_entry_shadow"] = balanced_shadow
+
         bundle, fetch_meta = await fetch_monitor_5m_bundle(self.market, symbol, setups, now_ms=now_ms)
         kline_limit = fetch_meta.get("aggregate_limit", 120)
         summary["kline_limit"] = kline_limit
         summary["backfill_meta"] = fetch_meta.get("per_setup") or []
         summary["fetch_meta"] = fetch_meta
+
+        closed_1m: list = []
+        if paper_entry_mode == ENTRY_MODE_BALANCED:
+            bundle_1m = await self.market.fetch_kline_bundle(symbol, "1m", max(300, kline_limit * 5))
+            closed_1m = list(bundle_1m.closed or [])
 
         if not bundle.closed:
             for setup in setups:
@@ -710,10 +791,18 @@ class OpportunityMonitorService:
                         session, setup, bundle, now_ms, now, summary
                     ):
                         continue
-                    await _attempt_ready_paper_order(session, setup, now=now, summary=summary)
+                    await _attempt_ready_paper_order(
+                        session,
+                        setup,
+                        now=now,
+                        summary=summary,
+                        entry_mode=paper_entry_mode,
+                        balanced_shadow=balanced_shadow,
+                    )
                 continue
 
             zone_lo, zone_hi = _zone_bounds(setup)
+            structured = setup.structured_snapshot or {}
             conf_state = dict(setup.confirmation_state or {})
             invalidated = False
             inv_reason: str | None = None
@@ -725,18 +814,34 @@ class OpportunityMonitorService:
                     for c in bundle.closed
                     if c.time_ms <= bar.time_ms and now_ms >= candle_close_ms(c, MONITOR_INTERVAL)
                 ][-48:]
-                progress = process_bar_sequential(
-                    direction=setup.direction,
-                    sequence=sequence,
-                    confirmation_state=conf_state,
-                    bar=bar,
-                    window=window,
-                    zone_lo=zone_lo,
-                    zone_hi=zone_hi,
-                    invalidation_level=setup.invalidation_level,
-                    structured=setup.structured_snapshot or {},
-                    monitor_from_ms=boundary,
-                )
+                if paper_entry_mode == ENTRY_MODE_BALANCED:
+                    progress = advance_balanced_on_closed_5m_bar(
+                        direction=setup.direction,
+                        sequence=sequence,
+                        confirmation_state=conf_state,
+                        bar_5m=bar,
+                        closed_5m=bundle.closed,
+                        closed_1m=closed_1m,
+                        zone_lo=zone_lo,
+                        zone_hi=zone_hi,
+                        invalidation_level=setup.invalidation_level,
+                        structured=structured,
+                        monitor_from_ms=boundary,
+                        now_ms=now_ms,
+                    )
+                else:
+                    progress = process_bar_sequential(
+                        direction=setup.direction,
+                        sequence=sequence,
+                        confirmation_state=conf_state,
+                        bar=bar,
+                        window=window,
+                        zone_lo=zone_lo,
+                        zone_hi=zone_hi,
+                        invalidation_level=setup.invalidation_level,
+                        structured=structured,
+                        monitor_from_ms=boundary,
+                    )
                 conf_state = {
                     "sequence": sequence,
                     "required": sequence,
@@ -753,6 +858,13 @@ class OpportunityMonitorService:
 
             setup.confirmation_state = conf_state
             setup.last_monitor_at = now
+            sync_pipeline_after_monitor(
+                setup,
+                entry_mode=paper_entry_mode,
+                shadow=balanced_shadow,
+                sequence=sequence,
+                confirmation_state=conf_state,
+            )
 
             if invalidated:
                 setup.status = "invalidated"
@@ -778,7 +890,12 @@ class OpportunityMonitorService:
             )
 
             if setup.lifecycle_state in (WAIT_LONG, WAIT_SHORT):
-                if not all_required_met(progress_check):
+                if not _promotion_confirmations_met(
+                    entry_mode=paper_entry_mode,
+                    sequence=sequence,
+                    conf_state=conf_state,
+                    structured=structured,
+                ):
                     setup.last_rejection_reason = REASON_MISSING_CONFIRMATIONS
                     setup.last_validation_result = {
                         "ok": False,
@@ -810,13 +927,29 @@ class OpportunityMonitorService:
 
                 setup.lifecycle_state = ready_state_for_direction(setup.direction)
                 setup.last_rejection_reason = None
-                setup.last_validation_result = {"ok": True, "net_rr": net_rr, "promoted_at": now.isoformat()}
-                append_timeline_event(setup, "promoted_ready", net_rr=net_rr, at_ms=now_ms)
+                setup.last_validation_result = {
+                    "ok": True,
+                    "net_rr": net_rr,
+                    "promoted_at": now.isoformat(),
+                    "paper_entry_mode": paper_entry_mode,
+                }
+                append_timeline_event(
+                    setup,
+                    "promoted_ready",
+                    net_rr=net_rr,
+                    at_ms=now_ms,
+                    paper_entry_mode=paper_entry_mode,
+                )
                 await log_setup_event(session, setup_id=setup.setup_id, event_type="promoted_ready", payload={"net_rr": net_rr})
                 summary["promoted"] += 1
 
             if setup.lifecycle_state in (ICT_CONFIRMED_LONG, ICT_CONFIRMED_SHORT):
-                if not all_required_met(progress_check):
+                if not _promotion_confirmations_met(
+                    entry_mode=paper_entry_mode,
+                    sequence=sequence,
+                    conf_state=conf_state,
+                    structured=structured,
+                ):
                     setup.lifecycle_state = wait_state_for_direction(setup.direction)
                     setup.last_rejection_reason = REASON_MISSING_CONFIRMATIONS
                     continue
@@ -838,7 +971,12 @@ class OpportunityMonitorService:
                     }
 
             if setup.lifecycle_state in (READY_LONG, READY_SHORT):
-                if not all_required_met(progress_check):
+                if not _promotion_confirmations_met(
+                    entry_mode=paper_entry_mode,
+                    sequence=sequence,
+                    conf_state=conf_state,
+                    structured=structured,
+                ):
                     setup.lifecycle_state = wait_state_for_direction(setup.direction)
                     setup.last_rejection_reason = REASON_MISSING_CONFIRMATIONS
                     setup.last_validation_result = {
@@ -848,9 +986,25 @@ class OpportunityMonitorService:
                         "ict_confirmed": False,
                     }
                     continue
-                from app.services.conditional_revision import objective_confirmations_satisfied
+                from app.services.conditional_revision import objective_confirmations_satisfied_for_order
 
-                conf_ok, reject_reason = objective_confirmations_satisfied(setup)
+                allow_pre = (
+                    paper_entry_mode == ENTRY_MODE_BALANCED
+                    and pre_entry_requirements_met(
+                        sequence=sequence,
+                        confirmation_state=conf_state,
+                        structured=structured,
+                    )
+                    and not required_confirmations_met(
+                        sequence=sequence,
+                        confirmation_state=conf_state,
+                        structured=structured,
+                    )
+                )
+                conf_ok, reject_reason = objective_confirmations_satisfied_for_order(
+                    setup,
+                    allow_pre_entry_without_touch=allow_pre,
+                )
                 if not conf_ok:
                     setup.lifecycle_state = wait_state_for_direction(setup.direction)
                     setup.last_rejection_reason = reject_reason or REASON_MISSING_CONFIRMATIONS
@@ -878,7 +1032,14 @@ class OpportunityMonitorService:
                     session, setup, bundle, now_ms, now, summary
                 ):
                     continue
-                await _attempt_ready_paper_order(session, setup, now=now, summary=summary)
+                await _attempt_ready_paper_order(
+                    session,
+                    setup,
+                    now=now,
+                    summary=summary,
+                    entry_mode=paper_entry_mode,
+                    balanced_shadow=balanced_shadow,
+                )
 
         await session.flush()
         return summary

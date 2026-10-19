@@ -49,6 +49,8 @@ class StrategyUpdate(BaseModel):
     max_missed_entry_pct: float = Field(default=0.30, ge=0, le=10)
     holding_time_hours: float = Field(default=6.0, ge=0.5, le=48)
     scanning_enabled: bool = True
+    paper_entry_mode: str = Field(default="STRICT")
+    balanced_entry_shadow_mode: bool = False
 
 
 class RiskUpdate(BaseModel):
@@ -128,6 +130,8 @@ async def get_strategy(session: AsyncSession = Depends(get_db), _=Depends(requir
         "max_missed_entry_pct": row.max_missed_entry_pct,
         "holding_time_hours": row.holding_time_hours,
         "scanning_enabled": row.scanning_enabled,
+        "paper_entry_mode": getattr(row, "paper_entry_mode", None) or "STRICT",
+        "balanced_entry_shadow_mode": bool(getattr(row, "balanced_entry_shadow_mode", False)),
     }
 
 
@@ -142,6 +146,9 @@ async def put_strategy(body: StrategyUpdate, session: AsyncSession = Depends(get
     row.max_missed_entry_pct = body.max_missed_entry_pct
     row.holding_time_hours = body.holding_time_hours
     row.scanning_enabled = body.scanning_enabled
+    mode = (body.paper_entry_mode or "STRICT").upper()
+    row.paper_entry_mode = "BALANCED" if mode == "BALANCED" else "STRICT"
+    row.balanced_entry_shadow_mode = body.balanced_entry_shadow_mode
     await audit(session, user.id, "strategy", "update", body.model_dump())
     await session.commit()
     await refresh_settings_cache(session)

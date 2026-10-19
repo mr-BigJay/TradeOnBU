@@ -200,6 +200,27 @@ def _drop_sequence_suffix(
         evidence.pop(tok, None)
 
 
+def objective_confirmations_satisfied_for_order(
+    row: Any,
+    *,
+    allow_pre_entry_without_touch: bool = False,
+) -> tuple[bool, str | None]:
+    """STRICT: full sequence + touch evidence. BALANCED early limit: pre-entry structural tokens only."""
+    if allow_pre_entry_without_touch:
+        from app.services.balanced_confirmation_engine import pre_entry_requirements_met
+
+        conf = row.confirmation_state or {}
+        sequence = conf.get("sequence") or conf.get("required") or []
+        if isinstance(sequence, list) and sequence:
+            if pre_entry_requirements_met(
+                sequence=[str(x) for x in sequence],
+                confirmation_state=conf,
+                structured=row.structured_snapshot or {},
+            ):
+                return True, None
+    return objective_confirmations_satisfied(row)
+
+
 def objective_confirmations_satisfied(row: Any) -> tuple[bool, str | None]:
     """Objective ICT sequence complete, ordered, and entry touch evidenced for current zone."""
     from app.services.ict_confirmation_engine import ConfirmationProgress, all_required_met
