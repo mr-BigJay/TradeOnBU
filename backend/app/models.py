@@ -554,3 +554,58 @@ class MarketMicroRollup(Base):
     source: Mapped[str] = mapped_column(String(32), default="bitunix")
     payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class LiquidationEvent(Base):
+    """Normalized real liquidation observation (Bybit / Binance public feeds)."""
+
+    __tablename__ = "liquidation_events"
+    __table_args__ = (UniqueConstraint("dedupe_key", name="uq_liquidation_event_dedupe"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    dedupe_key: Mapped[str] = mapped_column(String(128), index=True)
+    source_exchange: Mapped[str] = mapped_column(String(16), index=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True, default="BTCUSDT")
+    event_timestamp_ms: Mapped[int] = mapped_column(Integer, index=True)
+    received_timestamp_ms: Mapped[int] = mapped_column(Integer, index=True)
+    liquidated_position_side: Mapped[str] = mapped_column(String(8), index=True)
+    native_order_side: Mapped[str] = mapped_column(String(16))
+    price: Mapped[float] = mapped_column(Float)
+    quantity_btc: Mapped[float] = mapped_column(Float)
+    estimated_notional_usd: Mapped[float] = mapped_column(Float)
+    price_type: Mapped[str] = mapped_column(String(32))
+    source_quality: Mapped[str] = mapped_column(String(32), default="observed")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+class LiquidationSourceStatus(Base):
+    """Per-exchange collector health (single row per source)."""
+
+    __tablename__ = "liquidation_source_status"
+    __table_args__ = (UniqueConstraint("source_exchange", name="uq_liquidation_source"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source_exchange: Mapped[str] = mapped_column(String(16), index=True)
+    connected: Mapped[bool] = mapped_column(default=False)
+    last_message_at_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    events_received: Mapped[int] = mapped_column(Integer, default=0)
+    events_rejected: Mapped[int] = mapped_column(Integer, default=0)
+    duplicates: Mapped[int] = mapped_column(Integer, default=0)
+    reconnect_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_error: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class LiquidationWindowRollup(Base):
+    __tablename__ = "liquidation_window_rollups"
+    __table_args__ = (
+        UniqueConstraint("symbol", "source_exchange", "window_name", "bucket_start_ms", name="uq_liq_window_rollup"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True, default="BTCUSDT")
+    source_exchange: Mapped[str] = mapped_column(String(16), index=True)
+    window_name: Mapped[str] = mapped_column(String(8), index=True)
+    bucket_start_ms: Mapped[int] = mapped_column(Integer, index=True)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

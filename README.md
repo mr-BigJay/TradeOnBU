@@ -36,6 +36,12 @@ Architecture (paper only):
 
 Dashboard: **فرصت‌ها** tab → `GET /api/gui/opportunities/dashboard`.
 
+## Liquidation Intelligence (Price Forecast input)
+
+Optional **public WebSocket** collector (Bybit `allLiquidation` + Binance `forceOrder`) stores deduplicated BTCUSDT liquidation events and attaches a **compact stats summary** to AI Price Forecast market snapshots. **Default: disabled** — set `LIQUIDATION_INTELLIGENCE_ENABLED=true` on the VPS after testing.
+
+Details: [docs/liquidation-intelligence.md](docs/liquidation-intelligence.md). Does not affect ICT analysis or GPT call scheduling.
+
 **VPS verification (no deploy from agent):** after merge, pull on `/opt/tradeonbu`, rebuild containers, confirm migrations apply (new columns on `ai_proposed_setups`, `ict_setup_audit_events` table). SQLite data is preserved; do not run `docker compose down -v`.
 
 ## Phase 3 — One-command install (Ubuntu/Debian)
