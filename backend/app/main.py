@@ -25,6 +25,7 @@ from app.routes import siwc_public as siwc_public_routes
 from app.routes import position as position_routes
 from app.routes import opportunities as opportunities_routes
 from app.routes import price_forecast as price_forecast_routes
+from app.routes import liquidation_intelligence as liquidation_routes
 from app.services.settings_runtime import refresh_settings_cache
 from app.models import MarketTrendSnapshot, Signal, SignalEvent, SignalStatus
 from app.schemas import (
@@ -137,11 +138,45 @@ async def lifespan(app: FastAPI):
         from app.services.price_forecast.bitunix_trade_ws import get_micro_collector
 
         get_micro_collector().start()
+
+        from app.services.liquidation_intelligence.collector import get_liquidation_collector
+        from app.services.liquidation_intelligence.startup_reconcile import reconcile_liquidation_sources_on_startup
+
+        async with SessionLocal() as session:
+            try:
+                await reconcile_liquidation_sources_on_startup(session)
+                await session.commit()
+            except Exception:
+                logger.exception("Liquidation source startup reconcile failed")
+
+        get_liquidation_collector().start()
+
+        async def _liquidation_retention_tick() -> None:
+            from app.config import get_settings
+            from app.services.liquidation_intelligence.maintenance import run_liquidation_retention_tick
+
+            if not get_settings().liquidation_intelligence_enabled:
+                return
+            try:
+                await run_liquidation_retention_tick()
+            except Exception:
+                logger.exception("Liquidation retention tick failed")
+
+        scheduler.add_job(
+            _liquidation_retention_tick,
+            "interval",
+            hours=1,
+            id="liquidation_retention",
+            max_instances=1,
+            coalesce=True,
+        )
     yield
     if not os.getenv("DISABLE_APP_BACKGROUND"):
         from app.services.price_forecast.bitunix_trade_ws import get_micro_collector
+        from app.services.liquidation_intelligence.collector import get_liquidation_collector
 
         await get_micro_collector().stop()
+        await get_liquidation_collector().stop()
     scheduler.shutdown(wait=False)
 
 
@@ -153,6 +188,7 @@ app.include_router(siwc_public_routes.router)
 app.include_router(position_routes.router)
 app.include_router(opportunities_routes.router)
 app.include_router(price_forecast_routes.router)
+app.include_router(liquidation_routes.router)
 app.add_middleware(SessionSecurityMiddleware)
 app.add_middleware(
     CORSMiddleware,

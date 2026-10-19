@@ -1,0 +1,199 @@
+from __future__ import annotations
+
+import time
+from typing import Any
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.config import get_settings
+from app.services.liquidation_intelligence.analytics import WINDOW_MS, build_per_source_analytics, compute_window_metrics
+from app.services.liquidation_intelligence.collector import get_liquidation_collector
+from app.services.liquidation_intelligence.fetch_result import FetchEventsResult
+from app.services.liquidation_intelligence.derived_quality import apply_derived_analytics_quality
+from app.services.liquidation_intelligence.gpt_packaging import build_combined_labeled_summary
+from app.services.liquidation_intelligence.health import build_windows_with_coverage, source_health_block
+from app.services.liquidation_intelligence.repository import all_source_status, fetch_events_since, latest_event_time
+
+
+def _query_quality_block(fetch: FetchEventsResult, exchange: str) -> dict[str, Any]:
+    return {
+        "source": exchange,
+        "truncated": fetch.truncated,
+        "row_limit": fetch.row_limit,
+        "rows_returned": fetch.rows_returned,
+        "matching_row_count": fetch.matching_row_count,
+        "since_ms": fetch.since_ms,
+        "earliest_returned_ms": fetch.earliest_returned_ms,
+        "warning": fetch.compact_warning(),
+    }
+
+
+async def build_liquidation_forecast_summary(session: AsyncSession, *, symbol: str = "BTCUSDT") -> dict[str, Any]:
+    settings = get_settings()
+    if not settings.liquidation_intelligence_enabled:
+        return {
+            "status": "disabled",
+            "symbol": symbol,
+            "note": "Liquidation Intelligence collector is disabled (LIQUIDATION_INTELLIGENCE_ENABLED=false)",
+        }
+
+    now_ms = int(time.time() * 1000)
+    since_ms = now_ms - WINDOW_MS["4h"]
+    stale_after_ms = int(settings.liquidation_stale_after_seconds) * 1000
+    fetch_limit = int(settings.liquidation_forecast_fetch_limit)
+    bybit_fetch = await fetch_events_since(
+        session, symbol=symbol, since_ms=since_ms, source="bybit", limit=fetch_limit
+    )
+    binance_fetch = await fetch_events_since(
+        session, symbol=symbol, since_ms=since_ms, source="binance", limit=fetch_limit
+    )
+    bybit = bybit_fetch.events
+    binance = binance_fetch.events
+    statuses = await all_source_status(session)
+    status_map = {s.source_exchange: s for s in statuses}
+    collector = get_liquidation_collector()
+    live = collector.status_payload() if collector else {}
+
+    def _source_block(
+        exchange: str,
+        events: list,
+        fetch: FetchEventsResult,
+        *,
+        price_type: str,
+        quality_label: str,
+    ) -> dict[str, Any]:
+        st = status_map.get(exchange)
+        health = source_health_block(st, now_ms=now_ms, stale_after_ms=stale_after_ms, events_in_lookback=events)
+        conn = health["connection_state"]
+        if conn == "disconnected" and not events:
+            return {
+                **health,
+                "status": "unavailable",
+                "source_quality": quality_label,
+                "windows": {},
+                "price_clusters": [],
+                "event_query_quality": _query_quality_block(fetch, exchange),
+            }
+        analytics = build_per_source_analytics(events, now_ms, source=exchange, price_type=price_type) if events else {}
+        windows = build_windows_with_coverage(
+            events,
+            now_ms,
+            compute_window_metrics,
+            source_status=st,
+            fetch_result=fetch,
+        )
+        partial_any = any(
+            w.get("partial")
+            or w.get("coverage") in ("empty", "partial", "unknown", "truncated")
+            or w.get("query_truncated")
+            for w in windows.values()
+        )
+        if not events and conn in ("connected_idle", "connected_active", "connecting"):
+            windows = build_windows_with_coverage(
+                [],
+                now_ms,
+                compute_window_metrics,
+                source_status=st,
+                fetch_result=fetch,
+            )
+        burst_metrics, price_clusters, derived_meta = apply_derived_analytics_quality(
+            windows=windows,
+            burst_metrics=analytics.get("burst_metrics", {}),
+            price_clusters=analytics.get("price_clusters", []),
+            fetch=fetch,
+        )
+        if not events and conn in ("connected_idle", "connected_active", "connecting"):
+            status = "connected_no_events"
+        elif not events:
+            status = "stale" if conn == "stale" else "unavailable"
+        elif partial_any or fetch.truncated:
+            status = "partial"
+        else:
+            status = "ok"
+        return {
+            **health,
+            "status": status,
+            "source_quality": quality_label,
+            "windows": windows,
+            "burst_metrics": burst_metrics,
+            "price_clusters": price_clusters,
+            "derived_analytics_quality": derived_meta,
+            "event_query_quality": _query_quality_block(fetch, exchange),
+        }
+
+    bybit_block = _source_block(
+        "bybit", bybit, bybit_fetch, price_type="bankruptcy_price", quality_label="bybit_full_tape"
+    )
+    binance_block = _source_block(
+        "binance", binance, binance_fetch, price_type="avg_fill_price", quality_label="binance_sampled_stream"
+    )
+
+    combined_events = bybit + binance
+    combined_labeled = build_combined_labeled_summary(
+        bybit_block=bybit_block,
+        binance_block=binance_block,
+        combined_events=bool(combined_events),
+    )
+
+    aggregate_status = "unavailable"
+    if bybit_block.get("status") == "ok" or binance_block.get("status") == "ok":
+        aggregate_status = "ok"
+    elif bybit_block.get("status") in ("partial", "connected_no_events") or binance_block.get("status") in (
+        "partial",
+        "connected_no_events",
+    ):
+        aggregate_status = "partial"
+    elif combined_events or bybit_fetch.truncated or binance_fetch.truncated:
+        aggregate_status = "partial"
+
+    last_ev = await latest_event_time(session, symbol)
+
+    return {
+        "status": aggregate_status,
+        "symbol": symbol,
+        "sources": ["bybit", "binance"],
+        "event_query_quality": {
+            "bybit": bybit_block.get("event_query_quality"),
+            "binance": binance_block.get("event_query_quality"),
+        },
+        "freshness_and_coverage": {
+            "now_ms": now_ms,
+            "lookback_ms": WINDOW_MS["4h"],
+            "stale_after_seconds": settings.liquidation_stale_after_seconds,
+            "bybit": {
+                "connection_state": bybit_block.get("connection_state"),
+                "event_freshness": bybit_block.get("event_freshness"),
+                "window_5m_coverage": (bybit_block.get("windows") or {}).get("5m", {}).get("coverage"),
+            },
+            "binance": {
+                "connection_state": binance_block.get("connection_state"),
+                "event_freshness": binance_block.get("event_freshness"),
+                "window_5m_coverage": (binance_block.get("windows") or {}).get("5m", {}).get("coverage"),
+            },
+        },
+        "source_quality": {
+            "bybit": bybit_block.get("source_quality"),
+            "binance": binance_block.get("source_quality"),
+        },
+        "coverage_notes": {
+            "bybit": "Public allLiquidation stream; bankruptcy price labeled, not guaranteed fill",
+            "binance": "forceOrder on /market/ws — sampled (~1 order / 1000ms), avg fill price; cumulative z deduped per order id when present",
+            "aggregate": "Combined notional sums only — price clusters stay per-source; not complete market liquidation volume",
+            "binance_dedupe": "Without order id, snapshot dedupe is best-effort only",
+        },
+        "bybit": bybit_block,
+        "binance": binance_block,
+        "combined_labeled": combined_labeled,
+        "windows": {
+            "bybit": bybit_block.get("windows") or {},
+            "binance": binance_block.get("windows") or {},
+        },
+        "price_clusters": {
+            "bybit": bybit_block.get("price_clusters") or [],
+            "binance": binance_block.get("price_clusters") or [],
+        },
+        "burst_metrics": bybit_block.get("burst_metrics") or binance_block.get("burst_metrics") or {},
+        "last_event_time_ms": last_ev,
+        "collector": live,
+        "interpretation": "Observed liquidation events only — not predicted future liquidation zones",
+    }

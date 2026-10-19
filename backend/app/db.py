@@ -89,6 +89,13 @@ SIGNAL_MIGRATIONS = [
     "ALTER TABLE system_state ADD COLUMN price_forecast_lock_owner VARCHAR(64)",
     "ALTER TABLE system_state ADD COLUMN price_forecast_lock_until_ms INTEGER DEFAULT 0",
     "ALTER TABLE price_forecast_settings ADD COLUMN failure_streak INTEGER DEFAULT 0",
+    "ALTER TABLE liquidation_events ADD COLUMN exchange_order_id VARCHAR(64)",
+    "ALTER TABLE liquidation_source_status ADD COLUMN last_event_at_ms INTEGER",
+    "ALTER TABLE liquidation_source_status ADD COLUMN last_heartbeat_at_ms INTEGER",
+    "ALTER TABLE liquidation_source_status ADD COLUMN subscription_confirmed BOOLEAN DEFAULT 0",
+    "ALTER TABLE liquidation_source_status ADD COLUMN last_connection_activity_at_ms INTEGER",
+    "ALTER TABLE liquidation_source_status ADD COLUMN connected_since_ms INTEGER",
+    "ALTER TABLE liquidation_source_status ADD COLUMN coverage_gaps JSON",
 ]
 
 LEGACY_SETUP_BACKFILL = """

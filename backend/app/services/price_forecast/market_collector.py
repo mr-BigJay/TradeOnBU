@@ -9,10 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import MarketDataSnapshot, MarketMicroRollup
 from app.services.market_data import MarketDataService
-from app.services.price_forecast.binance_supplement import (
-    fetch_binance_liquidations_snapshot,
-    fetch_binance_open_interest_hist,
-)
+from app.services.price_forecast.binance_supplement import fetch_binance_open_interest_hist
 
 
 def _candle_row(c) -> list[float | int]:
@@ -199,8 +196,20 @@ async def collect_market_snapshot(session: AsyncSession, *, symbol: str = "BTCUS
         }
         freshness["open_interest"] = "unavailable"
 
-    payload["liquidations"] = await fetch_binance_liquidations_snapshot(symbol)
-    freshness["liquidations"] = payload["liquidations"].get("status", "unavailable")
+    from app.services.liquidation_intelligence.llm_compact import compact_liquidation_for_llm
+    from app.services.liquidation_intelligence.summary import build_liquidation_forecast_summary
+
+    try:
+        liq_full = await build_liquidation_forecast_summary(session, symbol=symbol)
+        payload["liquidations"] = compact_liquidation_for_llm(liq_full)
+        freshness["liquidations"] = payload["liquidations"].get("status", "unavailable")
+    except Exception as exc:
+        payload["liquidations"] = {
+            "status": "unavailable",
+            "symbol": symbol,
+            "error": str(exc)[:200],
+        }
+        freshness["liquidations"] = "unavailable"
 
     snap = MarketDataSnapshot(symbol=symbol, collected_at=now, payload=payload, freshness=freshness, valid=True)
     session.add(snap)
