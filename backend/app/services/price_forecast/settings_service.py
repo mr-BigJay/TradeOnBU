@@ -35,6 +35,14 @@ async def get_or_create_forecast_settings(session: AsyncSession) -> PriceForecas
     return row
 
 
+async def retire_forecast_settings(session: AsyncSession) -> None:
+    """Persist disabled billing/scheduling state without deleting forecast history."""
+    cfg = await get_or_create_forecast_settings(session)
+    cfg.enabled = False
+    cfg.next_run_at = None
+    cfg.running_status = "idle"
+
+
 async def count_billable_runs_today(session: AsyncSession) -> int:
     """Runs that consumed or may consume OpenAI quota today (ok/failed, or running still in-flight)."""
     from app.config import get_settings

@@ -24,6 +24,12 @@ from app.services.price_forecast.validation import ForecastValidationError, vali
 from app.services.siwc.responses_client import AnalysisResponse, OpenAIResponsesError
 
 
+@pytest.fixture(autouse=True)
+def _allow_legacy_forecast_logic_only_inside_this_test_module(monkeypatch):
+    """Historical inference tests remain valid; production entrypoints default disabled."""
+    monkeypatch.setattr("app.services.price_forecast.run_service.FORECAST_GENERATION_ENABLED", True)
+
+
 BITUNIX_FUNDING_FIXTURE = {
     "code": 0,
     "msg": "Success",

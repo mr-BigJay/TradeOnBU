@@ -5,14 +5,12 @@ import { ChatGptSettingsPage } from "./ChatGptSettingsPage";
 import { TelegramSettingsPage } from "./TelegramSettingsPage";
 import { OpportunitiesPage } from "./OpportunitiesPage";
 import { PositionPage, type PositionPrefill } from "./PositionPage";
-import { PriceForecastPage } from "./PriceForecastPage";
 
-type Page = "analysis" | "opportunities" | "forecast" | "chatgpt" | "telegram" | "position";
+type Page = "analysis" | "opportunities" | "chatgpt" | "telegram" | "position";
 
 const NAV: { id: Page; label: string; short: string }[] = [
   { id: "analysis", label: "تحلیل", short: "📊" },
   { id: "opportunities", label: "فرصت‌ها", short: "🎯" },
-  { id: "forecast", label: "پیش‌بینی", short: "🔮" },
   { id: "position", label: "پوزیشن", short: "📈" },
   { id: "chatgpt", label: "ChatGPT", short: "🤖" },
   { id: "telegram", label: "تلگرام", short: "✈️" },
@@ -144,7 +142,6 @@ export default function App() {
           />
         )}
         {page === "opportunities" && <OpportunitiesPage />}
-        {page === "forecast" && <PriceForecastPage />}
         {page === "position" && (
           <PositionPage
             prefill={positionPrefill}
