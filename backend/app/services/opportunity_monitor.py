@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_effective_settings
 from app.domain.candle_utils import candle_close_ms, interval_ms
+from app.domain.candles import Candle
 from app.domain.market_freshness import is_market_data_fresh
 from app.domain.setup_lifecycle import (
     ACTIVE_MONITOR_STATES,
@@ -381,6 +382,8 @@ async def _attempt_ready_paper_order(
     entry_mode: str = ENTRY_MODE_STRICT,
     balanced_shadow: bool = False,
     paper_entry_mode: str | None = None,
+    latest_closed_5m: Candle | None = None,
+    market_data_verified: bool = False,
 ) -> bool:
     """Create paper order while READY; transition to PENDING_ENTRY only on success (atomic savepoint)."""
     from app.services.conditional_revision import objective_confirmations_satisfied_for_order
@@ -435,6 +438,32 @@ async def _attempt_ready_paper_order(
             "missing": (setup.confirmation_state or {}).get("missing") or [],
             "ict_confirmed": False,
         }
+        return False
+
+    from app.services.ai_setup_quality_gates import validate_ready_setup_before_paper_order
+
+    pre_ok, pre_reason = await validate_ready_setup_before_paper_order(
+        session,
+        setup,
+        latest_closed_5m=latest_closed_5m,
+        now_ms=int(now.timestamp() * 1000),
+        market_data_verified=market_data_verified,
+    )
+    if not pre_ok:
+        setup.lifecycle_state = wait_state_for_direction(setup.direction)
+        setup.last_rejection_reason = pre_reason or "pre_order_quality_rejected"
+        setup.last_validation_result = {
+            "ok": False,
+            "reason": pre_reason,
+            "ict_confirmed": True,
+            "pre_order_gate": True,
+        }
+        append_timeline_event(
+            setup,
+            "paper_order_blocked_pre_quality",
+            reason=pre_reason,
+            at_ms=int(now.timestamp() * 1000),
+        )
         return False
 
     if await _has_position_for_setup(session, setup.setup_id):
@@ -1131,6 +1160,8 @@ class OpportunityMonitorService:
                         "1m_integrity": integrity,
                     }
                     continue
+                from app.services.ai_setup_quality_gates import pick_latest_closed_5m
+
                 await _attempt_ready_paper_order(
                     session,
                     setup,
@@ -1139,6 +1170,8 @@ class OpportunityMonitorService:
                     entry_mode=live_engine,
                     balanced_shadow=balanced_shadow,
                     paper_entry_mode=paper_entry_mode,
+                    latest_closed_5m=pick_latest_closed_5m(list(bundle.closed or []), now_ms=now_ms),
+                    market_data_verified=bool(bundle.data_complete and fresh),
                 )
 
         await session.flush()

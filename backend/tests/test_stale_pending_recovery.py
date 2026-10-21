@@ -98,9 +98,10 @@ async def test_stale_5m_outage_then_recovery_pending_not_cancelled_and_can_fill(
         assert (setup.objective_notes or {}).get("market_data_health", {}).get("ok") is False
         assert pos.status == "pending_entry"
 
+    pre_5m = Candle(time_ms=order_ms - 300_000, open=100, high=100.5, low=99.5, close=100, volume=1)
     fresh_bar = Candle(time_ms=order_ms + 300_000, open=100, high=101, low=99, close=100.2, volume=1)
     fresh_bundle = KlineBundle(
-        closed=[fresh_bar],
+        closed=[pre_5m, fresh_bar],
         forming=None,
         gaps_detected=[],
         gaps_remaining=[],
@@ -125,12 +126,24 @@ async def test_stale_5m_outage_then_recovery_pending_not_cancelled_and_can_fill(
         data_complete=True,
         interval="1m",
     )
+    bundle_5m = KlineBundle(
+        closed=[pre_5m, fresh_bar],
+        forming=None,
+        gaps_detected=[],
+        gaps_remaining=[],
+        data_complete=True,
+        interval="5m",
+    )
+
+    async def _fetch_klines(symbol: str, interval: str, limit: int):
+        return bundle_5m if interval == "5m" else bundle_1m
+
     async with SessionLocal() as session:
         pos = (await session.execute(select(SimPosition))).scalar_one()
         pos.last_processed_candle_ms = 0
         await session.commit()
         sim = SimPositionMonitorService()
-        with patch.object(sim.market, "fetch_kline_bundle", AsyncMock(return_value=bundle_1m)):
+        with patch.object(sim.market, "fetch_kline_bundle", AsyncMock(side_effect=_fetch_klines)):
             await sim.monitor_session(session)
         await session.commit()
         pos = (await session.execute(select(SimPosition))).scalar_one()

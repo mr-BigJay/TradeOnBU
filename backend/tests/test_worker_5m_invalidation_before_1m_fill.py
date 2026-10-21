@@ -160,6 +160,7 @@ async def test_worker_fills_on_earlier_1m_before_later_5m_invalidation():
     base = datetime(2026, 10, 10, 16, 0, tzinfo=timezone.utc)
     order_ms = int(base.timestamp() * 1000)
     fill_1m = _1m(order_ms + INTERVAL_1M, o=99.5, h=100.5, l=99.0, c=100.2)
+    baseline_5m = _5m(order_ms - INTERVAL_5M, o=99.0, h=100.0, l=98.5, c=99.5)
     inv_5m = _5m(order_ms + INTERVAL_5M, o=95.0, h=96.0, l=91.0, c=92.0)
     cycle_now = datetime.fromtimestamp((candle_close_ms(inv_5m, "5m") + 5_000) / 1000, tz=timezone.utc)
 
@@ -211,7 +212,7 @@ async def test_worker_fills_on_earlier_1m_before_later_5m_invalidation():
         await session.commit()
 
     bundle_5m = KlineBundle(
-        closed=[inv_5m],
+        closed=[baseline_5m, inv_5m],
         forming=None,
         gaps_detected=[],
         gaps_remaining=[],

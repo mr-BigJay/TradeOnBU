@@ -31,6 +31,13 @@ def test_conditional_setup_rendered_when_immediate_entry_not_valid():
     assert "ابطال سناریو:" in report
 
 
+def test_instructions_require_market_regime_and_contrarian_evidence_fields():
+    text = ICT_TRADER_INSTRUCTIONS
+    assert "market_regime" in text
+    assert "contrarian_ict_evidence" in text
+    assert "setup_independence" in text
+
+
 def test_instructions_require_conditional_plan_not_only_no_trade():
     assert "conditional setup" in INSTRUCTIONS.lower()
     assert "potential_direction" in INSTRUCTIONS

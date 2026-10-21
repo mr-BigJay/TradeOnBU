@@ -312,8 +312,13 @@ async def _persist_run_draft(run_id: int, draft: _RunDraft, *, symbol: str) -> A
         run.completed_at = completed
         setup_row: AiProposedSetup | None = None
         if draft.status.startswith("completed") and draft.structured:
+            mi_ctx = (draft.structured or {}).get("market_intelligence_context")
             setup_row, setup_meta = await create_setup_from_structured(
-                session, run_id=run_id, symbol=symbol, structured=draft.structured
+                session,
+                run_id=run_id,
+                symbol=symbol,
+                structured=draft.structured,
+                market_intelligence=mi_ctx if isinstance(mi_ctx, dict) else None,
             )
             draft.structured = _merge_artifacts(draft.structured, {"setup_persistence": setup_meta})
             run.structured = draft.structured
@@ -450,7 +455,13 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
             "response_id": analysis.response_id,
             "response_metadata": analysis.response_metadata,
         }
-        draft.structured = _merge_artifacts(draft.structured, {"inference": inference_meta})
+        draft.structured = _merge_artifacts(
+            draft.structured,
+            {
+                "inference": inference_meta,
+                "market_intelligence_context": market_intelligence,
+            },
+        )
 
         analyzed_at = datetime.now(timezone.utc)
         chart_path: Path | None = None

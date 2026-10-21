@@ -7,6 +7,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.candles import Candle
 from app.domain.setup_lifecycle import PENDING_ENTRY, POSITION_OPEN, READY_LONG, READY_SHORT
 from app.domain.time_utils import ensure_utc
 from app.models import AiProposedSetup, SimPosition, SimPositionSettings
@@ -329,6 +330,43 @@ async def auto_paper_entry_still_valid(session: AsyncSession, pos: SimPosition) 
     lifecycle = (setup.lifecycle_state or "").upper()
     require_flags = lifecycle not in (READY_LONG, READY_SHORT, PENDING_ENTRY, POSITION_OPEN)
     return setup_eligible_for_auto_entry(setup, require_ai_flags=require_flags)
+
+
+async def auto_paper_execution_quality_ok(
+    session: AsyncSession,
+    pos: SimPosition,
+    *,
+    latest_closed_5m: Candle | None,
+    market_data_verified: bool,
+    now_ms: int,
+    phase: str = "fill",
+    closed_5m: list[Candle] | None = None,
+    as_of_ms: int | None = None,
+) -> tuple[bool, str | None]:
+    """Lifecycle eligibility plus closed-5m quality gates (order creation or limit fill)."""
+    still_ok, block_reason = await auto_paper_entry_still_valid(session, pos)
+    if not still_ok:
+        return False, block_reason
+    if not (pos.extra or {}).get("auto_paper") or not pos.ai_setup_id:
+        return still_ok, block_reason
+    setup = (
+        await session.execute(select(AiProposedSetup).where(AiProposedSetup.setup_id == pos.ai_setup_id))
+    ).scalar_one_or_none()
+    if setup is None:
+        return False, "setup_not_found"
+    from app.services.ai_setup_quality_gates import validate_setup_quality_at_execution
+
+    return await validate_setup_quality_at_execution(
+        session,
+        setup,
+        latest_closed_5m=latest_closed_5m,
+        market_data_verified=market_data_verified,
+        now_ms=now_ms,
+        phase=phase,
+        exclude_sim_public_id=pos.public_id,
+        closed_5m=closed_5m,
+        as_of_ms=as_of_ms,
+    )
 
 
 async def mark_setup_paper_fill(session: AsyncSession, pos: SimPosition) -> None:

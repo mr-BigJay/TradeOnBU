@@ -221,6 +221,10 @@ def _format_bias(data: dict[str, Any]) -> str:
     return cleaned[:80]
 
 
+def _parse_bool_report(val: Any) -> bool:
+    return val is True
+
+
 def build_trader_report_fa(data: dict[str, Any], *, symbol: str = "BTCUSDT") -> str:
     trade_decision = _s(data.get("decision") or "NO TRADE").upper().replace("_", " ")
     final_decision = _s(data.get("final_ai_decision") or trade_decision).upper().replace("_", " ")
@@ -235,10 +239,25 @@ def build_trader_report_fa(data: dict[str, Any], *, symbol: str = "BTCUSDT") -> 
         "روند بازار:",
         _format_bias(data),
         "",
-        "تصمیم:",
-        _format_decision(final_decision),
-        "",
     ]
+    regime = _s(data.get("market_regime")).lower()
+    if regime in ("bullish", "bearish", "range", "unclear"):
+        regime_fa = {
+            "bullish": "صعودی (regime)",
+            "bearish": "نزولی (regime)",
+            "range": "رنج (regime)",
+            "unclear": "نامشخص (regime)",
+        }.get(regime, regime)
+        lines.extend(["وضعیت کلی بازار:", regime_fa, ""])
+    if _parse_bool_report(data.get("trade_against_dominant_trend")):
+        lines.extend(["معامله خلاف روند غالب:", "بله", ""])
+    lines.extend(
+        [
+            "تصمیم:",
+            _format_decision(final_decision),
+            "",
+        ]
+    )
 
     if trade_decision in ("LONG", "SHORT"):
         lines.extend(
