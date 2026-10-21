@@ -26,8 +26,15 @@ def pytest_configure(config):
 
 def with_immediate_monitor_fields(structured: dict) -> dict:
     """Fields required for immediate LONG/SHORT persistence (production contract)."""
+    gates = {
+        "liquidity_event_clear": structured.get("liquidity_event_clear", True),
+        "poi_reaction_clear": structured.get("poi_reaction_clear", True),
+        "structural_confirmation_clear": structured.get("structural_confirmation_clear", True),
+        "logical_invalidation_clear": structured.get("logical_invalidation_clear", True),
+    }
     return {
         **structured,
+        **gates,
         "confirmation_type": structured.get("confirmation_type", "sweep_mss_poi"),
         "structural_invalidation_level": structured.get(
             "structural_invalidation_level", structured.get("stop_loss", 97.0) - 1.0

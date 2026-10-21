@@ -795,6 +795,7 @@ async def _persist_conditional_setup(
     run_id: int,
     symbol: str,
     structured: dict[str, Any],
+    market_intelligence: dict[str, Any] | None = None,
 ) -> tuple[AiProposedSetup | None, dict[str, Any]]:
     meta: dict[str, Any] = {"created": False, "updated": False, "skipped": False}
     plan, err = parse_conditional_plan(structured)
@@ -832,11 +833,35 @@ async def _persist_conditional_setup(
         await session.flush()
         return dup, meta
 
+    from app.services.ai_setup_quality_gates import (
+        enrich_structured_audit,
+        validate_setup_quality_gates,
+    )
     from app.services.entry_execution_settings import get_paper_entry_execution_config
+
+    quality_err, quality_audit = await validate_setup_quality_gates(
+        session,
+        symbol=symbol,
+        structured=structured,
+        market_intelligence=market_intelligence,
+    )
+    if quality_err:
+        meta["skipped"] = True
+        meta["reason"] = quality_err
+        meta["quality_audit"] = quality_audit
+        return None, meta
+    structured = enrich_structured_audit(structured, quality_audit)
 
     paper_mode, _, _ = await get_paper_entry_execution_config(session)
     created_at = datetime.now(timezone.utc)
     expires_at = datetime.fromisoformat(plan["expires_at"])
+    notes = {
+        "disclaimer": "Conditional ICT plan — objective monitor confirms before paper execution.",
+        "lifecycle_phase": LIFECYCLE_ENTRY_NOT_REACHED,
+        "validity_status": VALIDITY_ACTIVE,
+        "outcome_tracking_status": TRACKING_INCOMPLETE,
+        "setup_quality_audit": quality_audit,
+    }
     row = AiProposedSetup(
         setup_id=str(uuid.uuid4()),
         run_id=run_id,
@@ -846,12 +871,7 @@ async def _persist_conditional_setup(
         thesis_fa=structured.get("trade_reason") or structured.get("structure_summary"),
         expires_at=expires_at,
         structured_snapshot=structured,
-        objective_notes={
-            "disclaimer": "Conditional ICT plan — objective monitor confirms before paper execution.",
-            "lifecycle_phase": LIFECYCLE_ENTRY_NOT_REACHED,
-            "validity_status": VALIDITY_ACTIVE,
-            "outcome_tracking_status": TRACKING_INCOMPLETE,
-        },
+        objective_notes=notes,
         last_tracked_candle_ms=0,
         monitor_cursor_ms=0,
         created_at=created_at,
@@ -870,6 +890,7 @@ async def _persist_conditional_setup(
     meta["created"] = True
     meta["setup_id"] = row.setup_id
     meta["reason"] = "conditional_created"
+    meta["quality_audit"] = quality_audit
     return row, meta
 
 
@@ -879,6 +900,7 @@ async def create_setup_from_structured(
     run_id: int,
     symbol: str,
     structured: dict[str, Any],
+    market_intelligence: dict[str, Any] | None = None,
 ) -> tuple[AiProposedSetup | None, dict[str, Any]]:
     """Returns (row or None, persistence_meta for artifacts)."""
     meta: dict[str, Any] = {"created": False, "updated": False, "skipped": False}
@@ -891,7 +913,13 @@ async def create_setup_from_structured(
         return None, meta
 
     if _has_conditional_plan(structured):
-        return await _persist_conditional_setup(session, run_id=run_id, symbol=symbol, structured=structured)
+        return await _persist_conditional_setup(
+            session,
+            run_id=run_id,
+            symbol=symbol,
+            structured=structured,
+            market_intelligence=market_intelligence,
+        )
 
     decision = str(structured.get("decision", "NO_TRADE")).upper()
     if decision in ("LONG", "SHORT") and contract_err:
@@ -969,6 +997,24 @@ async def create_setup_from_structured(
         meta["skipped"] = True
         meta["reason"] = "duplicate_open_requires_distinct_new_setup"
         return None, meta
+
+    from app.services.ai_setup_quality_gates import (
+        enrich_structured_audit,
+        validate_setup_quality_gates,
+    )
+
+    quality_err, quality_audit = await validate_setup_quality_gates(
+        session,
+        symbol=symbol,
+        structured=structured,
+        market_intelligence=market_intelligence,
+    )
+    if quality_err:
+        meta["skipped"] = True
+        meta["reason"] = quality_err
+        meta["quality_audit"] = quality_audit
+        return None, meta
+    structured = enrich_structured_audit(structured, quality_audit)
 
     from app.services.conditional_setup import resolve_immediate_confirmation_sequence
     from app.domain.setup_monitor_boundary import monitor_start_open_ms
@@ -1066,6 +1112,7 @@ async def create_setup_from_structured(
             "validity_status": VALIDITY_ACTIVE,
             "outcome_tracking_status": TRACKING_INCOMPLETE,
             "immediate_ready_at_persist": lifecycle_immediate == ready_state_for_direction(decision),
+            "setup_quality_audit": quality_audit,
         },
         last_tracked_candle_ms=0,
     )
@@ -1076,6 +1123,7 @@ async def create_setup_from_structured(
     meta["setup_id"] = row.setup_id
     meta["immediate_objective_ready"] = lifecycle_immediate == ready_state_for_direction(decision)
     meta["missing_confirmations"] = eval_result.confirmation_state.get("missing") or []
+    meta["quality_audit"] = quality_audit
     return row, meta
 
 
@@ -1126,9 +1174,19 @@ async def build_ai_memory_context(
     closed = await load_recent_closed_setups(session, symbol)
     recent = await load_recent_analysis_summaries(session)
     sim_paper = await _load_sim_paper_position_summaries(session, symbol)
+    recent_losses = [
+        p
+        for p in sim_paper
+        if p.get("status") == "closed"
+        and (
+            (p.get("net_pnl_usdt") is not None and float(p["net_pnl_usdt"]) < 0)
+            or "sl" in str(p.get("close_reason") or "").lower()
+        )
+    ][:4]
     return {
         "symbol": symbol,
         "sim_paper_positions": sim_paper,
+        "recent_losing_paper_trades": recent_losses,
         "open_setups": [serialize_setup_row(s) for s in setups],
         "reconciling_expired_setups": [serialize_setup_row(s) for s in reconciling if s not in setups],
         "recent_closed_setups": [serialize_setup_row(s) for s in closed],
@@ -1139,6 +1197,8 @@ async def build_ai_memory_context(
             "User report is server-formatted; output trader JSON only (previous_setup_line / previous_result_line).",
             "Never claim a trade was executed unless paper_fill_recorded is true.",
             "original_forecast is immutable; revision_history holds later AI assessments.",
+            "If a same-direction paper trade recently hit SL/loss, a new same-direction setup requires setup_independence + distinct_new_setup with new ICT evidence (not price drift alone).",
+            "Evaluate 4H/1H structure, 15m/5m momentum, and market_intelligence as context only — never replace ICT confirmations.",
         ],
         "internal_context": True,
     }

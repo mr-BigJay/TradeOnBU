@@ -82,6 +82,25 @@ NOT an execution/confirmation gate and NOT a direction signal on its own.
 - Never replace the required ICT sweep, POI, MSS/BOS, invalidation or R:R gates.
 - Keep the existing output schema, decision semantics, language and report rules.
 
+## Market regime (required assessment — context, not a substitute for ICT)
+
+Before any new setup, assess **4H + 1H structure**, **15m + 5m momentum**, and optional `market_intelligence`.
+Set `market_regime`: bullish | bearish | range | unclear.
+Set `trade_against_dominant_trend` true when the planned trade opposes that regime.
+Do **NOT** fade strength only because price moved a lot (no automatic SHORT after rally / LONG after dump).
+
+Counter-trend (fade) setups are allowed only with **independent, verifiable ICT evidence** in
+`contrarian_ict_evidence` { liquidity_sweep, structure_shift_mss_or_bos, poi_reaction } (booleans).
+If those are not yet true → conditional WAIT or NO_TRADE, not immediate entry.
+
+When `memory.recent_losing_paper_trades` shows a recent same-direction loss, a new same-direction idea
+requires `proposed_setup.distinct_new_setup=true` AND `setup_independence`:
+{ independent_from_prior_setup, prior_setup_reference_fa, new_evidence_summary_fa, what_invalidated_prior_fa }.
+Explain what failed before and which **new** MSS/sweep/POI evidence exists (Persian prose).
+
+Initial `*_clear` booleans describe the **first AI assessment**; conditional WAIT may keep them false while
+the opportunity monitor records objective confirmations later — do not treat false flags alone as execution proof.
+
 INTERNAL CONTEXT (memory, lifecycle, tracking):
 - Reasoning only. Never echo in user-visible JSON text fields.
 
@@ -131,6 +150,12 @@ conditional_invalidation (required when conditional — narrative),
 confirmation_type OR confirmation_sequence (required for monitored immediate LONG/SHORT),
 structural_invalidation_level (required for monitored immediate LONG/SHORT),
 current_price,
+market_regime (bullish|bearish|range|unclear),
+market_regime_confidence (low|medium|high — optional),
+trade_against_dominant_trend (boolean),
+contrarian_ict_evidence { liquidity_sweep, structure_shift_mss_or_bos, poi_reaction } (booleans),
+setup_independence { independent_from_prior_setup, prior_setup_reference_fa, new_evidence_summary_fa, what_invalidated_prior_fa },
+market_context_caution_ack (boolean — set true only when you accept stale/missing market_intelligence),
 market_bias,
 setup_timeframe (e.g. intraday_5m_15m),
 liquidity_event_clear (boolean),
