@@ -13,7 +13,7 @@ from typing import Any
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import MarketDataSnapshot
+from app.models import MarketDataSnapshot, MarketMicroRollup
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +21,7 @@ MAX_SNAPSHOT_AGE_SECONDS = 25 * 60
 MAX_OI_AGE_SECONDS = 150 * 60  # Binance public 1h history can trail the live hour.
 MAX_TRADE_BUCKET_AGE_SECONDS = 15 * 60
 MAX_ORDER_BOOK_AGE_SECONDS = 180
+MAX_MICRO_TRADE_BUCKET_AGE_SECONDS = 7 * 60  # 5m bucket + bounded flush lag
 MAX_CONTEXT_CHARS = 2600
 
 
@@ -222,6 +223,64 @@ def compact_snapshot(snapshot: MarketDataSnapshot, *, symbol: str, now: datetime
     return result
 
 
+
+def _persisted_trade_flow(row: MarketMicroRollup | None, *, now_ms: int) -> dict[str, Any] | None:
+    """Only recent, source-labeled Bitunix buckets; never claim verified taker CVD."""
+    if row is None or row.kind != "trade_5m" or row.source != "bitunix_ws_trades":
+        return None
+    bucket_age = _age_ms(now_ms, row.bucket_start_ms)
+    if bucket_age is None or bucket_age > MAX_MICRO_TRADE_BUCKET_AGE_SECONDS * 1000:
+        return None
+    payload = row.payload or {}
+    if not isinstance(payload, dict):
+        return None
+    buy = _number(payload.get("buy_volume"))
+    sell = _number(payload.get("sell_volume"))
+    count = _number(payload.get("trade_count"))
+    if (buy is None or sell is None or count is None
+            or buy < 0 or sell < 0 or count < 1 or buy + sell <= 0):
+        return None
+    return {
+        "source": "bitunix_ws_trades",
+        "bucket_start_ms": int(row.bucket_start_ms),
+        "bucket_start_age_seconds": int(bucket_age / 1000),
+        "bucket_partial": bucket_age < 5 * 60 * 1000,
+        "buy_volume": round(buy, 4),
+        "sell_volume": round(sell, 4),
+        "trade_count": int(count),
+        "volume_delta": round(buy - sell, 4),
+        "interpretation": "provisional_side_delta_not_verified_cvd",
+        "freshness_note": "bucket_start_is_not_last_trade_timestamp",
+    }
+
+
+def _persisted_order_book(row: MarketMicroRollup | None, *, now_ms: int) -> dict[str, Any] | None:
+    """Read the most recent one-minute persisted Bitunix depth observation."""
+    if row is None or row.kind != "depth_1m" or row.source != "bitunix":
+        return None
+    age = _age_ms(now_ms, row.bucket_start_ms)
+    if age is None or age > MAX_ORDER_BOOK_AGE_SECONDS * 1000:
+        return None
+    payload = row.payload or {}
+    if not isinstance(payload, dict):
+        return None
+    return _order_book(
+        {"status": "ok", "source": "bitunix", **payload},
+        snapshot_age_seconds=int(age / 1000),
+    )
+
+
+async def _latest_micro_row(session: AsyncSession, *, symbol: str, kind: str) -> MarketMicroRollup | None:
+    return (
+        await session.execute(
+            select(MarketMicroRollup)
+            .where(MarketMicroRollup.symbol == symbol, MarketMicroRollup.kind == kind)
+            .order_by(desc(MarketMicroRollup.bucket_start_ms), desc(MarketMicroRollup.id))
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+
 async def load_ai_market_intelligence(session: AsyncSession, *, symbol: str) -> dict[str, Any]:
     """Read only the most recent persisted public snapshot; zero external requests."""
     try:
@@ -235,7 +294,33 @@ async def load_ai_market_intelligence(session: AsyncSession, *, symbol: str) -> 
         ).scalar_one_or_none()
         if row is None:
             return {"status": "unavailable", "reason": "no_public_snapshot"}
-        return compact_snapshot(row, symbol=symbol)
+        context = compact_snapshot(row, symbol=symbol)
+        if context.get("status") != "available":
+            return context
+
+        # Snapshot refreshes every 15m, while websocket microdata persists about
+        # every minute. Read the DB at inference time; no exchange or LLM calls.
+        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        sources = dict(context["sources"])
+        # A trade bucket's old snapshot-time collector status is not live evidence.
+        sources.pop("trade_flow", None)
+        trade_row = await _latest_micro_row(session, symbol=symbol, kind="trade_5m")
+        trade_flow = _persisted_trade_flow(trade_row, now_ms=now_ms)
+        if trade_flow is not None:
+            sources["trade_flow"] = trade_flow
+
+        depth_row = await _latest_micro_row(session, symbol=symbol, kind="depth_1m")
+        depth = _persisted_order_book(depth_row, now_ms=now_ms)
+        if depth is not None:
+            sources["order_book"] = depth
+
+        if not sources:
+            return {"status": "unavailable", "reason": "no_fresh_usable_sources"}
+        context["sources"] = sources
+        import json
+        if len(json.dumps(context, ensure_ascii=False)) > MAX_CONTEXT_CHARS:
+            return {"status": "unavailable", "reason": "context_size_limit"}
+        return context
     except Exception:
         logger.exception("Optional public market intelligence skipped for %s", symbol)
         return {"status": "unavailable", "reason": "snapshot_read_failed"}

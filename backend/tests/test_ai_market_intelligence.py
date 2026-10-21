@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from app.models import MarketDataSnapshot
+from app.models import MarketDataSnapshot, MarketMicroRollup
 from app.services.ai_market_intelligence import compact_snapshot, load_ai_market_intelligence
 
 NOW = datetime(2026, 10, 21, 12, 0, tzinfo=timezone.utc)
@@ -153,3 +153,121 @@ def test_ict_prompt_still_requires_all_structural_gates():
     for term in ("sweep", "POI", "MSS", "R:R"):
         assert term in INSTRUCTIONS
     assert "not verified CVD" in INSTRUCTIONS
+
+
+@pytest.mark.asyncio
+async def test_recent_micro_rollups_override_old_snapshot_trade_and_depth(session):
+    """AI reads the one-minute persisted observations, not 15-minute-old book data."""
+    now = datetime.now(timezone.utc)
+    now_ms = int(now.timestamp() * 1000)
+    trade_bucket = (now_ms // 300000) * 300000
+    depth_bucket = (now_ms // 60000) * 60000 - 60000
+    session.add_all([
+        MarketDataSnapshot(
+            symbol="BTCUSDT", valid=True, collected_at=now - timedelta(minutes=12),
+            payload={"symbol": "BTCUSDT",
+                     "funding": {"source": "bitunix", "status": "ok", "funding_rate": 0.0001},
+                     "trade_flow": {"status": "stale"},
+                     "order_book": {"source": "bitunix", "status": "ok",
+                                    "imbalance_ratio": -0.8, "levels_used": 15}},
+            freshness={},
+        ),
+        MarketMicroRollup(
+            symbol="BTCUSDT", kind="trade_5m", source="bitunix_ws_trades",
+            bucket_start_ms=trade_bucket,
+            payload={"buy_volume": 17.0, "sell_volume": 4.0, "trade_count": 20},
+        ),
+        MarketMicroRollup(
+            symbol="BTCUSDT", kind="depth_1m", source="bitunix",
+            bucket_start_ms=depth_bucket,
+            payload={"imbalance_ratio": 0.35, "levels_used": 15},
+        ),
+    ])
+    await session.commit()
+    context = await load_ai_market_intelligence(session, symbol="BTCUSDT")
+    assert context["status"] == "available"
+    src = context["sources"]
+    assert src["funding"]["funding_rate"] == 0.0001
+    assert src["trade_flow"]["volume_delta"] == 13
+    assert src["trade_flow"]["trade_count"] == 20
+    assert src["trade_flow"]["bucket_partial"] is True
+    assert src["trade_flow"]["interpretation"] == "provisional_side_delta_not_verified_cvd"
+    assert src["order_book"]["top15_imbalance_ratio"] == 0.35
+    assert src["order_book"]["age_seconds"] <= 180
+
+
+@pytest.mark.asyncio
+async def test_stale_microdata_is_dropped_instead_of_keeping_old_snapshot_trade(session):
+    now = datetime.now(timezone.utc)
+    now_ms = int(now.timestamp() * 1000)
+    session.add_all([
+        MarketDataSnapshot(
+            symbol="BTCUSDT", valid=True, collected_at=now - timedelta(minutes=10),
+            payload={"symbol": "BTCUSDT",
+                     "funding": {"source": "bitunix", "status": "ok", "funding_rate": 0.0002},
+                     "trade_flow": {"source": "bitunix_ws_trades", "status": "ok",
+                                    "interpretation": "provisional_volume_delta_not_verified_cvd",
+                                    "buckets_5m": [{"bucket_start_ms": now_ms - 8*60000,
+                                                     "buy_volume": 99, "sell_volume": 1}],
+                                    "collector": {"freshness": "ok"}}},
+            freshness={},
+        ),
+        MarketMicroRollup(
+            symbol="BTCUSDT", kind="trade_5m", source="bitunix_ws_trades",
+            bucket_start_ms=now_ms - 9 * 60000,
+            payload={"buy_volume": 1, "sell_volume": 2, "trade_count": 3},
+        ),
+        MarketMicroRollup(
+            symbol="BTCUSDT", kind="depth_1m", source="bitunix",
+            bucket_start_ms=now_ms - 4 * 60000,
+            payload={"imbalance_ratio": 0.25, "levels_used": 15},
+        ),
+    ])
+    await session.commit()
+    context = await load_ai_market_intelligence(session, symbol="BTCUSDT")
+    assert context["status"] == "available"
+    assert set(context["sources"]) == {"funding"}
+
+
+@pytest.mark.asyncio
+async def test_microdata_wrong_symbol_or_invalid_quality_not_included(session):
+    now = datetime.now(timezone.utc)
+    now_ms = int(now.timestamp() * 1000)
+    session.add_all([
+        MarketDataSnapshot(
+            symbol="BTCUSDT", valid=True, collected_at=now,
+            payload={"symbol": "BTCUSDT",
+                     "funding": {"source": "bitunix", "status": "ok", "funding_rate": 0.0001}},
+            freshness={},
+        ),
+        MarketMicroRollup(
+            symbol="ETHUSDT", kind="trade_5m", source="bitunix_ws_trades",
+            bucket_start_ms=(now_ms // 300000) * 300000,
+            payload={"buy_volume": 100, "sell_volume": 1, "trade_count": 100},
+        ),
+        MarketMicroRollup(
+            symbol="BTCUSDT", kind="depth_1m", source="unknown",
+            bucket_start_ms=(now_ms // 60000) * 60000,
+            payload={"imbalance_ratio": 0.9, "levels_used": 15},
+        ),
+    ])
+    await session.commit()
+    context = await load_ai_market_intelligence(session, symbol="BTCUSDT")
+    assert context["status"] == "available"
+    assert set(context["sources"]) == {"funding"}
+
+
+def test_persisted_microdata_rejects_bad_values_and_future_buckets():
+    from app.services.ai_market_intelligence import _persisted_trade_flow, _persisted_order_book
+    assert _persisted_trade_flow(MarketMicroRollup(
+        source="bitunix_ws_trades", kind="trade_5m", bucket_start_ms=NOW_MS + 60000,
+        payload={"buy_volume": 5, "sell_volume": 1, "trade_count": 4},
+    ), now_ms=NOW_MS) is None
+    assert _persisted_trade_flow(MarketMicroRollup(
+        source="bitunix_ws_trades", kind="trade_5m", bucket_start_ms=NOW_MS - 60000,
+        payload={"buy_volume": float("nan"), "sell_volume": 1, "trade_count": 4},
+    ), now_ms=NOW_MS) is None
+    assert _persisted_order_book(MarketMicroRollup(
+        source="bitunix", kind="depth_1m", bucket_start_ms=NOW_MS - 10000,
+        payload={"imbalance_ratio": 1.4, "levels_used": 15},
+    ), now_ms=NOW_MS) is None
