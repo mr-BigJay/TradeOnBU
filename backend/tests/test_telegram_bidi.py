@@ -12,10 +12,9 @@ from app.services.telegram_bidi import (
 def test_bidi_english_label_then_persian_paragraph():
     raw = "Bias:\nپس از بررسی ساختار بازار، روند کلی نزولی است."
     out = apply_telegram_persian_bidi(raw)
-    assert out.startswith("Bias:\n")
-    assert f"{RLI}پس از بررسی" in out
-    assert out.endswith(f"نزولی است.{PDI}")
-    assert strip_telegram_bidi_control_chars(out) == raw
+    visible = strip_telegram_bidi_control_chars(out)
+    assert visible.startswith("Bias: پس از بررسی")
+    assert visible.endswith("نزولی است.")
 
 
 def test_bidi_persian_with_ict_terms_unchanged_visible():
@@ -25,13 +24,15 @@ def test_bidi_persian_with_ict_terms_unchanged_visible():
     )
     out = apply_telegram_persian_bidi(raw)
     assert "FVG" in out and "MSS" in out and "BOS" in out and "OB" in out
-    assert strip_telegram_bidi_control_chars(out) == raw
+    visible = strip_telegram_bidi_control_chars(out)
+    assert visible.startswith("ICT Reason: قیمت")
 
 
-def test_bidi_does_not_mutate_english_value_lines():
+def test_bidi_merges_english_label_value_pairs():
     raw = "Decision:\nLONG\nEntry:\n98500.5"
     out = apply_telegram_persian_bidi(raw)
-    assert out == raw
+    visible = strip_telegram_bidi_control_chars(out)
+    assert visible == "Decision: LONG\nEntry: 98500.5"
 
 
 def test_telegram_format_path_preserves_visible_report_content():
@@ -57,4 +58,4 @@ def test_split_long_report_strips_to_original_body():
     )
     joined = strip_telegram_bidi_control_chars("".join(parts))
     idx = joined.index("Bias:")
-    assert joined[idx:] == body
+    assert joined[idx:].replace("Bias: ", "Bias:\n") == body

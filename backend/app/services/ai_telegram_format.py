@@ -7,6 +7,7 @@ from app.domain.tehran_time import format_tehran
 from app.services.telegram_message_format import (
     TELEGRAM_MESSAGE_MAX_LENGTH,
     format_persian_report_for_telegram,
+    normalize_report_layout_for_telegram,
     split_header_and_body_chunks,
 )
 
@@ -72,8 +73,10 @@ def split_ai_telegram_report_messages(
     limit: int = TELEGRAM_PLAIN_TEXT_LIMIT,
 ) -> list[str]:
     """Split full Persian report into Telegram-safe plain-text messages (header on first part only)."""
-    header = build_ai_telegram_header(decision=decision, validation=validation)
-    raw_body = report_fa or ""
+    header = normalize_report_layout_for_telegram(
+        build_ai_telegram_header(decision=decision, validation=validation)
+    )
+    raw_body = normalize_report_layout_for_telegram(report_fa or "")
     if not raw_body.strip():
         return split_header_and_body_chunks(header=header, body="", limit=limit)
     from app.services.telegram_message_format import chunk_telegram_text

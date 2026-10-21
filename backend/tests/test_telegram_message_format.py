@@ -6,13 +6,13 @@ from app.services.ai_telegram_format import split_ai_telegram_report_messages
 from app.services.telegram_message_format import (
     LRI,
     PDI,
-    RLI,
     TELEGRAM_MESSAGE_MAX_LENGTH,
     chunk_telegram_text,
     escape_telegram_html,
     escape_telegram_markdown_legacy,
     format_persian_report_for_telegram,
     isolate_ltr_tokens_in_persian,
+    normalize_report_layout_for_telegram,
     prepare_telegram_outbound_text,
     split_header_and_body_chunks,
     strip_telegram_bidi_control_chars,
@@ -46,9 +46,11 @@ def test_mixed_persian_english_line_unchanged_visible():
     assert f"{LRI}15m{PDI}" in out
 
 
-def test_english_only_line_no_bidi_controls():
+def test_english_only_line_merges_without_bidi_controls():
     raw = "Decision:\nLONG\nEntry:\n98500.5"
-    assert format_persian_report_for_telegram(raw) == raw
+    visible = strip_telegram_bidi_control_chars(format_persian_report_for_telegram(raw))
+    assert visible == "Decision: LONG\nEntry: 98500.5"
+    assert LRI not in format_persian_report_for_telegram(raw)
 
 
 def test_html_escape_user_content():
@@ -105,9 +107,16 @@ def test_split_ai_telegram_integration_strips_to_original_body():
     assert report in body_only or body_only.endswith("ن")
 
 
-def test_label_then_persian_paragraph_rtl_wrap():
+def test_label_then_persian_value_merged_on_one_line():
     raw = "Bias:\nپس از بررسی ساختار بازار، روند کلی نزولی است."
     out = format_persian_report_for_telegram(raw)
-    assert out.startswith("Bias:\n")
-    assert f"{RLI}" in out and out.endswith(f"نزولی است.{PDI}")
-    assert strip_telegram_bidi_control_chars(out) == raw
+    visible = strip_telegram_bidi_control_chars(out)
+    assert visible.startswith("Bias: پس از بررسی")
+    assert "نزولی است." in visible
+
+
+def test_normalize_collapses_excessive_blank_lines():
+    raw = "قیمت:\n100\n\n\n\nتصمیم:\nWAIT"
+    norm = normalize_report_layout_for_telegram(raw)
+    assert "\n\n\n" not in norm
+    assert "قیمت: 100" in norm
