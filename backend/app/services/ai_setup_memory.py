@@ -804,6 +804,12 @@ async def _persist_conditional_setup(
         meta["reason"] = err or "conditional_parse_failed"
         return None, meta
 
+    from app.services.ai_setup_quality_gates import (
+        enrich_structured_audit,
+        merge_setup_quality_audit,
+        validate_setup_quality_gates,
+    )
+
     direction = plan["potential_direction"]
     dup = await _find_duplicate_open(session, symbol=symbol, direction=direction, entry=plan["proposed_entry_mid"])
     if dup:
@@ -811,6 +817,20 @@ async def _persist_conditional_setup(
             meta["skipped"] = True
             meta["reason"] = "setup_locked_active_position"
             return None, meta
+        quality_err, quality_audit = await validate_setup_quality_gates(
+            session,
+            symbol=symbol,
+            structured=structured,
+            market_intelligence=market_intelligence,
+            exclude_setup_ids={dup.setup_id},
+            is_revision=True,
+        )
+        if quality_err:
+            meta["skipped"] = True
+            meta["reason"] = quality_err
+            meta["quality_audit"] = quality_audit
+            return None, meta
+        structured = enrich_structured_audit(structured, quality_audit)
         _store_original_forecast(dup)
         from app.services.entry_execution_settings import get_paper_entry_execution_config
 
@@ -827,16 +847,16 @@ async def _persist_conditional_setup(
         dup.expires_at = datetime.fromisoformat(plan["expires_at"])
         dup.status = "open"
         dup.thesis_fa = structured.get("trade_reason") or structured.get("structure_summary") or dup.thesis_fa
+        dup.structured_snapshot = structured
+        notes = _notes(dup)
+        merge_setup_quality_audit(notes, quality_audit, run_id=run_id)
+        _save_notes(dup, notes)
         meta["updated"] = True
         meta["setup_id"] = dup.setup_id
         meta["reason"] = "conditional_revision"
+        meta["quality_audit"] = quality_audit
         await session.flush()
         return dup, meta
-
-    from app.services.ai_setup_quality_gates import (
-        enrich_structured_audit,
-        validate_setup_quality_gates,
-    )
     from app.services.entry_execution_settings import get_paper_entry_execution_config
 
     quality_err, quality_audit = await validate_setup_quality_gates(
@@ -1174,15 +1194,9 @@ async def build_ai_memory_context(
     closed = await load_recent_closed_setups(session, symbol)
     recent = await load_recent_analysis_summaries(session)
     sim_paper = await _load_sim_paper_position_summaries(session, symbol)
-    recent_losses = [
-        p
-        for p in sim_paper
-        if p.get("status") == "closed"
-        and (
-            (p.get("net_pnl_usdt") is not None and float(p["net_pnl_usdt"]) < 0)
-            or "sl" in str(p.get("close_reason") or "").lower()
-        )
-    ][:4]
+    from app.services.ai_setup_quality_gates import is_sim_summary_loss
+
+    recent_losses = [p for p in sim_paper if is_sim_summary_loss(p)][:4]
     return {
         "symbol": symbol,
         "sim_paper_positions": sim_paper,
@@ -1197,7 +1211,7 @@ async def build_ai_memory_context(
             "User report is server-formatted; output trader JSON only (previous_setup_line / previous_result_line).",
             "Never claim a trade was executed unless paper_fill_recorded is true.",
             "original_forecast is immutable; revision_history holds later AI assessments.",
-            "If a same-direction paper trade recently hit SL/loss, a new same-direction setup requires setup_independence + distinct_new_setup with new ICT evidence (not price drift alone).",
+            "If a same-direction paper trade recently hit SL/loss (status sl_hit or loss), immediate entries need objective ICT sequence on closed 5m bars AFTER that loss; conditional WAIT defers proof to the monitor.",
             "Evaluate 4H/1H structure, 15m/5m momentum, and market_intelligence as context only — never replace ICT confirmations.",
         ],
         "internal_context": True,

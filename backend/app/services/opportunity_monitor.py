@@ -437,6 +437,42 @@ async def _attempt_ready_paper_order(
         }
         return False
 
+    from app.config import get_effective_settings
+    from app.services.ai_setup_quality_gates import validate_ready_setup_before_paper_order
+    from app.services.market_data import MarketDataService
+
+    latest_5m = None
+    try:
+        bundle = await MarketDataService(get_effective_settings()).fetch_kline_bundle(
+            setup.symbol, "5m", limit=4
+        )
+        if bundle.closed:
+            latest_5m = bundle.closed[-1]
+    except Exception:
+        latest_5m = None
+    pre_ok, pre_reason = await validate_ready_setup_before_paper_order(
+        session,
+        setup,
+        latest_closed_5m=latest_5m,
+        now_ms=int(now.timestamp() * 1000),
+    )
+    if not pre_ok:
+        setup.lifecycle_state = wait_state_for_direction(setup.direction)
+        setup.last_rejection_reason = pre_reason or "pre_order_quality_rejected"
+        setup.last_validation_result = {
+            "ok": False,
+            "reason": pre_reason,
+            "ict_confirmed": True,
+            "pre_order_gate": True,
+        }
+        append_timeline_event(
+            setup,
+            "paper_order_blocked_pre_quality",
+            reason=pre_reason,
+            at_ms=int(now.timestamp() * 1000),
+        )
+        return False
+
     if await _has_position_for_setup(session, setup.setup_id):
         setup.lifecycle_state = PENDING_ENTRY
         return True
