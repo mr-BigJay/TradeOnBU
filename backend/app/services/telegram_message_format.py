@@ -12,28 +12,39 @@ TELEGRAM_CAPTION_MAX_LENGTH = 1024
 
 # Unicode BiDi isolates (invisible on clients that honor BiDi).
 LRI = "\u2066"  # left-to-right isolate — embedded tickers, numbers, timestamps
-RLI = "\u2067"  # right-to-left isolate — Persian narrative runs
+RLI = "\u2067"  # right-to-left isolate — reserved; avoid whole-line wraps for readability
 PDI = "\u2069"  # pop directional isolate
+
+_BIDI_OPEN = frozenset({LRI, RLI})
+_BIDI_ALL = frozenset({LRI, RLI, PDI})
 
 _PERSIAN_RE = re.compile(r"[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]")
 
-# English legacy and Persian report headings (longest labels first).
+# Report field labels (longest first). Trailing colon required for standalone label lines.
 _REPORT_LABELS: tuple[str, ...] = (
     "ریسک به بازده پیشنهادی (R:R):",
     "حد ضرر پیشنهادی (SL):",
     "هدف اول پیشنهادی (TP1):",
+    "ریسک به بازده (R:R):",
+    "حد ضرر (SL):",
+    "هدف اول (TP1):",
+    "هدف دوم (TP2):",
     "بررسی ستاپ قبلی:",
     "دلایل تحلیل ICT:",
+    "وضعیت کلی بازار:",
+    "معامله خلاف روند غالب:",
+    "سناریوی مشروط:",
     "تأیید لازم:",
     "ابطال سناریو:",
     "تأیید ورود:",
-    "روند بازار:",
-    "محدوده ورود:",
     "جهت احتمالی:",
     "دلایل عدم ورود:",
+    "روند بازار:",
+    "محدوده ورود:",
     "در انتظار:",
     "تصمیم:",
     "قیمت:",
+    "ستاپ:",
     "ورود:",
     "Confirmation required:",
     "ICT Reason:",
@@ -45,7 +56,6 @@ _REPORT_LABELS: tuple[str, ...] = (
     "TP:",
 )
 
-# LTR islands inside Persian prose (order: longer / specific patterns first).
 _LTR_ISLAND_RE = re.compile(
     r"(?:"
     r"[A-Z]{2,15}(?:USDT|USD|PERP)\b|"
@@ -62,7 +72,7 @@ _LTR_ISLAND_RE = re.compile(
 
 _HTML_ESCAPE = str.maketrans({"&": "&amp;", "<": "&lt;", ">": "&gt;"})
 
-_MARKDOWN_V2_SPECIAL = r"_*[]()~`>#+-=|{}.!"
+_MARKDOWN_V2_SPECIAL = r"_*[]()~`>#+-=|{}."
 
 
 def strip_telegram_bidi_control_chars(text: str) -> str:
@@ -76,12 +86,15 @@ def strip_telegram_bidi_control_chars(text: str) -> str:
     )
 
 
+def _already_has_bidi_controls(text: str) -> bool:
+    return any(ch in _BIDI_ALL for ch in text)
+
+
 def escape_telegram_html(text: str) -> str:
     return text.translate(_HTML_ESCAPE)
 
 
 def escape_telegram_markdown_legacy(text: str) -> str:
-    """Escape Telegram legacy Markdown (not MarkdownV2) special chars in user/model text."""
     out: list[str] = []
     for ch in text:
         if ch in ("_", "*", "`", "["):
@@ -130,19 +143,73 @@ def _match_report_label(line: str) -> tuple[str, str] | None:
     return None
 
 
-def _isolate_persian_run(text: str) -> str:
-    if not text or not _contains_persian(text):
-        return text
-    inner = isolate_ltr_tokens_in_persian(text)
-    return f"{RLI}{inner}{PDI}"
+def _is_label_only_line(line: str) -> bool:
+    matched = _match_report_label(line)
+    return matched is not None and matched[1] == ""
+
+
+def _should_not_merge_as_value(next_line: str) -> bool:
+    stripped = next_line.strip()
+    if not stripped:
+        return True
+    if stripped.startswith("- "):
+        return True
+    if _match_report_label(stripped) is not None:
+        return True
+    if stripped.startswith("تحلیل ICT"):
+        return True
+    return False
+
+
+def join_label_value_lines(lines: list[str]) -> list[str]:
+    """Merge standalone label lines with the following value line (server report layout)."""
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+        if _is_label_only_line(stripped):
+            label_match = _match_report_label(stripped)
+            assert label_match is not None
+            label, _ = label_match
+            j = i + 1
+            while j < len(lines) and not lines[j].strip():
+                j += 1
+            if j < len(lines) and not _should_not_merge_as_value(lines[j]):
+                lead = line[: len(line) - len(line.lstrip())]
+                value = lines[j].strip()
+                out.append(f"{lead}{label} {value}")
+                i = j + 1
+                continue
+        out.append(line)
+        i += 1
+    return out
+
+
+def normalize_report_layout_for_telegram(report_fa: str) -> str:
+    """
+    Collapse excessive blank lines and keep each field label on the same line as its value.
+    Visible text is preserved; only whitespace layout changes.
+    """
+    if not report_fa:
+        return report_fa
+    lines = [ln.rstrip() for ln in report_fa.split("\n")]
+    lines = join_label_value_lines(lines)
+    out: list[str] = []
+    blank_run = 0
+    for line in lines:
+        if not line.strip():
+            blank_run += 1
+            if blank_run <= 1:
+                out.append("")
+            continue
+        blank_run = 0
+        out.append(line)
+    return "\n".join(out).strip("\n")
 
 
 def isolate_ltr_tokens_in_persian(text: str) -> str:
-    """
-    Wrap embedded LTR tokens (symbols, directions, signed prices, %, timestamps) in LRI…PDI
-    when the line contains Persian script. Visible characters unchanged.
-    """
-    if not text or not _contains_persian(text):
+    if not text or not _contains_persian(text) or _already_has_bidi_controls(text):
         return text
     parts: list[str] = []
     last = 0
@@ -151,7 +218,10 @@ def isolate_ltr_tokens_in_persian(text: str) -> str:
         if before:
             parts.append(before)
         token = match.group()
-        parts.append(f"{LRI}{token}{PDI}")
+        if _already_has_bidi_controls(token):
+            parts.append(token)
+        else:
+            parts.append(f"{LRI}{token}{PDI}")
         last = match.end()
     tail = text[last:]
     if tail:
@@ -159,59 +229,52 @@ def isolate_ltr_tokens_in_persian(text: str) -> str:
     return "".join(parts) if parts else text
 
 
+def apply_line_bidi(line: str) -> str:
+    if not line or _already_has_bidi_controls(line):
+        return line
+    if _contains_persian(line):
+        return isolate_ltr_tokens_in_persian(line)
+    return line
+
+
 def format_persian_report_for_telegram(report_fa: str) -> str:
-    """
-    Apply RTL isolates for Persian narrative and LTR isolates for embedded trading tokens.
-    English label lines and pure LTR value lines are unchanged.
-    """
+    """Normalize layout, then isolate embedded LTR tokens in Persian lines (no double-wrap)."""
     if not report_fa:
         return report_fa
-
-    lines = report_fa.split("\n")
-    out: list[str] = []
-    after_label = False
-
-    for line in lines:
-        matched = _match_report_label(line)
-        if matched is not None:
-            label, remainder = matched
-            lead = line[: len(line) - len(line.lstrip())]
-            if remainder == "":
-                out.append(line)
-                after_label = True
-            else:
-                if _contains_persian(remainder):
-                    out.append(f"{lead}{label} {_isolate_persian_run(remainder)}")
-                else:
-                    out.append(line)
-                after_label = False
-            continue
-
-        if after_label and _contains_persian(line):
-            out.append(_isolate_persian_run(line))
-        elif _contains_persian(line):
-            out.append(_isolate_persian_run(line))
-        else:
-            out.append(line)
-            if line.strip():
-                after_label = False
-
-    return "\n".join(out)
+    normalized = normalize_report_layout_for_telegram(report_fa)
+    return "\n".join(apply_line_bidi(ln) for ln in normalized.split("\n"))
 
 
 def prepare_telegram_outbound_text(text: str, *, parse_mode: ParseMode = None) -> str:
-    """Escape for parse_mode when set; always apply Persian BiDi for plain AI-style reports."""
     escaped = escape_for_parse_mode(text, parse_mode)
     if parse_mode:
         return escaped
     return format_persian_report_for_telegram(escaped)
 
 
+def _bidi_depth(text: str) -> int:
+    depth = 0
+    for ch in text:
+        if ch in _BIDI_OPEN:
+            depth += 1
+        elif ch == PDI:
+            depth = max(0, depth - 1)
+    return depth
+
+
+def _find_bidi_safe_newline_split(window: str) -> int:
+    pos = len(window)
+    while pos > 0:
+        split_at = window.rfind("\n", 0, pos)
+        if split_at <= 0:
+            return -1
+        if _bidi_depth(window[: split_at + 1]) == 0:
+            return split_at
+        pos = split_at
+    return -1
+
+
 def chunk_telegram_text(text: str, *, limit: int = TELEGRAM_MESSAGE_MAX_LENGTH) -> list[str]:
-    """
-    Split text into Telegram length limits, preferring newline boundaries.
-    Never returns empty strings; a single over-long line is hard-split as last resort.
-    """
     if not text:
         return []
     if len(text) <= limit:
@@ -224,10 +287,21 @@ def chunk_telegram_text(text: str, *, limit: int = TELEGRAM_MESSAGE_MAX_LENGTH) 
             chunks.append(rest)
             break
         window = rest[:limit]
-        split_at = window.rfind("\n")
+        split_at = _find_bidi_safe_newline_split(window)
         if split_at <= 0:
-            chunks.append(rest[:limit])
-            rest = rest[limit:]
+            split_at = window.rfind("\n\n")
+            if split_at <= 0:
+                split_at = limit
+                if _bidi_depth(rest[:split_at]) != 0:
+                    split_at = max(1, limit - 64)
+            piece = rest[:split_at]
+            if not piece:
+                piece = rest[:limit]
+                split_at = len(piece)
+            chunks.append(piece)
+            rest = rest[split_at:]
+            if rest.startswith("\n"):
+                rest = rest[1:]
             continue
         piece = rest[: split_at + 1]
         chunks.append(piece)
@@ -241,7 +315,6 @@ def split_header_and_body_chunks(
     body: str,
     limit: int = TELEGRAM_MESSAGE_MAX_LENGTH,
 ) -> list[str]:
-    """First chunk includes header; following chunks are body-only with safe splitting."""
     body = body or ""
     header = header or ""
     if not body:

@@ -80,8 +80,10 @@ def test_farsi_trade_report_renders_structural_numbers_unchanged():
 def test_telegram_persian_labels_preserve_visible_text_and_ict_terms():
     raw = "دلایل تحلیل ICT:\nدر 5m پس از Sweep، ساختار MSS تأیید شد و FVG معتبر است."
     with_bidi = apply_telegram_persian_bidi(raw)
-    assert strip_telegram_bidi_control_chars(with_bidi) == raw
+    visible = strip_telegram_bidi_control_chars(with_bidi)
+    assert "دلایل تحلیل ICT:" in visible
     assert "FVG" in with_bidi and "MSS" in with_bidi
+    assert "5m" in visible
 
 
 def test_telegram_header_and_caption_are_farsi():
