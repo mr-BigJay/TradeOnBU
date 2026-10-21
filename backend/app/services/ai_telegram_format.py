@@ -4,9 +4,13 @@ from datetime import datetime
 from typing import Any
 
 from app.domain.tehran_time import format_tehran
-from app.services.telegram_bidi import apply_telegram_persian_bidi
+from app.services.telegram_message_format import (
+    TELEGRAM_MESSAGE_MAX_LENGTH,
+    format_persian_report_for_telegram,
+    split_header_and_body_chunks,
+)
 
-TELEGRAM_PLAIN_TEXT_LIMIT = 4096
+TELEGRAM_PLAIN_TEXT_LIMIT = TELEGRAM_MESSAGE_MAX_LENGTH
 
 
 def format_ai_chart_caption(
@@ -34,7 +38,7 @@ def format_ai_chart_caption(
     if analyzed_at:
         lines.append(f"زمان تحلیل (تهران): {format_tehran(analyzed_at)}")
     lines.append("فقط معاملات آزمایشی؛ هیچ سفارش واقعی ثبت نمی‌شود.")
-    text = "\n".join(lines)
+    text = format_persian_report_for_telegram("\n".join(lines))
     return text[:max_len]
 
 
@@ -69,26 +73,16 @@ def split_ai_telegram_report_messages(
 ) -> list[str]:
     """Split full Persian report into Telegram-safe plain-text messages (header on first part only)."""
     header = build_ai_telegram_header(decision=decision, validation=validation)
-    body = apply_telegram_persian_bidi(report_fa or "")
-    if not body:
-        return [header.rstrip()] if header.strip() else []
+    raw_body = report_fa or ""
+    if not raw_body.strip():
+        return split_header_and_body_chunks(header=header, body="", limit=limit)
+    from app.services.telegram_message_format import chunk_telegram_text
 
-    if len(header) + len(body) <= limit:
-        return [header + body]
-
+    raw_parts = split_header_and_body_chunks(header=header, body=raw_body, limit=limit)
     messages: list[str] = []
-    first_body_budget = limit - len(header)
-    if first_body_budget <= 0:
-        messages.append(header[:limit])
-        cursor = 0
-    else:
-        messages.append(header + body[:first_body_budget])
-        cursor = first_body_budget
-
-    while cursor < len(body):
-        chunk = body[cursor : cursor + limit]
-        messages.append(chunk)
-        cursor += limit
+    for part in raw_parts:
+        formatted = format_persian_report_for_telegram(part)
+        messages.extend(chunk_telegram_text(formatted, limit=limit))
     return messages
 
 

@@ -163,9 +163,12 @@ def test_split_ai_telegram_report_preserves_full_long_body():
     )
     assert len(parts) >= 2
     assert all(len(p) <= 4096 for p in parts)
-    assert "".join(parts).endswith("ف")
-    assert body in "".join(parts)
-    assert parts[0].startswith("تحلیل ICT — عدم ورود")
+    from app.services.telegram_message_format import strip_telegram_bidi_control_chars
+
+    joined = strip_telegram_bidi_control_chars("".join(parts))
+    assert joined.endswith("ف")
+    assert body in joined
+    assert "تحلیل ICT — عدم ورود" in strip_telegram_bidi_control_chars(parts[0])
 
 
 @pytest.mark.asyncio

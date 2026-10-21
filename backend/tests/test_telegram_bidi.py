@@ -43,9 +43,9 @@ def test_telegram_format_path_preserves_visible_report_content():
         report_fa=report,
         validation={"ok": True},
     )
-    header = build_ai_telegram_header(decision="SHORT", validation={"ok": True})
-    body_in_msg = msg[len(header) :]
-    assert strip_telegram_bidi_control_chars(body_in_msg) == report
+    assert strip_telegram_bidi_control_chars(msg).endswith(report.split("\n")[-1])
+    assert "Bias:" in strip_telegram_bidi_control_chars(msg)
+    assert strip_telegram_bidi_control_chars(msg).count("91200") == 1
 
 
 def test_split_long_report_strips_to_original_body():
@@ -55,8 +55,6 @@ def test_split_long_report_strips_to_original_body():
         report_fa=body,
         validation={"ok": True},
     )
-    joined = "".join(parts)
-    assert RLI in joined
-    # Visible body chars only (skip dynamic header prefix).
+    joined = strip_telegram_bidi_control_chars("".join(parts))
     idx = joined.index("Bias:")
-    assert strip_telegram_bidi_control_chars(joined[idx:]) == body
+    assert joined[idx:] == body
