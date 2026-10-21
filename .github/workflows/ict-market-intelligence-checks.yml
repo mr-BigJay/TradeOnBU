@@ -1,0 +1,35 @@
+name: ICT Market Intelligence Checks
+
+on:
+  pull_request:
+    paths:
+      - "backend/app/services/ai_market_intelligence.py"
+      - "backend/tests/test_ai_market_intelligence.py"
+      - ".github/workflows/ict-market-intelligence-checks.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Prepare isolated database
+        run: mkdir -p data
+      - name: Backend regression tests
+        env:
+          SKIP_CONFIG_GUARD: "1"
+          DISABLE_APP_BACKGROUND: "1"
+          DATABASE_URL: sqlite+aiosqlite:///./data/test_tradeonbu.db
+        run: python3 -m pytest -q
