@@ -171,9 +171,26 @@ async def test_ready_with_auto_paper_off_does_not_create_order(session):
     from unittest.mock import AsyncMock, patch
     from app.services.opportunity_monitor import _attempt_ready_paper_order
 
+    from app.domain.candle_utils import candle_close_ms, interval_ms
+    from app.domain.candles import Candle
+
+    now = datetime.now(timezone.utc)
+    now_ms = int(now.timestamp() * 1000)
+    step = interval_ms("5m")
+    open_ms = (now_ms // step) * step - step
+    closed_bar = Candle(time_ms=open_ms, open=100, high=101, low=99, close=100, volume=1.0)
+    assert now_ms >= candle_close_ms(closed_bar, "5m")
+
     summary = {"orders": 0}
     with patch("app.services.opportunity_monitor._net_rr_ok", AsyncMock(return_value=(True, 2.2))):
-        ok = await _attempt_ready_paper_order(session, setup, now=datetime.now(timezone.utc), summary=summary)
+        ok = await _attempt_ready_paper_order(
+            session,
+            setup,
+            now=now,
+            summary=summary,
+            latest_closed_5m=closed_bar,
+            market_data_verified=True,
+        )
     assert ok is False
     assert setup.lifecycle_state == READY_LONG
     count = (await session.execute(select(SimPosition))).scalars().all()

@@ -274,7 +274,11 @@ class SimPositionMonitorService:
                 and pos.limit_entry_price
             ):
                 from app.models import AiProposedSetup
-                from app.services.paper_auto_trading import auto_paper_entry_still_valid
+                from app.services.ai_setup_quality_gates import pick_latest_closed_5m
+                from app.services.paper_auto_trading import (
+                    auto_paper_entry_still_valid,
+                    auto_paper_execution_quality_ok,
+                )
 
                 setup_row = (
                     await session.execute(
@@ -378,7 +382,11 @@ class SimPositionMonitorService:
 
                 if pos.status == "pending_entry" and pos.order_type == "limit" and pos.limit_entry_price:
                     from app.models import AiProposedSetup
-                    from app.services.paper_auto_trading import auto_paper_entry_still_valid
+                    from app.services.ai_setup_quality_gates import pick_latest_closed_5m
+                    from app.services.paper_auto_trading import (
+                        auto_paper_entry_still_valid,
+                        auto_paper_execution_quality_ok,
+                    )
 
                     if pos.ai_setup_id:
                         setup_row = (
@@ -403,7 +411,19 @@ class SimPositionMonitorService:
                             processed += 1
                             continue
 
-                    still_ok, block_reason = await auto_paper_entry_still_valid(session, pos)
+                    from app.domain.candle_utils import candle_close_ms
+
+                    fill_as_of_ms = candle_close_ms(bar, "1m")
+                    still_ok, block_reason = await auto_paper_execution_quality_ok(
+                        session,
+                        pos,
+                        latest_closed_5m=None,
+                        market_data_verified=five_m_data_verified,
+                        now_ms=now_ms,
+                        phase="fill",
+                        closed_5m=closed_5m if five_m_data_verified else None,
+                        as_of_ms=fill_as_of_ms,
+                    )
                     if not still_ok:
                         await self.positions.cancel_pending(session, pos.public_id, commit=False)
                         pos.extra = {**pos.extra, "auto_paper_cancel_reason": block_reason}
@@ -426,9 +446,19 @@ class SimPositionMonitorService:
                             continue
                         fill_this_bar = True
                     if fill_this_bar:
-                        ok_fill, _ = await auto_paper_entry_still_valid(session, pos)
+                        ok_fill, fill_block = await auto_paper_execution_quality_ok(
+                            session,
+                            pos,
+                            latest_closed_5m=None,
+                            market_data_verified=five_m_data_verified,
+                            now_ms=now_ms,
+                            phase="fill",
+                            closed_5m=closed_5m if five_m_data_verified else None,
+                            as_of_ms=fill_as_of_ms,
+                        )
                         if not ok_fill:
                             await self.positions.cancel_pending(session, pos.public_id, commit=False)
+                            pos.extra = {**(pos.extra or {}), "auto_paper_cancel_reason": fill_block}
                             prev_ms = bar.time_ms
                             pos.last_processed_candle_ms = bar.time_ms
                             processed += 1

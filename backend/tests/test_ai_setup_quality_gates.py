@@ -13,13 +13,17 @@ from app.domain.candles import Candle
 from app.domain.setup_lifecycle import READY_SHORT, WAIT_LONG, WAIT_SHORT
 from app.models import AiProposedSetup, SimPosition
 from app.services.ai_setup_memory import create_setup_from_structured
+from app.domain.candle_utils import candle_close_ms, interval_ms
+
 from app.services.ai_setup_quality_gates import (
+    _active_sim_same_direction_excluding_setup,
     _recent_losing_sim_same_direction,
     confirmations_strictly_after_ms,
     is_sim_summary_loss,
     objective_sequence_evidence_after_ms,
     sim_position_failure_ms,
     validate_ready_setup_before_paper_order,
+    validate_setup_quality_at_execution,
     validate_setup_quality_gates,
 )
 from app.services.market_data import KlineBundle
@@ -27,6 +31,15 @@ from tests.test_ai_trader_persistence_contract import (
     _production_conditional_wait_long,
     _production_immediate_long_monitored,
 )
+
+
+def _closed_5m_bar(*, now_ms: int | None = None, close: float = 84000.0) -> tuple[Candle, int]:
+    now_ms = now_ms or int(datetime.now(timezone.utc).timestamp() * 1000)
+    step = interval_ms("5m")
+    open_ms = (now_ms // step) * step - step
+    bar = Candle(time_ms=open_ms, open=close, high=close + 50, low=close - 50, close=close, volume=1.0)
+    assert now_ms >= candle_close_ms(bar, "5m")
+    return bar, now_ms
 
 
 def _loss_position(*, public_id: str, status: str = "sl_hit") -> SimPosition:
@@ -213,11 +226,13 @@ async def test_pre_order_rejects_confirmations_stamped_before_prior_sl_hit():
         )
         session.add(setup)
         await session.commit()
+        bar, now_ms = _closed_5m_bar()
         ok, reason = await validate_ready_setup_before_paper_order(
             session,
             setup,
-            latest_closed_5m=None,
-            now_ms=int(datetime.now(timezone.utc).timestamp() * 1000),
+            latest_closed_5m=bar,
+            now_ms=now_ms,
+            market_data_verified=True,
         )
         assert ok is False
         assert reason == "confirmations_not_after_prior_same_direction_loss"
@@ -265,11 +280,13 @@ async def test_pre_order_blocks_stacked_same_direction_sim_position():
         )
         session.add(setup)
         await session.commit()
+        bar, now_ms = _closed_5m_bar()
         ok, reason = await validate_ready_setup_before_paper_order(
             session,
             setup,
-            latest_closed_5m=None,
-            now_ms=int(datetime.now(timezone.utc).timestamp() * 1000),
+            latest_closed_5m=bar,
+            now_ms=now_ms,
+            market_data_verified=True,
         )
         assert ok is False
         assert reason == "stacked_same_direction_paper_position"
@@ -294,6 +311,218 @@ def test_confirmations_strictly_after_ms_requires_increasing_after_failure():
     )
     assert confirmations_strictly_after_ms(setup, 500)[0] is True
     assert confirmations_strictly_after_ms(setup, 2500)[0] is False
+
+
+@pytest.mark.asyncio
+async def test_pre_order_fail_closed_when_market_data_unverified():
+    await init_db()
+    async with SessionLocal() as session:
+        setup = AiProposedSetup(
+            setup_id="pre-q-unverified",
+            run_id=1,
+            symbol="BTCUSDT",
+            direction="LONG",
+            status="open",
+            lifecycle_state=READY_SHORT,
+            entry_price=84000.0,
+            stop_loss=83500.0,
+            take_profit=86000.0,
+            invalidation_level=83000.0,
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
+            confirmation_state={"sequence": [], "required": [], "confirmation_timestamps": {}},
+        )
+        session.add(setup)
+        await session.commit()
+        bar, now_ms = _closed_5m_bar()
+        ok, reason = await validate_ready_setup_before_paper_order(
+            session,
+            setup,
+            latest_closed_5m=bar,
+            now_ms=now_ms,
+            market_data_verified=False,
+        )
+        assert ok is False
+        assert reason == "market_data_unverified_for_order"
+
+
+@pytest.mark.asyncio
+async def test_stacked_same_direction_includes_manual_position_with_null_ai_setup_id():
+    await init_db()
+    async with SessionLocal() as session:
+        session.add(
+            SimPosition(
+                public_id="manual-short-open",
+                symbol="BTCUSDT",
+                direction="SHORT",
+                status="open",
+                margin_usdt=50.0,
+                leverage=10,
+                entry_price=84100.0,
+                stop_loss=84600.0,
+                take_profit=82100.0,
+                ai_setup_id=None,
+            )
+        )
+        setup = AiProposedSetup(
+            setup_id="auto-short-setup",
+            run_id=2,
+            symbol="BTCUSDT",
+            direction="SHORT",
+            status="open",
+            lifecycle_state=READY_SHORT,
+            entry_price=84000.0,
+            stop_loss=84500.0,
+            take_profit=82000.0,
+            invalidation_level=85200.0,
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
+            confirmation_state={
+                "sequence": ["liquidity_sweep", "mss", "entry_zone_touch"],
+                "required": ["liquidity_sweep", "mss", "entry_zone_touch"],
+                "confirmation_timestamps": {
+                    "liquidity_sweep": 1_700_000_000_000,
+                    "mss": 1_700_000_300_000,
+                    "entry_zone_touch": 1_700_000_600_000,
+                },
+            },
+        )
+        session.add(setup)
+        await session.commit()
+        other = await _active_sim_same_direction_excluding_setup(
+            session,
+            symbol="BTCUSDT",
+            direction="SHORT",
+            setup_id=setup.setup_id,
+        )
+        assert other is not None
+        assert other.public_id == "manual-short-open"
+
+
+@pytest.mark.asyncio
+async def test_fill_revalidation_rejects_stale_pending_after_structural_invalidation():
+    await init_db()
+    async with SessionLocal() as session:
+        setup = AiProposedSetup(
+            setup_id="fill-reval-1",
+            run_id=3,
+            symbol="BTCUSDT",
+            direction="SHORT",
+            status="open",
+            lifecycle_state="PENDING_ENTRY",
+            entry_price=84000.0,
+            stop_loss=84500.0,
+            take_profit=82000.0,
+            invalidation_level=85200.0,
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
+            confirmation_state={
+                "sequence": ["liquidity_sweep", "mss", "entry_zone_touch"],
+                "required": ["liquidity_sweep", "mss", "entry_zone_touch"],
+                "confirmation_timestamps": {
+                    "liquidity_sweep": 1_700_000_000_000,
+                    "mss": 1_700_000_300_000,
+                    "entry_zone_touch": 1_700_000_600_000,
+                },
+            },
+        )
+        session.add(setup)
+        await session.commit()
+        bar, now_ms = _closed_5m_bar(close=85300.0)
+        from app.domain.candle_utils import candle_close_ms
+
+        ok, reason = await validate_setup_quality_at_execution(
+            session,
+            setup,
+            latest_closed_5m=None,
+            market_data_verified=True,
+            now_ms=now_ms,
+            phase="fill",
+            exclude_sim_public_id="pending-sim-1",
+            closed_5m=[bar],
+            as_of_ms=candle_close_ms(bar, "5m"),
+        )
+        assert ok is False
+        assert reason == "structural_invalidation_level_breached"
+
+
+def _fvg_structured_bos() -> dict:
+    return {
+        "chart_overlays": {
+            "fvg_zones": [{"low": 99.5, "high": 100.5, "direction": "bullish"}],
+        },
+        "conditional_entry_zone_low": 99.0,
+        "conditional_entry_zone_high": 101.0,
+    }
+
+
+@pytest.mark.parametrize(
+    "confirmation_type,sequence",
+    [
+        ("bos_fvg_retest", ["bos", "fvg_retest", "entry_zone_touch"]),
+        ("mss_fvg_retest", ["mss", "fvg_retest", "entry_zone_touch"]),
+    ],
+)
+def test_fvg_retest_evidence_positive_with_structured_zones(confirmation_type, sequence):
+    structured = _fvg_structured_bos()
+    t0 = 1_700_000_000_000
+    bars: list[Candle] = []
+    for i in range(14):
+        bars.append(
+            Candle(
+                time_ms=t0 + i * 300_000,
+                open=100.0,
+                high=100.5,
+                low=99.5,
+                close=100.0,
+                volume=1.0,
+            )
+        )
+    bars.append(
+        Candle(time_ms=t0 + 14 * 300_000, open=100.0, high=101.2, low=99.9, close=101.0, volume=1.0)
+    )
+    bars.append(
+        Candle(time_ms=t0 + 15 * 300_000, open=100.2, high=100.6, low=99.4, close=100.0, volume=1.0)
+    )
+    bars.append(
+        Candle(time_ms=t0 + 16 * 300_000, open=100.0, high=101.0, low=99.8, close=100.5, volume=1.0)
+    )
+    ok, hits = objective_sequence_evidence_after_ms(
+        direction="LONG",
+        sequence=sequence,
+        closed_5m=bars,
+        after_ms=t0 - 1,
+        zone_lo=99.0,
+        zone_hi=101.0,
+        structured=structured,
+    )
+    assert "fvg_retest" in hits
+    assert hits["fvg_retest"] >= t0
+    assert ok is True
+
+
+@pytest.mark.parametrize(
+    "confirmation_type,sequence",
+    [
+        ("bos_fvg_retest", ["bos", "fvg_retest", "entry_zone_touch"]),
+        ("mss_fvg_retest", ["mss", "fvg_retest", "entry_zone_touch"]),
+    ],
+)
+def test_fvg_retest_evidence_negative_without_fvg_zones(confirmation_type, sequence):
+    t0 = 1_700_000_000_000
+    bars = [
+        Candle(time_ms=t0 + 300_000, open=100.0, high=100.2, low=99.4, close=100.0, volume=1),
+        Candle(time_ms=t0 + 600_000, open=100.0, high=100.3, low=99.6, close=100.1, volume=1),
+        Candle(time_ms=t0 + 900_000, open=100.0, high=101.0, low=99.8, close=100.5, volume=1),
+    ]
+    ok, hits = objective_sequence_evidence_after_ms(
+        direction="LONG",
+        sequence=sequence,
+        closed_5m=bars,
+        after_ms=t0 - 1,
+        zone_lo=99.0,
+        zone_hi=101.0,
+        structured={},
+    )
+    assert "fvg_retest" not in hits
+    assert ok is False
 
 
 def test_objective_sequence_evidence_false_when_tokens_missing_on_bars():

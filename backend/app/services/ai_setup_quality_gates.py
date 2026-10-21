@@ -5,8 +5,10 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.domain.candle_utils import candle_close_ms, is_candle_closed
 
 from app.domain.candles import Candle
 from app.domain.time_utils import ensure_utc
@@ -106,6 +108,25 @@ def merge_setup_quality_audit(notes: dict[str, Any], audit: dict[str, Any], *, r
         history.append({"run_id": run_id, "audit": audit})
 
 
+def pick_latest_closed_5m(closed_5m: list[Candle], *, now_ms: int) -> Candle | None:
+    for bar in reversed(sorted(closed_5m, key=lambda c: c.time_ms)):
+        if is_candle_closed(bar, "5m", now_ms):
+            return bar
+    return None
+
+
+def pick_latest_closed_5m_as_of(closed_5m: list[Candle], *, as_of_ms: int) -> Candle | None:
+    """Last 5m bar whose close time is at or before as_of_ms (event-time fill reconciliation)."""
+    best: Candle | None = None
+    best_close = -1
+    for bar in closed_5m:
+        close_ms = candle_close_ms(bar, "5m")
+        if close_ms <= as_of_ms and close_ms > best_close:
+            best = bar
+            best_close = close_ms
+    return best
+
+
 def objective_sequence_evidence_after_ms(
     *,
     direction: str,
@@ -114,6 +135,7 @@ def objective_sequence_evidence_after_ms(
     after_ms: int,
     zone_lo: float,
     zone_hi: float,
+    structured: dict[str, Any] | None = None,
 ) -> tuple[bool, dict[str, int]]:
     """
     True when each sequence token first appears on a strictly later closed 5m open than after_ms
@@ -135,7 +157,7 @@ def objective_sequence_evidence_after_ms(
                 window=window,
                 zone_lo=zone_lo,
                 zone_hi=zone_hi,
-                structured={},
+                structured=structured if isinstance(structured, dict) else {},
             ):
                 if bar.time_ms <= last_ms:
                     return False, hits
@@ -214,17 +236,17 @@ async def _active_sim_same_direction_excluding_setup(
     symbol: str,
     direction: str,
     setup_id: str,
+    exclude_sim_public_id: str | None = None,
 ) -> SimPosition | None:
-    row = (
-        await session.execute(
-            select(SimPosition)
-            .where(SimPosition.symbol == symbol)
-            .where(SimPosition.direction == direction.upper())
-            .where(SimPosition.status.in_(tuple(ACTIVE_SIM_STATUSES)))
-            .where(SimPosition.ai_setup_id != setup_id)
-            .limit(1)
-        )
-    ).scalar_one_or_none()
+    filters = [
+        SimPosition.symbol == symbol,
+        SimPosition.direction == direction.upper(),
+        SimPosition.status.in_(tuple(ACTIVE_SIM_STATUSES)),
+        or_(SimPosition.ai_setup_id.is_(None), SimPosition.ai_setup_id != setup_id),
+    ]
+    if exclude_sim_public_id:
+        filters.append(SimPosition.public_id != exclude_sim_public_id)
+    row = (await session.execute(select(SimPosition).where(*filters).limit(1))).scalar_one_or_none()
     return row
 
 
@@ -364,6 +386,7 @@ async def validate_setup_quality_gates(
                 after_ms=failure_ms,
                 zone_lo=zone_lo,
                 zone_hi=zone_hi,
+                structured=structured,
             )
             checks[-1]["objective_hits_after_failure"] = hit_ms
             if not ok_struct:
@@ -417,26 +440,49 @@ async def validate_setup_quality_gates(
     )
 
 
-async def validate_ready_setup_before_paper_order(
+async def validate_setup_quality_at_execution(
     session: AsyncSession,
     setup: AiProposedSetup,
     *,
     latest_closed_5m: Candle | None,
+    market_data_verified: bool,
     now_ms: int,
+    phase: str = "order",
+    exclude_sim_public_id: str | None = None,
+    closed_5m: list[Candle] | None = None,
+    as_of_ms: int | None = None,
 ) -> tuple[bool, str | None]:
     """
-    Re-validate WAIT/READY thesis on closed data before creating a paper order (no look-ahead).
+    Re-validate on closed 5m data before paper order creation or limit fill (no look-ahead).
+    Does not use stale AI market_regime — only structural invalidation, objective confirmation
+    timestamps vs prior loss, expiry, and same-direction sim stacking.
     """
+    if not market_data_verified:
+        return False, f"market_data_unverified_for_{phase}"
+
+    struct_bar: Candle | None
+    if phase == "fill":
+        bars = list(closed_5m or [])
+        if not bars:
+            return False, f"missing_closed_5m_for_{phase}"
+        struct_bar = pick_latest_closed_5m_as_of(bars, as_of_ms=as_of_ms if as_of_ms is not None else now_ms)
+    else:
+        struct_bar = latest_closed_5m
+        if struct_bar is None:
+            return False, f"missing_latest_closed_5m_for_{phase}"
+        if not is_candle_closed(struct_bar, "5m", now_ms):
+            return False, f"latest_5m_not_closed_at_{phase}"
+
     direction = (setup.direction or "").upper()
     inv = setup.invalidation_level
-    if latest_closed_5m is not None and inv is not None:
-        if _check_invalidation_on_bar(latest_closed_5m, direction=direction, invalidation_level=float(inv)):
+    if inv is not None and struct_bar is not None:
+        if _check_invalidation_on_bar(struct_bar, direction=direction, invalidation_level=float(inv)):
             return False, "structural_invalidation_level_breached"
 
     loss = await _recent_losing_sim_same_direction(session, symbol=setup.symbol, direction=direction)
     if loss is not None:
         failure_ms = sim_position_failure_ms(loss)
-        ok, ts = confirmations_strictly_after_ms(setup, failure_ms)
+        ok, _ts = confirmations_strictly_after_ms(setup, failure_ms)
         if not ok:
             return False, "confirmations_not_after_prior_same_direction_loss"
 
@@ -445,6 +491,7 @@ async def validate_ready_setup_before_paper_order(
         symbol=setup.symbol,
         direction=direction,
         setup_id=setup.setup_id,
+        exclude_sim_public_id=exclude_sim_public_id,
     )
     if other is not None:
         return False, "stacked_same_direction_paper_position"
@@ -454,3 +501,21 @@ async def validate_ready_setup_before_paper_order(
         return False, "setup_expired"
 
     return True, None
+
+
+async def validate_ready_setup_before_paper_order(
+    session: AsyncSession,
+    setup: AiProposedSetup,
+    *,
+    latest_closed_5m: Candle | None,
+    now_ms: int,
+    market_data_verified: bool = True,
+) -> tuple[bool, str | None]:
+    return await validate_setup_quality_at_execution(
+        session,
+        setup,
+        latest_closed_5m=latest_closed_5m,
+        market_data_verified=market_data_verified,
+        now_ms=now_ms,
+        phase="order",
+    )
