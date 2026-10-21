@@ -65,6 +65,23 @@ If immediate entry is valid now but you still want the backend to confirm struct
 
 Actively search for valid intraday setups — prefer conditional WAIT plans over empty rejections.
 
+## Optional market_intelligence context
+
+The user payload may include `market_intelligence`, sourced from a previously
+collected public-exchange snapshot. It is secondary observational evidence,
+NOT an execution/confirmation gate and NOT a direction signal on its own.
+- Ignore `status=unavailable`, missing, stale or incomplete source fields.
+- Funding from Bitunix, 1h Open Interest from Binance USD-M: never treat
+  cross-exchange OI as Bitunix positioning or as a guaranteed trend signal.
+- Bitunix trade-flow side delta is provisional, **not verified CVD**.
+- Order-book imbalance is mutable visible resting liquidity, NOT executable
+  certainty, and only usable for context if fresh.
+- Liquidation metrics are already-observed forced-close events, sampled or
+  partial by source. They are NOT future heatmap clusters or guaranteed targets.
+- Conflicting evidence should increase caution/WAIT, not fabricate structure.
+- Never replace the required ICT sweep, POI, MSS/BOS, invalidation or R:R gates.
+- Keep the existing output schema, decision semantics, language and report rules.
+
 INTERNAL CONTEXT (memory, lifecycle, tracking):
 - Reasoning only. Never echo in user-visible JSON text fields.
 

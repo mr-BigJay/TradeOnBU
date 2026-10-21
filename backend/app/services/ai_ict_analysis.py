@@ -16,6 +16,7 @@ from app.models import AiAnalysisRun, AiProposedSetup
 from app.services.ai_analysis_scheduler import get_or_create_settings, record_run_outcome
 from app.domain.candles import Candle
 from app.services.ai_market_payload import MarketContextError, build_raw_market_payload
+from app.services.ai_market_intelligence import load_ai_market_intelligence
 from app.services.ai_setup_memory import build_ai_memory_context, create_setup_from_structured
 from app.services.ai_telegram_format import format_ai_chart_caption, split_ai_telegram_report_messages
 from app.services.chart_media import chart_artifact_meta, chart_path_for_run
@@ -401,12 +402,15 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
                 candles_by_interval=candles_by_interval,
                 market=market_svc,
             )
+            # Public exchange evidence is optional and must never block ICT analysis.
+            market_intelligence = await load_ai_market_intelligence(session, symbol=symbol)
             await session.commit()
 
         user_payload = json.dumps(
             {
                 "market": market_payload,
                 "memory": memory,
+                "market_intelligence": market_intelligence,
                 "requested_inference": {
                     "model": model,
                     "reasoning_effort": reasoning_effort,
