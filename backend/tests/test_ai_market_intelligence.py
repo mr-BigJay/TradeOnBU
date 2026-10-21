@@ -152,4 +152,4 @@ def test_ict_prompt_still_requires_all_structural_gates():
     assert "market_intelligence" in INSTRUCTIONS
     for term in ("sweep", "POI", "MSS", "R:R"):
         assert term in INSTRUCTIONS
-    assert "NOT verified CVD" in INSTRUCTIONS
+    assert "not verified CVD" in INSTRUCTIONS

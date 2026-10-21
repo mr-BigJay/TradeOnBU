@@ -128,9 +128,14 @@ def _liquidations(raw: Any) -> dict[str, Any] | None:
         if not isinstance(block, dict) or block.get("status") not in ("ok", "partial"):
             continue
         quality = block.get("event_query_quality") or {}
-        if quality.get("truncated"):
+        if not isinstance(quality, dict) or quality.get("truncated"):
             continue
-        one_hour = (block.get("windows") or {}).get("1h") or {}
+        windows = block.get("windows") or {}
+        if not isinstance(windows, dict):
+            continue
+        one_hour = windows.get("1h") or {}
+        if not isinstance(one_hour, dict):
+            continue
         coverage = one_hour.get("coverage")
         if coverage in (None, "unknown", "empty", "observed_none", "truncated") or one_hour.get("query_truncated"):
             continue
@@ -165,7 +170,8 @@ def _order_book(raw: Any, *, snapshot_age_seconds: int) -> dict[str, Any] | None
     if not isinstance(raw, dict) or raw.get("status") != "ok" or raw.get("source") != "bitunix":
         return None
     imbalance = _number(raw.get("imbalance_ratio"))
-    if imbalance is None or abs(imbalance) > 1:
+    levels = _number(raw.get("levels_used"))
+    if imbalance is None or abs(imbalance) > 1 or levels is None or levels < 1:
         return None
     return {
         "source": "bitunix",
