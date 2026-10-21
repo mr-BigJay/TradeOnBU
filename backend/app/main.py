@@ -61,6 +61,13 @@ async def lifespan(app: FastAPI):
     validate_settings(settings)
     Path("data").mkdir(exist_ok=True)
     await init_db()
+    # Retire paid forecast generation and its persisted schedule on every startup.
+    # Historical predictions and public market-data tables are preserved.
+    from app.services.price_forecast.settings_service import retire_forecast_settings
+
+    async with SessionLocal() as session:
+        await retire_forecast_settings(session)
+        await session.commit()
     async with SessionLocal() as session:
         try:
             await refresh_settings_cache(session)
@@ -119,18 +126,17 @@ async def lifespan(app: FastAPI):
             coalesce=True,
         )
 
-        async def _price_forecast_tick() -> None:
-            from app.services.price_forecast.scheduler import execute_scheduled_forecast_if_due
-            from app.services.price_forecast.accuracy import record_actual_closes_for_due_points
+        # Public-only market data keeps flowing; no ChatGPT forecast job is scheduled.
+        async def _public_market_snapshot_tick() -> None:
+            from app.services.price_forecast.public_market_snapshots import persist_public_market_snapshot
 
-            await record_actual_closes_for_due_points()
-            await execute_scheduled_forecast_if_due()
+            await persist_public_market_snapshot(symbol="BTCUSDT")
 
         scheduler.add_job(
-            _price_forecast_tick,
+            _public_market_snapshot_tick,
             "interval",
-            minutes=1,
-            id="price_forecast_scheduled",
+            minutes=15,
+            id="public_market_snapshot",
             max_instances=1,
             coalesce=True,
         )

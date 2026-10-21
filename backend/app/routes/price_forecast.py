@@ -10,14 +10,12 @@ from app.db import get_db
 from app.routes.auth import require_dashboard_access
 from app.services.chart_data import ChartDataService
 from app.services.price_forecast.accuracy import record_actual_closes_for_due_points
-from app.services.price_forecast.run_service import execute_forecast_with_lock, latest_successful_run, load_run_points
+from app.services.price_forecast.run_service import latest_successful_run, load_run_points
 from app.services.price_forecast.settings_service import (
     count_billable_runs_today,
     get_or_create_forecast_settings,
     month_cost_usd,
-    schedule_next_run,
 )
-from app.services.price_forecast.run_policy import validate_forecast_config
 
 router = APIRouter(prefix="/api/gui/forecast", tags=["price-forecast"])
 
@@ -106,43 +104,14 @@ async def forecast_status(
     )
 
 
-@router.put("/settings", response_model=ForecastSettingsOut)
+@router.put("/settings")
 async def update_forecast_settings(
     body: ForecastSettingsUpdate,
     session: AsyncSession = Depends(get_db),
     _auth=Depends(require_dashboard_access),
 ):
-    cfg = await get_or_create_forecast_settings(session)
-    for field, value in body.model_dump(exclude_unset=True).items():
-        setattr(cfg, field, value)
-    try:
-        validate_forecast_config(cfg)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    if body.enabled is True and cfg.next_run_at is None:
-        cfg.next_run_at = schedule_next_run(cfg)
-    cfg.updated_at = datetime.now(timezone.utc)
-    await session.commit()
-    return ForecastSettingsOut(
-        enabled=cfg.enabled,
-        interval_minutes=cfg.interval_minutes,
-        model=cfg.model,
-        reasoning_effort=cfg.reasoning_effort,
-        max_output_tokens=cfg.max_output_tokens,
-        daily_request_limit=cfg.daily_request_limit,
-        monthly_budget_usd=cfg.monthly_budget_usd,
-        input_price_per_mtok=cfg.input_price_per_mtok,
-        cached_input_price_per_mtok=cfg.cached_input_price_per_mtok,
-        output_price_per_mtok=cfg.output_price_per_mtok,
-        reasoning_price_per_mtok=cfg.reasoning_price_per_mtok,
-        last_run_at=cfg.last_run_at,
-        last_success_at=cfg.last_success_at,
-        next_run_at=cfg.next_run_at,
-        last_error=cfg.last_error,
-        running_status=cfg.running_status,
-        runs_today=await count_billable_runs_today(session),
-        month_cost_usd=await month_cost_usd(session),
-    )
+    # Retired feature: old clients must not re-enable the billable schedule.
+    raise HTTPException(status_code=410, detail="price_forecast_retired")
 
 
 @router.get("/chart", response_model=ForecastChartOut)
@@ -203,18 +172,5 @@ async def forecast_chart(
 async def generate_forecast(
     _auth=Depends(require_dashboard_access),
 ):
-    outcome = await execute_forecast_with_lock(trigger="manual", skip_enabled_check=True)
-    if outcome.status == "busy":
-        raise HTTPException(status_code=409, detail="forecast_busy")
-    if outcome.status == "skipped":
-        raise HTTPException(status_code=429, detail=outcome.message or "skipped")
-    if outcome.status == "failed":
-        raise HTTPException(status_code=502, detail=outcome.message or "forecast_failed")
-    run = outcome.run
-    return {
-        "status": "ok",
-        "run_id": run.public_id if run else None,
-        "estimated_cost_usd": run.estimated_cost_usd if run else 0,
-        "input_tokens": run.input_tokens if run else 0,
-        "output_tokens": run.output_tokens if run else 0,
-    }
+    # Explicitly reject manual paid inference, including legacy dashboard clients.
+    raise HTTPException(status_code=410, detail="price_forecast_retired")

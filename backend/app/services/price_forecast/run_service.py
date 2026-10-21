@@ -127,7 +127,13 @@ async def _resolve_openai_token(session: AsyncSession) -> str | None:
     return key or None
 
 
+# Kept testable for historical regressions; never enabled in deployed runtime.
+FORECAST_GENERATION_ENABLED = False
+
+
 async def run_price_forecast(*, trigger: str, skip_enabled_check: bool = False) -> ForecastRunOutcome:
+    if not FORECAST_GENERATION_ENABLED:
+        return ForecastRunOutcome(status="skipped", message="price_forecast_retired")
     owner = f"forecast-{uuid.uuid4().hex[:12]}"
     if not await acquire_price_forecast_lock(owner):
         return ForecastRunOutcome(status="busy", message="forecast_locked")
