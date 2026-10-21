@@ -525,6 +525,224 @@ def test_fvg_retest_evidence_negative_without_fvg_zones(confirmation_type, seque
     assert ok is False
 
 
+def test_objective_sequence_evidence_enforces_chronological_token_order_positive():
+    """Each ICT token must appear in sequence order on strictly later bars."""
+    t0 = 1_000_000
+    bars = [
+        Candle(time_ms=t0 + 300_000, open=100, high=100, low=100, close=100, volume=1),
+        Candle(time_ms=t0 + 600_000, open=100, high=100, low=100, close=100, volume=1),
+        Candle(time_ms=t0 + 900_000, open=100, high=100, low=100, close=100, volume=1),
+    ]
+    sequence = ["liquidity_sweep", "mss", "entry_zone_touch"]
+
+    def _tok(tok: str, *, window, **kwargs):
+        ms = window[-1].time_ms
+        return (tok, ms) in {
+            ("liquidity_sweep", t0 + 300_000),
+            ("mss", t0 + 600_000),
+            ("entry_zone_touch", t0 + 900_000),
+        }
+
+    with patch("app.services.ai_setup_quality_gates._token_on_bar", side_effect=_tok):
+        ok, hits = objective_sequence_evidence_after_ms(
+            direction="LONG",
+            sequence=sequence,
+            closed_5m=bars,
+            after_ms=t0 - 1,
+            zone_lo=99.0,
+            zone_hi=101.0,
+        )
+    assert ok is True
+    assert hits == {
+        "liquidity_sweep": t0 + 300_000,
+        "mss": t0 + 600_000,
+        "entry_zone_touch": t0 + 900_000,
+    }
+
+
+def test_objective_sequence_evidence_rejects_entry_zone_before_prior_tokens():
+    """Early entry_zone_touch must not validate when sweep/mss come later."""
+    t0 = 2_000_000
+    bars = [
+        Candle(time_ms=t0 + 300_000, open=100, high=100, low=100, close=100, volume=1),
+        Candle(time_ms=t0 + 600_000, open=100, high=100, low=100, close=100, volume=1),
+        Candle(time_ms=t0 + 900_000, open=100, high=100, low=100, close=100, volume=1),
+    ]
+    sequence = ["liquidity_sweep", "mss", "entry_zone_touch"]
+
+    def _tok(tok: str, *, window, **kwargs):
+        ms = window[-1].time_ms
+        return (tok, ms) in {
+            ("entry_zone_touch", t0 + 300_000),
+            ("liquidity_sweep", t0 + 600_000),
+            ("mss", t0 + 900_000),
+        }
+
+    with patch("app.services.ai_setup_quality_gates._token_on_bar", side_effect=_tok):
+        ok, hits = objective_sequence_evidence_after_ms(
+            direction="LONG",
+            sequence=sequence,
+            closed_5m=bars,
+            after_ms=t0 - 1,
+            zone_lo=99.0,
+            zone_hi=101.0,
+        )
+    assert ok is False
+    assert "entry_zone_touch" not in hits
+    assert hits.get("liquidity_sweep") == t0 + 600_000
+    assert hits.get("mss") == t0 + 900_000
+
+
+@pytest.mark.asyncio
+async def test_fill_quality_rejects_when_no_closed_5m_as_of_fill_event():
+    await init_db()
+    async with SessionLocal() as session:
+        setup = AiProposedSetup(
+            setup_id="fill-no-5m-asof",
+            run_id=4,
+            symbol="BTCUSDT",
+            direction="LONG",
+            status="open",
+            lifecycle_state="PENDING_ENTRY",
+            entry_price=100.0,
+            stop_loss=94.0,
+            take_profit=115.0,
+            invalidation_level=93.0,
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
+            confirmation_state={"sequence": [], "required": [], "confirmation_timestamps": {}},
+        )
+        session.add(setup)
+        await session.commit()
+        order_ms = 1_700_000_000_000
+        fill_as_of = order_ms + 120_000
+        future_5m = Candle(
+            time_ms=order_ms + 300_000,
+            open=100,
+            high=101,
+            low=99,
+            close=100.5,
+            volume=1.0,
+        )
+        ok, reason = await validate_setup_quality_at_execution(
+            session,
+            setup,
+            latest_closed_5m=None,
+            market_data_verified=True,
+            now_ms=fill_as_of + 60_000,
+            phase="fill",
+            closed_5m=[future_5m],
+            as_of_ms=fill_as_of,
+        )
+        assert ok is False
+        assert reason == "missing_closed_5m_as_of_for_fill"
+
+
+@pytest.mark.asyncio
+async def test_sim_suspends_limit_fill_when_no_5m_as_of_fill_event():
+    """Verified 5m bundle present but no bar closed yet at 1m fill time → suspend, not fill."""
+    from unittest.mock import patch
+
+    from app.domain.candle_utils import candle_close_ms
+    from app.models import SimPositionSettings
+    from app.services.market_data import KlineBundle
+    from app.services.position.position_monitor import SimPositionMonitorService
+
+    await init_db()
+    order_ms = 1_700_000_100_000
+    fill_bar = Candle(
+        time_ms=order_ms + 60_000,
+        open=99.5,
+        high=100.5,
+        low=99.0,
+        close=100.0,
+        volume=1.0,
+    )
+    fill_as_of = candle_close_ms(fill_bar, "1m")
+    future_5m = Candle(
+        time_ms=order_ms + 300_000,
+        open=100,
+        high=101,
+        low=99,
+        close=100.2,
+        volume=1.0,
+    )
+
+    async with SessionLocal() as session:
+        session.add(SimPositionSettings(id=1, auto_open_paper_positions=True, initial_balance_set=True))
+        setup = AiProposedSetup(
+            setup_id="suspend-no-5m-asof",
+            run_id=5,
+            symbol="BTCUSDT",
+            direction="LONG",
+            status="open",
+            lifecycle_state="PENDING_ENTRY",
+            monitoring_enabled=True,
+            monitor_from_ms=order_ms,
+            monitor_cursor_ms=order_ms - 300_000,
+            entry_price=100.0,
+            stop_loss=94.0,
+            take_profit=115.0,
+            invalidation_level=93.0,
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=12),
+        )
+        session.add(setup)
+        session.add(
+            SimPosition(
+                public_id="pos-suspend-asof",
+                symbol="BTCUSDT",
+                direction="LONG",
+                status="pending_entry",
+                order_type="limit",
+                margin_usdt=50.0,
+                leverage=10,
+                limit_entry_price=100.0,
+                stop_loss=94.0,
+                take_profit=115.0,
+                ai_setup_id="suspend-no-5m-asof",
+                monitor_from_ms=order_ms,
+                last_processed_candle_ms=0,
+                extra={"auto_paper": True},
+            )
+        )
+        await session.commit()
+
+    bundle_1m = KlineBundle(
+        closed=[fill_bar],
+        forming=None,
+        gaps_detected=[],
+        gaps_remaining=[],
+        data_complete=True,
+        interval="1m",
+    )
+    bundle_5m = KlineBundle(
+        closed=[future_5m],
+        forming=None,
+        gaps_detected=[],
+        gaps_remaining=[],
+        data_complete=True,
+        interval="5m",
+    )
+
+    async def _fetch(symbol: str, interval: str, limit: int):
+        return bundle_5m if interval == "5m" else bundle_1m
+
+    sim = SimPositionMonitorService()
+    async with SessionLocal() as session:
+        with patch.object(sim.market, "fetch_kline_bundle", AsyncMock(side_effect=_fetch)):
+            with patch(
+                "app.services.opportunity_monitor._utc_now",
+                return_value=datetime.fromtimestamp((fill_as_of + 30_000) / 1000, tz=timezone.utc),
+            ):
+                await sim.monitor_session(session)
+        await session.commit()
+        pos = (await session.execute(select(SimPosition))).scalar_one()
+        setup = (await session.execute(select(AiProposedSetup))).scalar_one()
+        assert pos.status == "pending_entry"
+        notes = setup.objective_notes or {}
+        assert notes.get("pending_fill_suspended") is True
+        assert notes.get("pending_fill_block_reason") == "missing_closed_5m_as_of_for_fill"
+
+
 def test_objective_sequence_evidence_false_when_tokens_missing_on_bars():
     t0 = 1_000_000
     bars = [

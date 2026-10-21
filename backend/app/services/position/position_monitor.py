@@ -38,6 +38,13 @@ from app.services.position.settings_service import get_or_create_settings
 
 logger = logging.getLogger(__name__)
 
+
+def _suspend_auto_paper_fill_on_setup(setup_row, block_reason: str | None) -> None:
+    notes = dict(setup_row.objective_notes or {})
+    notes["pending_fill_suspended"] = True
+    notes["pending_fill_block_reason"] = block_reason or "fill_quality_suspended"
+    setup_row.objective_notes = notes
+
 MAX_RECOVERY_MINUTES = 24 * 60
 
 
@@ -382,12 +389,13 @@ class SimPositionMonitorService:
 
                 if pos.status == "pending_entry" and pos.order_type == "limit" and pos.limit_entry_price:
                     from app.models import AiProposedSetup
-                    from app.services.ai_setup_quality_gates import pick_latest_closed_5m
+                    from app.services.ai_setup_quality_gates import is_fill_execution_suspend_reason
                     from app.services.paper_auto_trading import (
                         auto_paper_entry_still_valid,
                         auto_paper_execution_quality_ok,
                     )
 
+                    setup_row = None
                     if pos.ai_setup_id:
                         setup_row = (
                             await session.execute(
@@ -425,8 +433,11 @@ class SimPositionMonitorService:
                         as_of_ms=fill_as_of_ms,
                     )
                     if not still_ok:
-                        await self.positions.cancel_pending(session, pos.public_id, commit=False)
-                        pos.extra = {**pos.extra, "auto_paper_cancel_reason": block_reason}
+                        if is_fill_execution_suspend_reason(block_reason) and setup_row:
+                            _suspend_auto_paper_fill_on_setup(setup_row, block_reason)
+                        else:
+                            await self.positions.cancel_pending(session, pos.public_id, commit=False)
+                            pos.extra = {**pos.extra, "auto_paper_cancel_reason": block_reason}
                         prev_ms = bar.time_ms
                         pos.last_processed_candle_ms = bar.time_ms
                         processed += 1
@@ -457,8 +468,11 @@ class SimPositionMonitorService:
                             as_of_ms=fill_as_of_ms,
                         )
                         if not ok_fill:
-                            await self.positions.cancel_pending(session, pos.public_id, commit=False)
-                            pos.extra = {**(pos.extra or {}), "auto_paper_cancel_reason": fill_block}
+                            if is_fill_execution_suspend_reason(fill_block) and setup_row:
+                                _suspend_auto_paper_fill_on_setup(setup_row, fill_block)
+                            else:
+                                await self.positions.cancel_pending(session, pos.public_id, commit=False)
+                                pos.extra = {**(pos.extra or {}), "auto_paper_cancel_reason": fill_block}
                             prev_ms = bar.time_ms
                             pos.last_processed_candle_ms = bar.time_ms
                             processed += 1

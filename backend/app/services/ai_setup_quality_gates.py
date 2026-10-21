@@ -144,27 +144,40 @@ def objective_sequence_evidence_after_ms(
     hits: dict[str, int] = {}
     last_ms = after_ms
     ordered = [t for t in sequence if t]
+    struct = structured if isinstance(structured, dict) else {}
     for bar in sorted(closed_5m, key=lambda c: c.time_ms):
         if bar.time_ms <= after_ms:
             continue
+        if len(hits) >= len(ordered):
+            break
+        tok = ordered[len(hits)]
         window = [c for c in closed_5m if c.time_ms <= bar.time_ms][-48:]
-        for tok in ordered:
-            if tok in hits:
-                continue
-            if _token_on_bar(
-                tok,
-                direction=direction,
-                window=window,
-                zone_lo=zone_lo,
-                zone_hi=zone_hi,
-                structured=structured if isinstance(structured, dict) else {},
-            ):
-                if bar.time_ms <= last_ms:
-                    return False, hits
-                hits[tok] = bar.time_ms
-                last_ms = bar.time_ms
-                break
+        if _token_on_bar(
+            tok,
+            direction=direction,
+            window=window,
+            zone_lo=zone_lo,
+            zone_hi=zone_hi,
+            structured=struct,
+        ):
+            if bar.time_ms <= last_ms:
+                return False, hits
+            hits[tok] = bar.time_ms
+            last_ms = bar.time_ms
     return len(hits) == len(ordered) and bool(hits), hits
+
+
+FILL_EXECUTION_SUSPEND_REASONS = frozenset(
+    {
+        "market_data_unverified_for_fill",
+        "missing_closed_5m_for_fill",
+        "missing_closed_5m_as_of_for_fill",
+    }
+)
+
+
+def is_fill_execution_suspend_reason(reason: str | None) -> bool:
+    return bool(reason and reason in FILL_EXECUTION_SUSPEND_REASONS)
 
 
 def confirmations_strictly_after_ms(setup: AiProposedSetup, after_ms: int) -> tuple[bool, dict[str, int]]:
@@ -466,6 +479,8 @@ async def validate_setup_quality_at_execution(
         if not bars:
             return False, f"missing_closed_5m_for_{phase}"
         struct_bar = pick_latest_closed_5m_as_of(bars, as_of_ms=as_of_ms if as_of_ms is not None else now_ms)
+        if struct_bar is None:
+            return False, "missing_closed_5m_as_of_for_fill"
     else:
         struct_bar = latest_closed_5m
         if struct_bar is None:
