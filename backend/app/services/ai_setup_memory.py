@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.domain.candle_utils import candle_close_ms, interval_ms
 from app.domain.candles import Candle
 from app.domain.setup_lifecycle import (
+    ACTIVE_MONITOR_STATES,
     SETUP_MODE_CONDITIONAL,
     SETUP_MODE_IMMEDIATE,
     ready_state_for_direction,
@@ -782,6 +783,10 @@ async def _find_duplicate_open(
 ) -> AiProposedSetup | None:
     opens = await load_open_setups(session, symbol)
     for row in opens:
+        # Legacy rows can remain status=open after their position has closed.
+        # Reusing their ID attaches the new plan to the old execution history.
+        if row.lifecycle_state not in ACTIVE_MONITOR_STATES:
+            continue
         if (row.direction or "").upper() != direction.upper():
             continue
         if row.entry_price is not None and _levels_similar(row.entry_price, entry, entry):
@@ -985,6 +990,10 @@ async def create_setup_from_structured(
         if not existing or existing.status not in ("open", "expired"):
             meta["skipped"] = True
             meta["reason"] = "continue_setup_not_found"
+            return None, meta
+        if existing.lifecycle_state not in ACTIVE_MONITOR_STATES:
+            meta["skipped"] = True
+            meta["reason"] = "continue_setup_terminal"
             return None, meta
         if existing.symbol != symbol or (existing.direction or "").upper() != decision:
             meta["skipped"] = True
