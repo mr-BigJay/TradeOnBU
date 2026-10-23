@@ -57,7 +57,7 @@ function reportRoute() { return window.location.hash.match(/^#\/outlook\/reports
 function ReportImage({ id }: { id: number }) {
   const [image, setImage] = useState<{ data_url: string; filename: string;
     nearby?: { support: (Level & { code: string })[]; resistance: (Level & { code: string })[] };
-    channel?: { available: boolean; direction?: keyof typeof dir; upper?: number; lower?: number; timeframe?: string };
+    channel?: { available: boolean; direction?: keyof typeof dir; upper?: number; lower?: number; timeframe?: string; historical?: boolean; end_time_ms?: number; position?: "above" | "below" | "inside" };
   } | null>(null);
   const [error, setError] = useState("");
   const [retry, setRetry] = useState(0);
@@ -79,7 +79,7 @@ function ReportImage({ id }: { id: number }) {
         {image.nearby![side].length ? image.nearby![side].map(l => <p key={l.id}><bdi>{l.code} · {price(l.price)}</bdi> — {l.label_fa}</p>) : <p>سطحی در داده‌های این گزارش موجود نیست.</p>}</div>)}
     </div>}
     {image?.channel && <p className="hint">{image.channel.available
-      ? `کانال پیشنهادی ${dir[image.channel.direction!]} در تایم‌فریم ${image.channel.timeframe}: کف در زمان گزارش ${price(image.channel.lower!)} و سقف ${price(image.channel.upper!)}. خطوط آبی امتداد هندسی کانال‌اند؛ پیش‌بینی مستقل قیمت نیستند.`
+      ? `کانال ${image.channel.historical ? "تاریخی" : "اخیر"} ${dir[image.channel.direction!]} در تایم‌فریم ${image.channel.timeframe}: کف در زمان گزارش ${price(image.channel.lower!)} و سقف ${price(image.channel.upper!)}. قیمت زمان گزارش ${image.channel.position === "above" ? "بالاتر از سقف کانال" : image.channel.position === "below" ? "پایین‌تر از کف کانال" : "داخل کانال"} است. بخش پیوسته، کانال تاریخی و بخش خط‌چین، امتداد هندسی آن است؛ کانال شکسته‌شده نیز برای مقایسه حفظ می‌شود.`
       : "کانال قابل اتکایی با معیارهای ترسیم در داده‌های این گزارش پیدا نشد؛ کانالی رسم نشده است."}</p>}
     <figcaption>حمایت و مقاومت بر پایهٔ سطوح تاریخی و نسبت به قیمت زمان گزارش دسته‌بندی شده‌اند؛ واکنش قیمت به آن‌ها تضمین‌شده نیست. کندل‌ها واقعی و مربوط به زمان گزارش‌اند. خط سبز: سناریوی غالب؛ خط زرد: جایگزین. مسیر هفت‌روزه مشروط است و فاصلهٔ نقاط، زمان قطعی رسیدن قیمت را نشان نمی‌دهد.</figcaption>
   </figure>;

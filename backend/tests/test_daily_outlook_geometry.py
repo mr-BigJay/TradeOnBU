@@ -33,10 +33,23 @@ def test_channel_absent_for_insufficient_gap_or_breakout():
     rows = bars()
     assert not pivot_channel(rows[:20],ANCHOR,14400,1000)["available"]
     assert pivot_channel(rows[:-3]+rows[-2:],ANCHOR,14400,1100)["reason"] == "history_gap"
-    assert pivot_channel(rows,ANCHOR,14400,1500)["reason"] == "broken_channel"
+    assert pivot_channel(rows,ANCHOR,14400,1500)["position"] == "above"
 
 def test_monotonic_price_does_not_invent_pivot_channel():
     rows = bars()
     for i,row in enumerate(rows):
         row[1:] = [1000+i,1005+i,995+i,1000+i]
     assert not pivot_channel(rows,ANCHOR,14400,1060)["available"]
+
+
+def test_historical_channel_survives_later_breakout_and_daily_is_not_used():
+    rows = bars()
+    old_end = rows[-1][0]
+    for i in range(20):
+        c = 1500+i*60
+        rows.append([old_end+(i+1)*14400000,c,c+4,c-4,c])
+    result = pivot_channel(rows,ANCHOR,14400,2640)
+    assert result["available"] and result["historical"]
+    assert result["position"] == "above"
+    assert result["end_time_ms"] <= rows[60][0]
+    assert not pivot_channel(rows,ANCHOR,86400,2640)["available"]

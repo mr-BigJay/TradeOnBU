@@ -93,16 +93,16 @@ def render_report_image(snapshot_json: str) -> bytes:
         if channel["available"]:
             slope = channel["slope_per_day"]
             for name, offset in (("upper",channel["upper"]), ("mid",channel["mid"]), ("lower",channel["lower"])):
-                hx = [channel["start_day"], 0]
+                hx = [channel["start_day"], channel["end_day"]]
                 hy = [offset+slope*x for x in hx]
-                fy = [offset, offset+slope*7]
+                fy = [offset+slope*channel["end_day"], offset+slope*7]
                 all_prices.extend(hy+fy)
                 ax.plot(hx, hy, color="#80aaff", linewidth=1.1, alpha=.8, linestyle=":" if name=="mid" else "-",
                         label="Pivot channel (descriptive)" if name=="upper" else None)
-                ax.plot([0,7],fy,color="#80aaff",linewidth=.8,linestyle="-.",alpha=.5)
-            ax.fill_between([channel["start_day"],0],
-                [channel["lower"]+slope*channel["start_day"],channel["lower"]],
-                [channel["upper"]+slope*channel["start_day"],channel["upper"]],color="#80aaff",alpha=.04)
+                ax.plot([channel["end_day"],7],fy,color="#80aaff",linewidth=.8,linestyle="-.",alpha=.5)
+            ax.fill_between([channel["start_day"],channel["end_day"]],
+                [channel["lower"]+slope*channel["start_day"],channel["lower"]+slope*channel["end_day"]],
+                [channel["upper"]+slope*channel["start_day"],channel["upper"]+slope*channel["end_day"]],color="#80aaff",alpha=.04)
         codes = {l["id"]:l["code"] for side in data["nearby"].values() for l in side}
         colors = {"dominant": "#5ce1bb", "alternative": "#e9b56d"}
         for path in data["paths"]:

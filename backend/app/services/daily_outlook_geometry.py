@@ -27,7 +27,7 @@ def _fit(points):
     return slope, ym-slope*xm
 
 
-def pivot_channel(rows, anchor, step, quote):
+def _window_channel(rows, anchor, step, quote):
     """Fit parallel bounds to confirmed 2-left/2-right pivots in last 60 bars.
 
     Thresholds are display heuristics, not calibrated probabilities or trading gates.
@@ -73,8 +73,7 @@ def pivot_channel(rows, anchor, step, quote):
                    for x,r in zip(xs,rows))/len(rows)
     if coverage < .85:
         return {"available": False, "reason": "poor_fit"}
-    if not (bottom+slope*xs[-1]-tolerance <= rows[-1][4] <= top+slope*xs[-1]+tolerance
-            and bottom-tolerance <= quote <= top+tolerance):
+    if not (bottom+slope*xs[-1]-tolerance <= rows[-1][4] <= top+slope*xs[-1]+tolerance):
         return {"available": False, "reason": "broken_channel"}
     if min(bottom+slope*xs[0],bottom+slope*7) <= 0 or not all(math.isfinite(v) for v in (slope,top,bottom)):
         return unavailable
@@ -84,3 +83,25 @@ def pivot_channel(rows, anchor, step, quote):
             "start_day": xs[0], "end_day": xs[-1], "bars":len(rows),
             "upper_touches":len(touches[0]), "lower_touches":len(touches[1]),
             "close_coverage":round(coverage,3), "timeframe":"4h" if step==14400 else "1d"}
+
+
+def pivot_channel(rows, anchor, step, quote):
+    """Find the most recent qualifying 4h channel, retaining broken historical ones."""
+    if step != 14400:
+        return {"available": False, "reason": "requires_4h"}
+    rows = rows[-120:]
+    if any(b[0]-a[0] != step*1000 for a,b in zip(rows, rows[1:])):
+        return {"available": False, "reason": "history_gap"}
+    for end in range(len(rows), 39, -1):
+        window = rows[max(0,end-60):end]
+        # Fit history on its own merits; today's price must not erase an old channel.
+        candidate = _window_channel(window, anchor, step, window[-1][4])
+        if not candidate["available"]:
+            continue
+        candidate.update(
+            historical=end < len(rows),
+            end_time_ms=window[-1][0] + step*1000,
+            position="above" if quote > candidate["upper"] else "below" if quote < candidate["lower"] else "inside",
+        )
+        return candidate
+    return {"available": False, "reason": "insufficient_structure"}
