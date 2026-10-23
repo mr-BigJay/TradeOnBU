@@ -1,4 +1,4 @@
-"""Independent, at-most-one daily attempt per symbol/Tehran date; no order writes."""
+"""Independent daily inference per symbol/Tehran date; pre-AI manual retries only."""
 from __future__ import annotations
 
 import asyncio
@@ -27,6 +27,19 @@ from app.services.siwc.responses_client import stream_analysis_response, OpenAIR
 TEHRAN = ZoneInfo("Asia/Tehran")
 logger = logging.getLogger(__name__)
 RUN_TIMEOUT = 900
+PRE_AI_ERRORS = {
+    "insufficient_market_history", "latest_closed_candle_missing", "invalid_market_prices",
+    "invalid_candle_range", "market_history_gap", "incomplete_4h_history",
+    "insufficient_weekly_history", "stale_live_quote", "openai_api_key_missing",
+    "ai_connection_unavailable",
+}
+
+
+def retryable(row) -> bool:
+    # Also recognizes pre-upgrade validation failures. Unknown/paid failures fail closed.
+    return bool(row and row.status == "failed" and row.error_code in PRE_AI_ERRORS
+                and not row.model_slug and not row.usage
+                and not (row.context or {}).get("ai_request_started"))
 
 
 def utc(dt: datetime) -> datetime:
@@ -96,7 +109,7 @@ async def reserve_run(trigger: str) -> tuple[int | None, str | None, str]:
         existing = (await session.execute(select(DailyOutlookRun).where(
             DailyOutlookRun.symbol == symbol, DailyOutlookRun.report_date == date,
         ))).scalar_one_or_none()
-        if existing:
+        if existing and not (trigger == "manual" and retryable(existing)):
             return existing.id, None, "already_attempted_today"
     owner = "daily-" + uuid.uuid4().hex
     # Share the existing lock; hourly/manual analyses cannot overlap daily inference.
@@ -104,9 +117,24 @@ async def reserve_run(trigger: str) -> tuple[int | None, str | None, str]:
         return None, None, "analysis_busy"
     try:
         async with SessionLocal() as session:
-            row = DailyOutlookRun(symbol=symbol, report_date=date, trigger=trigger,
-                                  started_at=now, status="running")
-            session.add(row)
+            # Recheck after acquiring the shared lock: two clicks must not retry twice.
+            row = (await session.execute(select(DailyOutlookRun).where(
+                DailyOutlookRun.symbol == symbol, DailyOutlookRun.report_date == date,
+            ))).scalar_one_or_none()
+            if row:
+                if trigger != "manual" or not retryable(row):
+                    await release_analysis_lock(owner)
+                    return row.id, None, "already_attempted_today"
+                history = list((row.context or {}).get("pre_ai_failures", []))
+                history.append({"error_code": row.error_code, "started_at": utc(row.started_at).isoformat()})
+                row.context = {"pre_ai_failures": history[-20:]}
+                row.trigger, row.status, row.started_at = trigger, "running", now
+                row.completed_at, row.error_code = None, None
+                row.report, row.usage, row.model_slug = {}, {}, None
+            else:
+                row = DailyOutlookRun(symbol=symbol, report_date=date, trigger=trigger,
+                                      started_at=now, status="running")
+                session.add(row)
             await session.commit()
             return row.id, owner, "started"
     except IntegrityError:
@@ -134,7 +162,8 @@ async def _work(run_id: int) -> None:
     token, model, effort = await provider_credentials()
     async with SessionLocal() as session:
         row = await session.get(DailyOutlookRun, run_id)
-        row.context = context
+        row.context = {**context, "ai_request_started": True,
+                       "pre_ai_failures": (row.context or {}).get("pre_ai_failures", [])}
         row.model_slug = model
         await session.commit()
     response = await stream_analysis_response(
@@ -208,6 +237,7 @@ def serialize_run(row: DailyOutlookRun, *, detail: bool = True) -> dict:
             "as_of": ctx.get("as_of"), "source": ctx.get("source"),
             "live_price": ctx.get("live_price"), "levels": ctx.get("levels", []),
             "daily_atr14": ctx.get("daily_atr14"),
+            "data_quality_warnings": ctx.get("data_quality_warnings", []),
             "daily_candles": (ctx.get("candles") or {}).get("1d", [])[-30:],
         })
     return out
@@ -236,4 +266,5 @@ async def dashboard() -> dict:
                 if any(r.status == "completed" for r in rows) else None,
             "history": [serialize_run(r, detail=False) for r in rows],
             "attempted_today": today is not None,
+            "can_retry_today": retryable(today),
         }

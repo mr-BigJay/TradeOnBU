@@ -67,6 +67,7 @@ No external news/calendar feed is connected: do not invent news, Fed probabiliti
 events or catalysts. Historical liquidations are not future heatmap levels. Binance
 OI is not Bitunix positioning; provisional trade delta is not verified CVD. Optional
 microdata is secondary context for this multi-day horizon, not a direction gate.
+If data_quality_warnings is nonempty, disclose the historical source anomaly in uncertainty_fa; do not treat the source as fully clean.
 Previous report is for comparison only: explicitly say what changed or stayed stable.
 All narrative strings must be Persian. Return ONLY one JSON object matching this
 schema (no extra fields):

@@ -5,7 +5,7 @@ The Persian **چشم‌انداز روزانه** dashboard tab explains conditio
 ## Operation
 
 - Automatic generation is off by default. An administrator can enable it and choose a Tehran-local time (default 08:05). The scheduler checks each minute; delivery follows data collection and AI completion.
-- A manual generation button uses the same daily allowance. There is at most one attempt per symbol/Tehran calendar date, enforced by a database unique constraint. Failures also consume that day's attempt; there is no automatic paid retry.
+- A manual generation button uses the same daily row, enforced by a database unique constraint per symbol/Tehran calendar date. Known pre-AI data/credential failures can be retried manually; completed, paid or ambiguous attempts cannot. There is no automatic retry after a failed attempt.
 - If another analysis holds the shared lock, the scheduled job tries again on subsequent ticks without consuming the daily allowance. A report can therefore arrive later than its configured start time.
 - The existing AI connection/model selection is reused. API connections incur additional inference usage; token counts are stored with each report. No real paid request was made during development.
 - Running work has a 15-minute total deadline and a 30-minute shared lock lease. Interrupted rows are marked failed after 32 minutes; a restart does not re-run an interrupted day's inference.
@@ -32,3 +32,9 @@ After deployment, open the new tab as an administrator, choose a time, save, and
 Backend tests use an isolated test database, offline market data and mocked AI responses. Coverage includes complete-bar aggregation, UTC Monday weeks, stale/gapped data rejection, known-level validation, Tehran scheduling, daily deduplication, lock contention, failure handling, stored usage, admin-only writes and absence of entry-signal writes. Frontend tests cover stale reports, conditional scenarios, schedule controls and generation.
 
 Live exchange/provider integration and production deployment remain to be verified in the deployed environment. Browser screenshot verification could not run because the Chromium download was unavailable in the development environment.
+
+## Validation-failure recovery
+
+Manual retries reuse the same daily row only for known data/credential failures before inference, with no model, usage or request-start marker. Scheduled retries remain disabled. Prior validation errors are retained in `context.pre_ai_failures` (latest 20). A request-start marker is committed before contacting AI; ambiguous timeouts and paid failures remain blocked. The dashboard exposes `can_retry_today` separately from `attempted_today`.
+
+The entire 4h history is still checked for finite positive prices, ordered high/low ranges, continuity and freshness. Body containment is strict for the latest 120 raw bars sent to AI. Earlier constituent body anomalies are tolerated only when the complete daily aggregate is valid and its unchanged high/low contains every anomalous open/close; otherwise generation fails. No prices are clamped or invented. Each tolerated source anomaly is disclosed in the context and dashboard. This validates the representation supplied to AI; it does not certify the exchange's underlying data as correct.

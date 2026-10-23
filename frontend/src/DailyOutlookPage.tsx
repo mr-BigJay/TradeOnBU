@@ -20,11 +20,11 @@ type Run = {
   started_at: string; completed_at: string | null; model: string | null; error_code?: string;
   report?: Report; usage?: { input_tokens?: number; output_tokens?: number; total_tokens?: number };
   context?: { as_of: string; source: string; live_price: number; daily_atr14: number;
-    levels: Level[]; daily_candles: number[][] };
+    levels: Level[]; daily_candles: number[][]; data_quality_warnings?: unknown[] };
 };
 type Schedule = { enabled: boolean; hour: number; minute: number; next_run_at: string | null };
 type Dashboard = { settings: Schedule; latest: Run | null; latest_completed: Run | null;
-  history: Run[]; attempted_today: boolean };
+  history: Run[]; attempted_today: boolean; can_retry_today?: boolean };
 const dir = { bullish: "صعودی", bearish: "نزولی", range: "رنج" };
 const statusLabel: Record<string, string> = { completed: "آماده", running: "در حال تولید", failed: "ناموفق" };
 const price = (n: number) => n.toLocaleString("en-US", { maximumFractionDigits: 2 });
@@ -113,11 +113,11 @@ export function DailyOutlookPage() {
         await apiFetch("/api/gui/daily-outlook/settings", { method: "PUT", body: JSON.stringify({ enabled, hour, minute }) });
         setNotice("زمان‌بندی ذخیره شد.");
       })}>ذخیره زمان‌بندی</button>
-      <button type="button" className="secondary" disabled={busy || !data || data.attempted_today} onClick={() => action(async () => {
+      <button type="button" className="secondary" disabled={busy || !data || (data.attempted_today && !data.can_retry_today)} onClick={() => action(async () => {
         await apiFetch("/api/gui/daily-outlook/generate", { method: "POST" });
         selectionRequest.current++; setSelected(null); setNotice("تولید گزارش شروع شد؛ نتیجه پس از تکمیل نمایش داده می‌شود.");
-      })}>تولید گزارش امروز</button>
-      <p className="hint outlook-control-note">حداکثر یک تلاش در روز برای هر نماد؛ با اتصال API مصرف جداگانه دارد. تلاش ناموفق همان روز خودکار تکرار نمی‌شود.</p>
+      })}>{data?.can_retry_today ? "تلاش مجدد گزارش امروز" : "تولید گزارش امروز"}</button>
+      <p className="hint outlook-control-note">حداکثر یک درخواست AI در روز برای هر نماد؛ خطای داده پیش از ارسال به AI قابل تلاش مجدد دستی است. با اتصال API مصرف جداگانه دارد.</p>
       <p className="hint outlook-control-note">{data?.settings.enabled ? `نوبت بعد: ${displayTehranTime(null, data.settings.next_run_at)}` : "زمان‌بندی خودکار خاموش است."}</p>
     </div>
     {error && <p role="alert" className="toast toast-error">{error}</p>}
@@ -131,6 +131,7 @@ export function DailyOutlookPage() {
       <div className="card outlook-summary">
         <div className="outlook-card-top"><span><bdi>{run.symbol}</bdi> · {run.report_date}</span><span className={`outlook-badge ${report.dominant.direction}`}>{dir[report.dominant.direction]}</span></div>
         {run.stale && <p className="outlook-stale">این گزارش مربوط به روز گذشته یا قبل‌تر است؛ به‌عنوان تحلیل تازه استفاده نشود.</p>}
+        {!!run.context?.data_quality_warnings?.length && <p className="outlook-stale">در کندل‌های قدیمی ۴ساعته ناسازگاری وجود دارد؛ آن کندل‌ها مستقیم به مدل ارسال نشده‌اند و فقط تجمیع روزانهٔ بررسی‌شده استفاده شده است.</p>}
         <h3>برداشت غالب بازار</h3><p>{report.summary_fa}</p>
         <div className="outlook-meta"><span>زمان داده: {displayTehranTime(null, run.context?.as_of)}</span>
           <span>قیمت هنگام تحلیل: <bdi>{run.context?.live_price ? price(run.context.live_price) : "—"}</bdi></span></div>

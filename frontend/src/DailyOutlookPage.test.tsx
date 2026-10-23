@@ -30,3 +30,10 @@ it('saves editable daily time independently and starts one manual generation',as
  fireEvent.click(screen.getByRole('button',{name:'تولید گزارش امروز'}));
  await waitFor(()=>expect(apiFetch).toHaveBeenCalledWith('/api/gui/daily-outlook/generate',{method:'POST'}));
 });
+it('allows manual retry when backend confirms a pre-AI failure',async()=>{
+ apiFetch.mockResolvedValue({...empty(),attempted_today:true,can_retry_today:true,latest:{status:'failed',report_date:'2026-10-23',error_code:'invalid_candle_range'}});
+ render(<DailyOutlookPage/>);
+ const button=await screen.findByRole('button',{name:'تلاش مجدد گزارش امروز'});
+ expect(button).not.toBeDisabled(); fireEvent.click(button);
+ await waitFor(()=>expect(apiFetch).toHaveBeenCalledWith('/api/gui/daily-outlook/generate',{method:'POST'}));
+});

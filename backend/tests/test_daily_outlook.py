@@ -206,3 +206,51 @@ async def test_closed_setup_not_parallel_blocker(monkeypatch):
           SimpleNamespace(direction='SHORT',setup_id='active',lifecycle_state='WAIT_SHORT')]
     monkeypatch.setattr(ai_setup_memory,'load_open_setups',AsyncMock(return_value=rows))
     assert [s.setup_id for s in await _open_same_direction_setups(None,symbol='BTCUSDT',direction='SHORT')]==['active']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('recent,escapes_daily,should_fail',[(False,False,False),(True,False,True),(False,True,True)])
+async def test_historical_body_anomaly_only_allowed_inside_valid_daily_range(recent,escapes_daily,should_fail):
+    now=int(datetime(2026,10,23,11,tzinfo=timezone.utc).timestamp()*1000)
+    bars=[bar(t) for t in range(now//DAY*DAY-90*DAY, now//(4*HOUR)*(4*HOUR),4*HOUR)]
+    i=-5 if recent else 122
+    # Internal constituent: aggregated daily O/C alone would not detect this.
+    bars[i]=Candle(time_ms=bars[i].time_ms,open=85 if escapes_daily else 100,high=110,low=104.6,close=105,volume=10)
+    market=SimpleNamespace(_now_ms=lambda:now,
+        fetch_historical_closed=AsyncMock(return_value=SimpleNamespace(closed=bars,data_complete=True)),
+        fetch_live_price=AsyncMock(return_value=SimpleNamespace(price=105)),is_quote_stale=lambda q:False)
+    if should_fail:
+        with pytest.raises(ValueError,match='invalid_candle_range'):
+            await build_daily_context('BTCUSDT',market)
+    else:
+        ctx=await build_daily_context('BTCUSDT',market)
+        assert len(ctx['data_quality_warnings'])==1
+        assert bars[i].time_ms not in [b[0] for b in ctx['candles']['4h']]
+        assert all(b[3]==90 for b in ctx['candles']['1d'])
+
+
+@pytest.mark.asyncio
+async def test_pre_ai_failure_can_retry_once_and_preserves_audit(isolated):
+    rid,_,_=await service.reserve_run('manual')
+    async with TestSession() as s:
+        row=await s.get(DailyOutlookRun,rid)
+        row.status='failed';row.error_code='invalid_candle_range'
+        cfg=await s.get(DailyOutlookSettings,1)
+        cfg.enabled=True;cfg.hour=0;cfg.minute=0
+        await s.commit()
+    assert (await service.dashboard())['can_retry_today'] is True
+    assert (await service.reserve_run('scheduled'))[2]=='already_attempted_today'
+    rid2,owner,state=await service.reserve_run('manual')
+    assert rid2==rid and state=='started'
+    assert (await service.reserve_run('manual'))[2]=='already_attempted_today'
+    async with TestSession() as s:
+        row=await s.get(DailyOutlookRun,rid)
+        assert row.error_code is None and row.context['pre_ai_failures'][0]['error_code']=='invalid_candle_range'
+        assert await s.scalar(select(func.count()).select_from(DailyOutlookRun))==1
+
+
+@pytest.mark.parametrize('field,value',[('model_slug','test'),('usage',{'input_tokens':1}),('context',{'ai_request_started':True}),('error_code','analysis_timeout')])
+def test_possible_paid_requests_never_retry(field,value):
+    row=SimpleNamespace(status='failed',error_code='invalid_candle_range',model_slug=None,usage={},context={})
+    setattr(row,field,value)
+    assert not service.retryable(row)
