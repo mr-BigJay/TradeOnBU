@@ -1,5 +1,3 @@
-import base64
-import json
 from starlette.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
@@ -72,7 +70,7 @@ async def list_runs(before_id: int | None = Query(default=None, gt=0)):
 
 @router.get("/runs/{run_id}/chart-image")
 async def get_chart_image(run_id: int):
-    from app.services.daily_outlook_image import render_report_image, chart_snapshot
+    from app.services.daily_outlook_artifact import saved_report_image
     async with SessionLocal() as session:
         row = await session.get(DailyOutlookRun, run_id)
         if not row:
@@ -81,11 +79,10 @@ async def get_chart_image(run_id: int):
             raise HTTPException(409, "تصویر پس از تکمیل گزارش آماده می‌شود")
         payload = {"id": row.id, "symbol": row.symbol, "date": row.report_date,
                    "context": row.context or {}, "report": row.report or {}}
-        filename = f"daily-outlook-{row.report_date}-{row.id}.png"
     try:
-        overlays = chart_snapshot(payload["context"], payload["report"])
-        png = await run_in_threadpool(render_report_image, json.dumps(payload, sort_keys=True, ensure_ascii=False))
+        artifact = await run_in_threadpool(saved_report_image, payload)
     except (ValueError, KeyError, TypeError):
         raise HTTPException(422, "دادهٔ ذخیره‌شده برای ترسیم چارت کافی یا معتبر نیست")
-    return JSONResponse({"data_url": "data:image/png;base64," + base64.b64encode(png).decode("ascii"),
-                         "filename": filename, "nearby": overlays["nearby"], "channel": overlays["channel"]}, headers={"Cache-Control": "private, no-store"})
+    except OSError:
+        raise HTTPException(503, "خواندن یا ذخیرهٔ تصویر گزارش ممکن نشد؛ دوباره تلاش کنید")
+    return JSONResponse(artifact, headers={"Cache-Control": "private, no-store"})
