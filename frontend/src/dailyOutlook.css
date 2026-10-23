@@ -60,3 +60,8 @@
 .outlook-report-image figcaption{color:#a5b5cb;font-size:.85rem;line-height:1.9;margin-top:12px}
 .outlook-report-image a{display:inline-block;margin-top:12px;color:#75d9c0}
 @media(max-width:600px){.outlook-timeline-date{flex-direction:column;gap:4px}.outlook-timeline{padding-right:16px}.outlook-timeline-entry:before{right:-23px}}
+
+.outlook-bottom-summary{border-right:3px solid #69cdb2;margin-top:22px}
+.outlook-bottom-summary p{line-height:2}
+.outlook-overlay-key{margin-top:15px;border-top:1px solid #30435a;padding-top:8px}
+.outlook-overlay-key p{font-size:.85rem;line-height:1.8;margin:5px 0}

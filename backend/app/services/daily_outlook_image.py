@@ -7,6 +7,7 @@ import math
 from datetime import datetime, timezone, timedelta
 from functools import lru_cache
 from threading import Lock
+from app.services.daily_outlook_geometry import nearby_levels, pivot_channel
 
 _RENDER_LOCK = Lock()
 DAY = 86400
@@ -56,7 +57,9 @@ def chart_snapshot(context: dict, report: dict) -> dict:
         points = [(0.0, quote)] + [(7 * (i + 1) / len(values), v) for i, v in enumerate(values)]
         paths.append({"kind": key, "direction": s.get("direction", "range"), "points": points})
         referenced.update(ids)
-    return {"anchor": anchor, "quote": quote, "bars": rows, "step": step,
+    nearby = nearby_levels(list(levels.values()), quote)
+    referenced.update(l["id"] for side in nearby.values() for l in side)
+    return {"nearby": nearby, "channel": pivot_channel(rows, anchor, step, quote), "anchor": anchor, "quote": quote, "bars": rows, "step": step,
             "paths": paths, "levels": [l for key, l in levels.items() if key in referenced]}
 
 
@@ -86,6 +89,21 @@ def render_report_image(snapshot_json: str) -> bytes:
         ax.axvspan(0, 7.3, color="#91a5c9", alpha=.055)
         ax.axvline(0, color="#a9b8d1", linestyle=":", linewidth=1.2)
         all_prices = [v for b in data["bars"] for v in (b[2], b[3])] + [data["quote"]]
+        channel = data["channel"]
+        if channel["available"]:
+            slope = channel["slope_per_day"]
+            for name, offset in (("upper",channel["upper"]), ("mid",channel["mid"]), ("lower",channel["lower"])):
+                hx = [channel["start_day"], channel["end_day"]]
+                hy = [offset+slope*x for x in hx]
+                fy = [offset+slope*channel["end_day"], offset+slope*7]
+                all_prices.extend(hy+fy)
+                ax.plot(hx, hy, color="#80aaff", linewidth=1.1, alpha=.8, linestyle=":" if name=="mid" else "-",
+                        label="Pivot channel (descriptive)" if name=="upper" else None)
+                ax.plot([channel["end_day"],7],fy,color="#80aaff",linewidth=.8,linestyle="-.",alpha=.5)
+            ax.fill_between([channel["start_day"],channel["end_day"]],
+                [channel["lower"]+slope*channel["start_day"],channel["lower"]+slope*channel["end_day"]],
+                [channel["upper"]+slope*channel["start_day"],channel["upper"]+slope*channel["end_day"]],color="#80aaff",alpha=.04)
+        codes = {l["id"]:l["code"] for side in data["nearby"].values() for l in side}
         colors = {"dominant": "#5ce1bb", "alternative": "#e9b56d"}
         for path in data["paths"]:
             color = colors[path["kind"]]
@@ -103,9 +121,11 @@ def render_report_image(snapshot_json: str) -> bytes:
                 continue
             seen.add(price)
             all_prices.append(price)
-            ax.axhline(price, color="#7890ad", linestyle=":", linewidth=.65, alpha=.65)
+            code = codes.get(level["id"], "")
+            color = "#62c9bb" if code.startswith("S") else "#f18d9f" if code.startswith("R") else "#7890ad"
+            ax.axhline(price, color=color, linestyle=":", linewidth=.8, alpha=.65)
             # Prices printed on the right avoid a stack of long labels across candles.
-            ax.annotate(f"{price:,.2f}", xy=(7.15, price), fontsize=7, color="#adc0d9", va="bottom", ha="right",
+            ax.annotate(f"{code} {price:,.2f}".strip(), xy=(7.15, price), fontsize=7, color="#adc0d9", va="bottom", ha="right",
                         bbox={"facecolor":"#101b2d", "edgecolor":"none", "alpha":.8, "pad":1})
         ax.scatter([0], [data["quote"]], color="white", s=20, zorder=8)
         pad = max((max(all_prices)-min(all_prices))*.12, data["quote"]*.003)
@@ -120,7 +140,7 @@ def render_report_image(snapshot_json: str) -> bytes:
         ax.grid(axis="y", color="white", alpha=.06)
         for spine in ax.spines.values():
             spine.set_visible(False)
-        if data["paths"]:
+        if data["paths"] or channel["available"]:
             legend = ax.legend(loc="upper left", facecolor="#101b2d", edgecolor="#2a3c56", fontsize=9)
             for text in legend.get_texts():
                 text.set_color("#d7e3f4")
@@ -128,7 +148,7 @@ def render_report_image(snapshot_json: str) -> bytes:
         fig.text(.055, .94, f"{symbol}  /  DAILY MARKET OUTLOOK", color="white", fontsize=20, weight="bold")
         fig.text(.055, .892, f"Report #{payload['id']}  |  {payload['date']}  |  Bitunix {'4H' if data['step']==14400 else '1D'} closed candles", color="#b4c5df", fontsize=11)
         fig.text(.055, .855, f"Snapshot: {anchor.strftime('%Y-%m-%d %H:%M UTC')}  |  Price: {data['quote']:,.2f}  |  Horizon: 7 days", color="#b4c5df", fontsize=10)
-        fig.text(.055, .10, "REAL STORED CANDLES  |  Dashed lines: conditional scenarios  |  Horizontal lines: report levels", color="#c8d7ee", fontsize=10)
+        fig.text(.055, .10, "S: candidate support | R: candidate resistance | Blue: pivot channel; future extension is conditional", color="#c8d7ee", fontsize=10)
         fig.text(.055, .065, "Waypoint spacing is schematic, not predicted arrival times. No future candles are generated.", color="#e9b56d", fontsize=10)
         warning = bool(payload["context"].get("data_quality_warnings"))
         fig.text(.055, .03, "Historical source anomaly disclosed in report." if warning else "Frozen report snapshot. Opening this chart does not refresh market data or call AI.", color="#91a5c2", fontsize=9)

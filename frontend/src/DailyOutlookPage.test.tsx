@@ -60,3 +60,17 @@ it('allows manual retry when backend confirms a pre-AI failure',async()=>{
  expect(button).not.toBeDisabled(); fireEvent.click(button);
  await waitFor(()=>expect(apiFetch).toHaveBeenCalledWith('/api/gui/daily-outlook/generate',{method:'POST'}));
 });
+
+it('puts a dated conditional summary at the end and explains chart overlays',async()=>{
+ window.location.hash='#/outlook/reports/1';
+ apiFetch.mockImplementation((url:string)=>Promise.resolve(url.endsWith('/chart-image')?{
+   data_url:'data:image/png;base64,abc',filename:'report.png',
+   nearby:{support:[{id:'level',code:'S1',price:80000,label_fa:'کف روز قبل'}],resistance:[]},
+   channel:{available:false}
+ }:url.endsWith('/runs/1')?run:empty()));
+ render(<DailyOutlookPage/>);
+ expect(await screen.findByRole('article',{name:'خلاصه نهایی سناریو'})).toHaveTextContent('شرط فعال‌شدن:');
+ expect(screen.getByRole('article',{name:'خلاصه نهایی سناریو'})).toHaveTextContent('ابطال سناریو:');
+ expect(await screen.findByText(/کانال قابل اتکایی با معیارهای ترسیم/)).toBeInTheDocument();
+ expect(screen.getByText('S1 · 80,000')).toBeInTheDocument();
+});
