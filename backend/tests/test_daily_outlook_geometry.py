@@ -53,3 +53,47 @@ def test_historical_channel_survives_later_breakout_and_daily_is_not_used():
     assert result["position"] == "above"
     assert result["end_time_ms"] <= rows[60][0]
     assert not pivot_channel(rows,ANCHOR,86400,2640)["available"]
+
+
+def test_broad_structure_beats_recent_narrow_internal_channel():
+    end = int(ANCHOR.timestamp()*1000)
+    rows = []
+    for i in range(120):
+        wave = 50*math.sin(i*math.pi/12) if i < 80 else 8*math.sin(i*math.pi/6)
+        c = 2000-i+wave
+        rows.append([end-(120-i)*14400000,c,c+4,c-4,c])
+    result = pivot_channel(rows,ANCHOR,14400,rows[-1][4])
+    assert result["available"] and result["bars"] >= 90
+    assert result["upper"]-result["lower"] >= 95
+    assert result["slope_per_day"] == pytest.approx(-6,abs=.5)
+    assert result["candidates_evaluated"] > 1
+    assert result["wick_coverage"] >= .95
+
+
+def test_repeated_outer_wicks_set_bounds_not_mean_of_internal_pivots():
+    rows = bars(0)
+    for i in range(len(rows)):
+        if i % 12 == 3:
+            rows[i][2] += 20
+        if i % 12 == 9:
+            rows[i][3] -= 20
+    result = pivot_channel(rows,ANCHOR,14400,1000)
+    assert result["available"]
+    assert result["upper"] >= 1044-1e-6
+    assert result["lower"] <= 956+1e-6
+    # At least one line goes through two actual major wick anchors.
+    side = 2 if result["anchor_side"] == "upper" else 3
+    bound = result["upper"] if side == 2 else result["lower"]
+    for t in result["anchor_times_ms"]:
+        row = next(r for r in rows if r[0] == t)
+        x = (t/1000-ANCHOR.timestamp())/86400
+        assert bound+result["slope_per_day"]*x == pytest.approx(row[side])
+
+
+def test_channel_is_deterministic_without_changing_input():
+    import copy
+    rows = bars()
+    original = copy.deepcopy(rows)
+    one = pivot_channel(rows,ANCHOR,14400,rows[-1][4])
+    two = pivot_channel(rows,ANCHOR,14400,rows[-1][4])
+    assert one == two and rows == original
