@@ -49,3 +49,13 @@ Each report page starts with a downloadable PNG, rendered by Matplotlib from tha
 New AI reports can specify `path_level_ids` (2–6 known IDs, ending at a target). Older reports use activation then target IDs as a schematic fallback. Both scenario lines start at the saved quote/as-of and end seven days later; all waypoint prices come from referenced levels. The image and Persian caption explicitly distinguish conditional scenario paths from known candles, and schematic spacing from predicted arrival times.
 
 GET `/api/gui/daily-outlook/runs?before_id=N` paginates archive metadata. GET `/api/gui/daily-outlook/runs/{id}/chart-image` returns a PNG data URL and download filename. Rendering runs off the event loop, is serialized for Matplotlib safety, and caches at most eight snapshots in process memory. No schema migration or extra provider cost is required.
+
+## Scenario recap and technical overlays
+
+The report ends with a dated recap of the existing dominant thesis, activation, path, targets, invalidation and alternative activation. It does not re-run AI or claim that historical conditions are currently active.
+
+The chart labels up to three candidate supports (S1–S3) below the saved quote and resistances (R1–R3) above it, selected from the saved daily/weekly/range extrema. Levels closer than 0.15% of the quote are deduplicated per side. These labels are relative to the quote, not proof of support/resistance reactions.
+
+A descriptive parallel channel is fitted to confirmed 2-left/2-right high/low pivots in the last 60 closed candles (minimum 40). Both sides require at least two touches spread over one third of the window. Slope disagreement must remain within max(ATR, 35% of channel width) over the window; width must exceed ATR; at least 85% of closes must fit within the bounds plus 0.35 ATR tolerance. A latest close or saved quote outside those bounds suppresses the channel. Gaps, too few pivots and failed fits also suppress it. The daily fallback often has fewer than 40 bars and therefore shows no channel. These thresholds are display heuristics, not backtested trading signals or confidence probabilities.
+
+Blue solid bounds/midline describe history; blue dash-dot extension is geometric extrapolation, separate from the report's conditional scenario paths. The Persian legend explains the channel and lists exact S/R prices and source labels. The snapshot stays fixed; no new AI or exchange requests are made.

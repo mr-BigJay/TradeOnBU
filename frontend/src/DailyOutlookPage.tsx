@@ -55,7 +55,10 @@ function ScenarioCard({ scenario: s, levels, primary }: { scenario: Scenario; le
 function reportRoute() { return window.location.hash.match(/^#\/outlook\/reports\/(\d+)$/)?.[1] || null; }
 
 function ReportImage({ id }: { id: number }) {
-  const [image, setImage] = useState<{ data_url: string; filename: string } | null>(null);
+  const [image, setImage] = useState<{ data_url: string; filename: string;
+    nearby?: { support: (Level & { code: string })[]; resistance: (Level & { code: string })[] };
+    channel?: { available: boolean; direction?: keyof typeof dir; upper?: number; lower?: number; timeframe?: string };
+  } | null>(null);
   const [error, setError] = useState("");
   const [retry, setRetry] = useState(0);
   useEffect(() => {
@@ -71,7 +74,14 @@ function ReportImage({ id }: { id: number }) {
       <a href={image.data_url} download={image.filename}>دانلود تصویر چارت</a></>
       : error ? <div role="alert">{error} <button onClick={() => setRetry(v => v + 1)}>دریافت دوباره تصویر</button></div>
       : <p role="status">در حال آماده‌سازی تصویر چارت…</p>}
-    <figcaption>کندل‌ها واقعی و مربوط به زمان گزارش‌اند. خط سبز: سناریوی غالب؛ خط زرد: جایگزین. مسیر هفت‌روزه مشروط است و فاصلهٔ نقاط، زمان قطعی رسیدن قیمت را نشان نمی‌دهد.</figcaption>
+    {image?.nearby && <div className="outlook-grid outlook-overlay-key">
+      {(["support", "resistance"] as const).map(side => <div key={side}><h4>{side === "support" ? "حمایت‌های احتمالی" : "مقاومت‌های احتمالی"}</h4>
+        {image.nearby![side].length ? image.nearby![side].map(l => <p key={l.id}><bdi>{l.code} · {price(l.price)}</bdi> — {l.label_fa}</p>) : <p>سطحی در داده‌های این گزارش موجود نیست.</p>}</div>)}
+    </div>}
+    {image?.channel && <p className="hint">{image.channel.available
+      ? `کانال پیشنهادی ${dir[image.channel.direction!]} در تایم‌فریم ${image.channel.timeframe}: کف در زمان گزارش ${price(image.channel.lower!)} و سقف ${price(image.channel.upper!)}. خطوط آبی امتداد هندسی کانال‌اند؛ پیش‌بینی مستقل قیمت نیستند.`
+      : "کانال قابل اتکایی با معیارهای ترسیم در داده‌های این گزارش پیدا نشد؛ کانالی رسم نشده است."}</p>}
+    <figcaption>حمایت و مقاومت بر پایهٔ سطوح تاریخی و نسبت به قیمت زمان گزارش دسته‌بندی شده‌اند؛ واکنش قیمت به آن‌ها تضمین‌شده نیست. کندل‌ها واقعی و مربوط به زمان گزارش‌اند. خط سبز: سناریوی غالب؛ خط زرد: جایگزین. مسیر هفت‌روزه مشروط است و فاصلهٔ نقاط، زمان قطعی رسیدن قیمت را نشان نمی‌دهد.</figcaption>
   </figure>;
 }
 
@@ -179,6 +189,17 @@ export function DailyOutlookPage() {
         <p>منبع اخبار و تقویم اقتصادی متصل نیست. این بخش سفارش معاملاتی ایجاد نمی‌کند.</p>
         <p>مدل: <bdi>{run.model || "—"}</bdi> · توکن ورودی: <bdi>{run.usage?.input_tokens ?? "—"}</bdi> · توکن خروجی: <bdi>{run.usage?.output_tokens ?? "—"}</bdi></p>
       </details>
+      <article className="card outlook-bottom-summary" aria-label="خلاصه نهایی سناریو">
+        <h3>خلاصهٔ سناریوی این گزارش</h3>
+        <p><strong>سناریوی غالب: {dir[report.dominant.direction]}.</strong> {report.dominant.thesis_fa}</p>
+        <p><strong>شرط فعال‌شدن:</strong> {report.dominant.activation_fa}</p>
+        <p><strong>مسیر مورد انتظار:</strong> {report.dominant.path_fa.join(" ← ")}</p>
+        <h4>اهداف مشروط</h4><LevelList ids={report.dominant.target_level_ids} levels={levels} />
+        <p><strong>ابطال سناریو:</strong> {report.dominant.invalidation_fa}</p>
+        <LevelList ids={report.dominant.invalidation_level_ids} levels={levels} />
+        <p><strong>سناریوی جایگزین: {dir[report.alternative.direction]}.</strong> {report.alternative.activation_fa}</p>
+        <p className="hint">این جمع‌بندی مربوط به {run.report_date} است؛ فعال‌شدن شروط با دادهٔ زنده بررسی نشده است.</p>
+      </article>
     </>}
     {!reportId && !!history.length && <div className="outlook-timeline" aria-label="تایم‌لاین گزارش‌های روزانه">
       {history.map(r => <article className="outlook-timeline-entry" key={r.id}>

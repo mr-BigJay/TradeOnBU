@@ -72,7 +72,7 @@ async def list_runs(before_id: int | None = Query(default=None, gt=0)):
 
 @router.get("/runs/{run_id}/chart-image")
 async def get_chart_image(run_id: int):
-    from app.services.daily_outlook_image import render_report_image
+    from app.services.daily_outlook_image import render_report_image, chart_snapshot
     async with SessionLocal() as session:
         row = await session.get(DailyOutlookRun, run_id)
         if not row:
@@ -83,8 +83,9 @@ async def get_chart_image(run_id: int):
                    "context": row.context or {}, "report": row.report or {}}
         filename = f"daily-outlook-{row.report_date}-{row.id}.png"
     try:
+        overlays = chart_snapshot(payload["context"], payload["report"])
         png = await run_in_threadpool(render_report_image, json.dumps(payload, sort_keys=True, ensure_ascii=False))
     except (ValueError, KeyError, TypeError):
         raise HTTPException(422, "دادهٔ ذخیره‌شده برای ترسیم چارت کافی یا معتبر نیست")
     return JSONResponse({"data_url": "data:image/png;base64," + base64.b64encode(png).decode("ascii"),
-                         "filename": filename}, headers={"Cache-Control": "private, no-store"})
+                         "filename": filename, "nearby": overlays["nearby"], "channel": overlays["channel"]}, headers={"Cache-Control": "private, no-store"})
