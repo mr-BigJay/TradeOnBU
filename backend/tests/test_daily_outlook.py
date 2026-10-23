@@ -268,3 +268,68 @@ def test_chart_path_uses_only_known_levels_and_ends_at_target():
 def test_serialize_returns_original_4h_snapshot_without_fetch():
     row=DailyOutlookRun(id=9,symbol='BTCUSDT',report_date='2026-10-23',trigger='manual',status='completed',started_at=datetime.now(timezone.utc),context={'candles':{'4h':[[1,2,3,1,2]],'1d':[]}})
     assert service.serialize_run(row)['context']['four_hour_candles']==[[1,2,3,1,2]]
+
+
+def image_context():
+    ctx = context()
+    end = int(datetime(2026, 10, 23, tzinfo=timezone.utc).timestamp()*1000)
+    ctx.update(live_price=105, candles={'4h': [[end-(120-i)*4*HOUR, 100+i*.02, 110+i*.02, 90+i*.02, 105+i*.02] for i in range(120)]})
+    return ctx
+
+
+def test_static_chart_preserves_ohlc_and_uses_saved_levels():
+    from app.services.daily_outlook_image import chart_snapshot
+    ctx = image_context()
+    result = chart_snapshot(ctx, report())
+    assert result['bars'] == ctx['candles']['4h']
+    assert result['paths'][0]['points'] == [(0, 105), (7, 110)]
+    assert result['anchor'].isoformat() == '2026-10-23T00:00:00+00:00'
+    ctx['candles']['4h'][-1][3] = 106
+    with pytest.raises(ValueError, match='invalid_snapshot_candle'):
+        chart_snapshot(ctx, report())
+
+
+def test_static_chart_png_and_daily_fallback():
+    from app.services.daily_outlook_image import render_report_image, chart_snapshot
+    ctx = image_context()
+    png = render_report_image(json.dumps(dict(id=1, symbol='BTCUSDT', date='2026-10-23', context=ctx, report=report())))
+    assert png.startswith(b'\x89PNG\r\n\x1a\n') and len(png) > 20000
+    ctx['candles'] = {'1d': [[int(datetime(2026,10,22,tzinfo=timezone.utc).timestamp()*1000),100,110,90,105]]}
+    assert chart_snapshot(ctx, report())['step'] == 86400
+
+
+def test_static_chart_excludes_forming_candles_and_unknown_paths():
+    from app.services.daily_outlook_image import chart_snapshot
+    ctx = image_context()
+    ctx['candles']['4h'].append([int(datetime(2026,10,23,tzinfo=timezone.utc).timestamp()*1000),100,110,90,105])
+    r = report()
+    r['dominant']['path_level_ids'] = ['unknown']
+    result = chart_snapshot(ctx, r)
+    assert len(result['bars']) == 119  # last 120 includes the rejected forming bar
+    assert [p['kind'] for p in result['paths']] == ['alternative']
+
+
+@pytest.mark.asyncio
+async def test_timeline_pagination_and_chart_endpoint(isolated, client):
+    async with TestSession() as s:
+        for i in range(32):
+            s.add(DailyOutlookRun(symbol='BTCUSDT', report_date=(datetime(2026,9,1)+timedelta(days=i)).date().isoformat(),
+                trigger='manual',status='completed',started_at=datetime.now(timezone.utc),
+                context=image_context(),report=report()))
+        await s.commit()
+    first = (await client.get('/api/gui/daily-outlook/runs')).json()
+    assert len(first['items']) == 30 and first['next_cursor']
+    assert 'report' not in first['items'][0]
+    second = (await client.get('/api/gui/daily-outlook/runs', params={'before_id':first['next_cursor']})).json()
+    assert len(second['items']) == 2 and second['next_cursor'] is None
+    assert not ({r['id'] for r in first['items']} & {r['id'] for r in second['items']})
+    rid = first['items'][0]['id']
+    image = await client.get(f'/api/gui/daily-outlook/runs/{rid}/chart-image')
+    assert image.status_code == 200
+    assert image.json()['data_url'].startswith('data:image/png;base64,iVBOR')
+    assert (await client.get('/api/gui/daily-outlook/runs/999/chart-image')).status_code == 404
+    async with TestSession() as s:
+        row = await s.get(DailyOutlookRun,rid)
+        row.status = 'running'
+        await s.commit()
+    assert (await client.get(f'/api/gui/daily-outlook/runs/{rid}/chart-image')).status_code == 409

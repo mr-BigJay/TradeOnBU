@@ -1,4 +1,3 @@
-import { DailyOutlookChart } from "./DailyOutlookChart";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { apiFetch } from "./api";
 import { displayTehranTime } from "./displayTime";
@@ -17,6 +16,7 @@ type Report = {
   watch_next_fa: string[]; change_since_previous_fa: string;
 };
 type Run = {
+  title?: string; summary?: string; direction?: keyof typeof dir; snapshot_price?: number;
   id: number; report_date: string; symbol: string; status: string; stale: boolean;
   started_at: string; completed_at: string | null; model: string | null; error_code?: string;
   report?: Report; usage?: { input_tokens?: number; output_tokens?: number; total_tokens?: number };
@@ -25,7 +25,7 @@ type Run = {
 };
 type Schedule = { enabled: boolean; hour: number; minute: number; next_run_at: string | null };
 type Dashboard = { settings: Schedule; latest: Run | null; latest_completed: Run | null;
-  history: Run[]; attempted_today: boolean; can_retry_today?: boolean };
+  history: Run[]; next_cursor?: number | null; attempted_today: boolean; can_retry_today?: boolean };
 const dir = { bullish: "صعودی", bearish: "نزولی", range: "رنج" };
 const statusLabel: Record<string, string> = { completed: "آماده", running: "در حال تولید", failed: "ناموفق" };
 const price = (n: number) => n.toLocaleString("en-US", { maximumFractionDigits: 2 });
@@ -52,6 +52,29 @@ function ScenarioCard({ scenario: s, levels, primary }: { scenario: Scenario; le
   </article>;
 }
 
+function reportRoute() { return window.location.hash.match(/^#\/outlook\/reports\/(\d+)$/)?.[1] || null; }
+
+function ReportImage({ id }: { id: number }) {
+  const [image, setImage] = useState<{ data_url: string; filename: string } | null>(null);
+  const [error, setError] = useState("");
+  const [retry, setRetry] = useState(0);
+  useEffect(() => {
+    let cancelled = false;
+    setImage(null); setError("");
+    apiFetch(`/api/gui/daily-outlook/runs/${id}/chart-image`)
+      .then(result => { if (!cancelled) setImage(result); })
+      .catch(e => { if (!cancelled) setError(e.message); });
+    return () => { cancelled = true; };
+  }, [id, retry]);
+  return <figure className="card outlook-report-image">
+    {image ? <><img src={image.data_url} alt="چارت کندل‌های واقعی و مسیر سناریوهای هفت روز آینده" onError={() => { setImage(null); setError("نمایش تصویر ممکن نشد"); }} />
+      <a href={image.data_url} download={image.filename}>دانلود تصویر چارت</a></>
+      : error ? <div role="alert">{error} <button onClick={() => setRetry(v => v + 1)}>دریافت دوباره تصویر</button></div>
+      : <p role="status">در حال آماده‌سازی تصویر چارت…</p>}
+    <figcaption>کندل‌ها واقعی و مربوط به زمان گزارش‌اند. خط سبز: سناریوی غالب؛ خط زرد: جایگزین. مسیر هفت‌روزه مشروط است و فاصلهٔ نقاط، زمان قطعی رسیدن قیمت را نشان نمی‌دهد.</figcaption>
+  </figure>;
+}
+
 export function DailyOutlookPage() {
   const [data, setData] = useState<Dashboard | null>(null);
   const [selected, setSelected] = useState<Run | null>(null);
@@ -61,7 +84,23 @@ export function DailyOutlookPage() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const initialized = useRef(false);
-  const selectionRequest = useRef(0);
+  const [reportId, setReportId] = useState(reportRoute);
+  const [detailError, setDetailError] = useState("");
+  const [older, setOlder] = useState<Run[]>([]);
+  const [cursor, setCursor] = useState<number | null | undefined>(undefined);
+  useEffect(() => {
+    const update = () => setReportId(reportRoute());
+    window.addEventListener("hashchange", update);
+    return () => window.removeEventListener("hashchange", update);
+  }, []);
+  useEffect(() => {
+    let cancelled = false;
+    setSelected(null); setDetailError("");
+    if (reportId) apiFetch(`/api/gui/daily-outlook/runs/${reportId}`)
+      .then(r => { if (!cancelled) setSelected(r); })
+      .catch(e => { if (!cancelled) setDetailError(e.message); });
+    return () => { cancelled = true; };
+  }, [reportId]);
   const refresh = useCallback(async () => {
     const result: Dashboard = await apiFetch("/api/gui/daily-outlook");
     setData(result);
@@ -81,12 +120,14 @@ export function DailyOutlookPage() {
     try { await fn(); await refresh(); } catch (e) { setError(e instanceof Error ? e.message : "خطا در دریافت اطلاعات"); }
     finally { setBusy(false); }
   };
-  const run = selected || data?.latest_completed;
+  const run = reportId && selected?.id === Number(reportId) ? selected : null;
+  const history = [...new Map([...older, ...(data?.history || [])].map(r => [r.id, r])).values()].sort((a,b) => b.id-a.id);
+  const nextCursor = cursor === undefined ? data?.next_cursor : cursor;
   const report = run?.report;
   const levels = run?.context?.levels || [];
 
   return <section className="daily-outlook" dir="rtl">
-    <header className="outlook-heading"><div><span className="outlook-eyebrow">تصویر بزرگ‌تر بازار</span>
+    {!reportId && <><header className="outlook-heading"><div><span className="outlook-eyebrow">تصویر بزرگ‌تر بازار</span>
       <h2>چشم‌انداز روزانه</h2><p>سناریوهای مشروط ۳ تا ۷ روز آینده، بر پایهٔ ساختار هفتگی، روزانه و ۴ساعته</p></div>
       <span className="outlook-horizon">۳–۷ روز</span></header>
     <div className="card outlook-controls">
@@ -99,19 +140,27 @@ export function DailyOutlookPage() {
       })}>ذخیره زمان‌بندی</button>
       <button type="button" className="secondary" disabled={busy || !data || (data.attempted_today && !data.can_retry_today)} onClick={() => action(async () => {
         await apiFetch("/api/gui/daily-outlook/generate", { method: "POST" });
-        selectionRequest.current++; setSelected(null); setNotice("تولید گزارش شروع شد؛ نتیجه پس از تکمیل نمایش داده می‌شود.");
+        setNotice("تولید گزارش شروع شد؛ نتیجه پس از تکمیل نمایش داده می‌شود.");
       })}>{data?.can_retry_today ? "تلاش مجدد گزارش امروز" : "تولید گزارش امروز"}</button>
       <p className="hint outlook-control-note">حداکثر یک درخواست AI در روز برای هر نماد؛ خطای داده پیش از ارسال به AI قابل تلاش مجدد دستی است. با اتصال API مصرف جداگانه دارد.</p>
       <p className="hint outlook-control-note">{data?.settings.enabled ? `نوبت بعد: ${displayTehranTime(null, data.settings.next_run_at)}` : "زمان‌بندی خودکار خاموش است."}</p>
     </div>
+    </>}
     {error && <p role="alert" className="toast toast-error">{error}</p>}
     {notice && <p role="status" className="toast">{notice}</p>}
-    {data?.latest?.status === "running" && <p role="status" className="card outlook-status">گزارش امروز در حال تولید است؛ ممکن است چند دقیقه زمان ببرد.</p>}
-    {data?.latest?.status === "failed" && <div role="alert" className="card outlook-status">تولید گزارش {data.latest.report_date} ناموفق بود. گزارش قبلی، در صورت وجود، با تاریخ خودش نمایش داده می‌شود.
+    {!reportId && data?.latest?.status === "running" && <p role="status" className="card outlook-status">گزارش امروز در حال تولید است؛ ممکن است چند دقیقه زمان ببرد.</p>}
+    {!reportId && data?.latest?.status === "failed" && <div role="alert" className="card outlook-status">تولید گزارش {data.latest.report_date} ناموفق بود. گزارش‌های قبلی در تایم‌لاین در دسترس‌اند.
       <p className="hint">کد خطا: <bdi>{data.latest.error_code}</bdi></p></div>}
     {!data && !error && <p>در حال دریافت اطلاعات…</p>}
-    {data && !report && <div className="card outlook-empty"><h3>اولین چشم‌انداز را بسازید</h3><p>گزارش شامل سناریوی غالب و جایگزین، نواحی کلیدی، شروط ابطال و موارد قابل پیگیری خواهد بود.</p></div>}
+    {!reportId && data && !history.length && <div className="card outlook-empty"><h3>اولین چشم‌انداز را بسازید</h3><p>گزارش شامل سناریوی غالب و جایگزین، نواحی کلیدی، شروط ابطال و موارد قابل پیگیری خواهد بود.</p></div>}
+    {reportId && <a className="outlook-back" href="#/outlook">← بازگشت به گزارش‌های روزانه</a>}
+    {reportId && detailError && <p role="alert">{detailError}</p>}
+    {reportId && !run && !detailError && <p role="status">در حال دریافت گزارش…</p>}
+    {run && !report && <p>گزارش هنوز آماده نیست: {statusLabel[run.status] || run.status}</p>}
     {report && run && <>
+      <header className="outlook-heading"><div><span className="outlook-eyebrow">گزارش روزانه · <bdi>{run.report_date}</bdi></span>
+        <h2>{report.dominant.title_fa}</h2><p><bdi>{run.symbol}</bdi> · {displayTehranTime(null, run.completed_at)}</p></div></header>
+      <ReportImage key={run.id} id={run.id} />
       <div className="card outlook-summary">
         <div className="outlook-card-top"><span><bdi>{run.symbol}</bdi> · {run.report_date}</span><span className={`outlook-badge ${report.dominant.direction}`}>{dir[report.dominant.direction]}</span></div>
         {run.stale && <p className="outlook-stale">این گزارش مربوط به روز گذشته یا قبل‌تر است؛ به‌عنوان تحلیل تازه استفاده نشود.</p>}
@@ -119,7 +168,6 @@ export function DailyOutlookPage() {
         <h3>برداشت غالب بازار</h3><p>{report.summary_fa}</p>
         <div className="outlook-meta"><span>زمان داده: {displayTehranTime(null, run.context?.as_of)}</span>
           <span>قیمت هنگام تحلیل: <bdi>{run.context?.live_price ? price(run.context.live_price) : "—"}</bdi></span></div>
-        {run.context && <DailyOutlookChart context={run.context} dominant={report.dominant} alternative={report.alternative} />}
       </div>
       <div className="outlook-grid"><article className="card"><h3>ساختار هفتگی</h3><p>{report.weekly_context_fa}</p></article>
         <article className="card"><h3>ساختار روزانه</h3><p>{report.daily_structure_fa}</p></article></div>
@@ -132,13 +180,22 @@ export function DailyOutlookPage() {
         <p>مدل: <bdi>{run.model || "—"}</bdi> · توکن ورودی: <bdi>{run.usage?.input_tokens ?? "—"}</bdi> · توکن خروجی: <bdi>{run.usage?.output_tokens ?? "—"}</bdi></p>
       </details>
     </>}
-    {!!data?.history.length && <div className="card outlook-archive"><h3>آرشیو گزارش‌ها</h3>
-      <button type="button" className="secondary" onClick={() => { selectionRequest.current++; setSelected(null); }}>آخرین گزارش آماده</button>
-      <div className="outlook-archive-list">{data.history.map(r => <button type="button" className={run?.id === r.id ? "active" : "secondary"} key={r.id} disabled={r.status !== "completed" || busy} onClick={async () => {
-        const request = ++selectionRequest.current;
-        try { const detail = await apiFetch(`/api/gui/daily-outlook/runs/${r.id}`); if (selectionRequest.current === request) setSelected(detail); }
-        catch (e) { setError(e instanceof Error ? e.message : "خطا در دریافت گزارش"); }
-      }}>{r.report_date} · {statusLabel[r.status] || r.status}</button>)}</div>
+    {!reportId && !!history.length && <div className="outlook-timeline" aria-label="تایم‌لاین گزارش‌های روزانه">
+      {history.map(r => <article className="outlook-timeline-entry" key={r.id}>
+        <div className="outlook-timeline-date"><time>{r.report_date}</time><span>{displayTehranTime(null, r.completed_at || r.started_at)}</span></div>
+        <div className="card outlook-post">
+          <div className="outlook-card-top"><span><bdi>{r.symbol}</bdi> · {statusLabel[r.status] || r.status}</span>
+            {r.direction && <span className={`outlook-badge ${r.direction}`}>{dir[r.direction]}</span>}</div>
+          <h3>{r.status === "completed" ? <a href={`#/outlook/reports/${r.id}`}>{r.title || "چشم‌انداز روزانه بیت‌کوین"}</a> : "گزارش روزانه"}</h3>
+          <p>{r.summary || (r.status === "running" ? "گزارش در حال آماده‌سازی است…" : r.error_code || "")}</p>
+          <div className="outlook-card-top">{r.snapshot_price && <span className="hint">قیمت هنگام گزارش: <bdi>{price(r.snapshot_price)}</bdi></span>}
+            {r.status === "completed" && <a href={`#/outlook/reports/${r.id}`}>مشاهده گزارش و چارت ←</a>}</div>
+        </div>
+      </article>)}
+      {nextCursor && <button disabled={busy} onClick={() => action(async () => {
+        const result = await apiFetch(`/api/gui/daily-outlook/runs?before_id=${nextCursor}`);
+        setOlder(v => [...v, ...result.items]); setCursor(result.next_cursor);
+      })}>گزارش‌های قدیمی‌تر</button>}
     </div>}
   </section>;
 }

@@ -1,4 +1,10 @@
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+import base64
+import json
+from starlette.concurrency import run_in_threadpool
+from fastapi.responses import JSONResponse
+from sqlalchemy import select
+
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from app.db import SessionLocal
@@ -50,3 +56,35 @@ async def generate(background: BackgroundTasks):
         raise HTTPException(409, "شروع تحلیل ممکن نشد")
     background.add_task(execute_reserved, run_id, owner)
     return {"id": run_id, "status": status}
+
+
+@router.get("/runs")
+async def list_runs(before_id: int | None = Query(default=None, gt=0)):
+    from app.config import get_effective_settings
+    async with SessionLocal() as session:
+        query = select(DailyOutlookRun).where(DailyOutlookRun.symbol == get_effective_settings().default_symbol)
+        if before_id is not None:
+            query = query.where(DailyOutlookRun.id < before_id)
+        rows = (await session.execute(query.order_by(DailyOutlookRun.id.desc()).limit(31))).scalars().all()
+        return {"items": [serialize_run(r, detail=False) for r in rows[:30]],
+                "next_cursor": rows[29].id if len(rows) > 30 else None}
+
+
+@router.get("/runs/{run_id}/chart-image")
+async def get_chart_image(run_id: int):
+    from app.services.daily_outlook_image import render_report_image
+    async with SessionLocal() as session:
+        row = await session.get(DailyOutlookRun, run_id)
+        if not row:
+            raise HTTPException(404, "گزارش پیدا نشد")
+        if row.status != "completed":
+            raise HTTPException(409, "تصویر پس از تکمیل گزارش آماده می‌شود")
+        payload = {"id": row.id, "symbol": row.symbol, "date": row.report_date,
+                   "context": row.context or {}, "report": row.report or {}}
+        filename = f"daily-outlook-{row.report_date}-{row.id}.png"
+    try:
+        png = await run_in_threadpool(render_report_image, json.dumps(payload, sort_keys=True, ensure_ascii=False))
+    except (ValueError, KeyError, TypeError):
+        raise HTTPException(422, "دادهٔ ذخیره‌شده برای ترسیم چارت کافی یا معتبر نیست")
+    return JSONResponse({"data_url": "data:image/png;base64," + base64.b64encode(png).decode("ascii"),
+                         "filename": filename}, headers={"Cache-Control": "private, no-store"})
