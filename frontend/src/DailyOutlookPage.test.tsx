@@ -1,0 +1,32 @@
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { DailyOutlookPage } from './DailyOutlookPage';
+const apiFetch=vi.fn();
+vi.mock('./api',()=>({apiFetch:(...args:unknown[])=>apiFetch(...args)}));
+const scenario={title_fa:'بررسی حفظ حمایت',direction:'bullish',thesis_fa:'سناریوی مشروط',activation_fa:'بسته شدن روزانه بالای سطح',invalidation_fa:'بسته شدن زیر سطح',activation_level_ids:['level'],invalidation_level_ids:['level'],target_level_ids:['level'],path_fa:['تأیید شکست','بازآزمایی سطح']};
+const run={id:1,report_date:'2026-10-22',symbol:'BTCUSDT',status:'completed',stale:true,model:'test',report:{summary_fa:'خلاصه گزارش آزمایشی',weekly_context_fa:'ساختار هفتگی',daily_structure_fa:'ساختار روزانه',dominant:scenario,alternative:{...scenario,direction:'bearish'},uncertainty_fa:'ابهام',watch_next_fa:['بررسی کندل'],change_since_previous_fa:'بدون تغییر'},context:{as_of:'2026-10-22T06:00:00Z',live_price:81000,levels:[{id:'level',label_fa:'کف روز قبل',price:80000}],daily_candles:[]}};
+const empty=()=>({settings:{enabled:false,hour:8,minute:5,next_run_at:null},latest:null,latest_completed:null,history:[],attempted_today:false});
+beforeEach(()=>apiFetch.mockReset());
+afterEach(cleanup);
+it('shows both conditional scenarios and stale report when latest generation fails',async()=>{
+ apiFetch.mockResolvedValue({...empty(),latest:{status:'failed',report_date:'2026-10-23',error_code:'market_history_gap'},latest_completed:run,history:[run],attempted_today:true});
+ render(<DailyOutlookPage/>);
+ expect(await screen.findByText('سناریوی غالب')).toBeInTheDocument();
+ expect(screen.getByText('سناریوی جایگزین')).toBeInTheDocument();
+ expect(screen.getByText(/این گزارش مربوط به روز گذشته/)).toBeInTheDocument();
+ expect(screen.getByText('market_history_gap')).toBeInTheDocument();
+ expect(screen.getByRole('button',{name:'تولید گزارش امروز'})).toBeDisabled();
+ expect(screen.getAllByText('80,000').length).toBe(6);
+ expect(screen.queryByText(/2026-10-22T06/)).not.toBeInTheDocument();
+});
+it('saves editable daily time independently and starts one manual generation',async()=>{
+ apiFetch.mockResolvedValue(empty()); render(<DailyOutlookPage/>);
+ await screen.findByText('اولین چشم‌انداز را بسازید');
+ fireEvent.click(screen.getByRole('checkbox'));
+ fireEvent.change(screen.getByLabelText('ساعت تهران'),{target:{value:'09:15'}});
+ fireEvent.click(screen.getByRole('button',{name:'ذخیره زمان‌بندی'}));
+ await waitFor(()=>expect(apiFetch).toHaveBeenCalledWith('/api/gui/daily-outlook/settings',{method:'PUT',body:JSON.stringify({enabled:true,hour:9,minute:15})}));
+ await waitFor(()=>expect(screen.getByRole('button',{name:'تولید گزارش امروز'})).not.toBeDisabled());
+ fireEvent.click(screen.getByRole('button',{name:'تولید گزارش امروز'}));
+ await waitFor(()=>expect(apiFetch).toHaveBeenCalledWith('/api/gui/daily-outlook/generate',{method:'POST'}));
+});

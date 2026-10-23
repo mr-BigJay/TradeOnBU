@@ -312,7 +312,7 @@ async def _persist_run_draft(run_id: int, draft: _RunDraft, *, symbol: str) -> A
         run.completed_at = completed
         setup_row: AiProposedSetup | None = None
         if draft.status.startswith("completed") and draft.structured:
-            mi_ctx = (draft.structured or {}).get("market_intelligence_context")
+            mi_ctx = ((draft.structured or {}).get("_artifacts") or {}).get("market_intelligence_context")
             setup_row, setup_meta = await create_setup_from_structured(
                 session,
                 run_id=run_id,
@@ -523,3 +523,4 @@ async def run_ai_analysis(*, trigger: str = "scheduled", model_override: str | N
 async def build_market_context(symbol: str) -> tuple[dict[str, Any], float]:
     payload, live, _ = await build_raw_market_payload(symbol)
     return payload, live
+

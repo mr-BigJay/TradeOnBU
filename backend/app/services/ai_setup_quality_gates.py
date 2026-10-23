@@ -236,10 +236,14 @@ async def _open_same_direction_setups(
 
     exclude = exclude_setup_ids or set()
     opens = await load_open_setups(session, symbol)
+    from app.domain.setup_lifecycle import ACTIVE_MONITOR_STATES
+
     return [
         s
         for s in opens
-        if (s.direction or "").upper() == direction.upper() and s.setup_id not in exclude
+        if (s.direction or "").upper() == direction.upper()
+        and s.setup_id not in exclude
+        and s.lifecycle_state in ACTIVE_MONITOR_STATES
     ]
 
 
@@ -534,3 +538,4 @@ async def validate_ready_setup_before_paper_order(
         now_ms=now_ms,
         phase="order",
     )
+
