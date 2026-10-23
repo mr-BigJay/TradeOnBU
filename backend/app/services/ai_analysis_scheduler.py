@@ -173,12 +173,13 @@ async def scheduling_allowed(
 
 def _next_regular_run_at(cfg: AiAnalysisSettings, now: datetime) -> datetime:
     interval = _effective_interval_minutes(cfg)
-    anchor = cfg.last_success_at or cfg.last_run_at or now
-    anchor = _ensure_utc(anchor)
-    nxt = anchor + timedelta(minutes=interval)
-    if nxt <= now:
-        nxt = now + timedelta(minutes=interval)
-    return nxt
+    period_seconds = interval * 60
+    now = _ensure_utc(now)
+    # Fixed UTC boundaries plus 60 seconds; independent of completion time.
+    slot = int((now.timestamp() - 60) // period_seconds) + 1
+    return datetime.fromtimestamp(
+        slot * period_seconds + 60, tz=timezone.utc
+    )
 
 
 def record_run_outcome(
@@ -195,7 +196,8 @@ def record_run_outcome(
         cfg.last_success_at = now
         cfg.last_error = None
         cfg.auto_retry_pending = False
-        cfg.next_run_at = now + timedelta(minutes=interval)
+        if trigger == "scheduled":
+            cfg.next_run_at = _next_regular_run_at(cfg, now)
         return
 
     cfg.last_error = error_detail or "run_failed"
@@ -286,3 +288,4 @@ async def should_run_scheduled(session: AsyncSession) -> bool:
     if cfg.next_run_at is None:
         return True
     return _utc_now() >= _ensure_utc(cfg.next_run_at)
+

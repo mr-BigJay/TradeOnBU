@@ -82,11 +82,12 @@ def test_manual_one_twenty_not_restored_without_migration_flag():
     assert cfg.interval_minutes == 120
 
 
-def test_record_run_outcome_schedules_sixty_minutes_after_success():
+def test_record_run_outcome_uses_next_utc_hour_boundary():
     cfg = AiAnalysisSettings(interval_minutes=60)
-    record_run_outcome(cfg, "completed", trigger="scheduled")
-    assert cfg.next_run_at > datetime.now(timezone.utc) + timedelta(minutes=59)
-    assert cfg.next_run_at < datetime.now(timezone.utc) + timedelta(minutes=61)
+    now = datetime(2026, 10, 23, 11, 35, 34, tzinfo=timezone.utc)
+    with patch("app.services.ai_analysis_scheduler._utc_now", return_value=now):
+        record_run_outcome(cfg, "completed", trigger="scheduled")
+    assert cfg.next_run_at == datetime(2026, 10, 23, 12, 1, tzinfo=timezone.utc)
 
 
 @pytest.mark.asyncio
@@ -157,3 +158,4 @@ async def test_scheduled_executor_skips_when_lock_held(session):
         with patch("app.services.ai_analysis_executor.run_ai_analysis", AsyncMock()) as mock_run:
             await execute_scheduled_if_due()
     mock_run.assert_not_called()
+

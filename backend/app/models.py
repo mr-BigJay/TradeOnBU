@@ -635,3 +635,29 @@ class LiquidationWindowRollup(Base):
     bucket_start_ms: Mapped[int] = mapped_column(Integer, index=True)
     payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+
+class DailyOutlookSettings(Base):
+    __tablename__ = "daily_outlook_settings"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    enabled: Mapped[bool] = mapped_column(default=False)
+    hour: Mapped[int] = mapped_column(Integer, default=8)
+    minute: Mapped[int] = mapped_column(Integer, default=5)
+
+
+class DailyOutlookRun(Base):
+    __tablename__ = "daily_outlook_runs"
+    __table_args__ = (UniqueConstraint("symbol", "report_date", name="uq_daily_outlook_symbol_date"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(32))
+    report_date: Mapped[str] = mapped_column(String(10))
+    trigger: Mapped[str] = mapped_column(String(16))
+    status: Mapped[str] = mapped_column(String(16), default="running")
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    model_slug: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    context: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    report: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    usage: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)

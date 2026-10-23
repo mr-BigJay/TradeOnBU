@@ -18,6 +18,7 @@ from app.bootstrap import validate_settings
 from app.config import get_settings
 from app.db import SessionLocal, get_db, init_db
 from app.middleware.session_security import SessionSecurityMiddleware
+from app.routes import daily_outlook as daily_outlook_routes
 from app.routes import auth as auth_routes
 from app.routes import settings_gui as settings_gui_routes
 from app.routes import chatgpt_ai as chatgpt_ai_routes
@@ -106,6 +107,13 @@ async def lifespan(app: FastAPI):
             coalesce=True,
         )
 
+        from app.services.daily_outlook import daily_outlook_tick
+
+        scheduler.add_job(
+            daily_outlook_tick, "interval", minutes=1,
+            id="daily_market_outlook", max_instances=1, coalesce=True,
+        )
+
         async def _opportunity_monitor_tick() -> None:
             from app.services.opportunity_monitor import run_opportunity_monitor_tick
 
@@ -187,6 +195,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title=settings.app_name, lifespan=lifespan)
+app.include_router(daily_outlook_routes.router)
 app.include_router(auth_routes.router)
 app.include_router(settings_gui_routes.router)
 app.include_router(chatgpt_ai_routes.router)
@@ -426,3 +435,4 @@ if frontend_dist.exists():
             path,
             headers={"Cache-Control": "public, max-age=31536000, immutable"},
         )
+
