@@ -73,7 +73,7 @@ function ReportImage({ id }: { id: number }) {
     {image ? <><img src={image.data_url} alt="چارت کندل‌های واقعی و مسیر سناریوهای هفت روز آینده" onError={() => { setImage(null); setError("نمایش تصویر ممکن نشد"); }} />
       <a href={image.data_url} download={image.filename}>دانلود تصویر چارت</a></>
       : error ? <div role="alert">{error} <button onClick={() => setRetry(v => v + 1)}>دریافت دوباره تصویر</button></div>
-      : <p role="status">در حال آماده‌سازی تصویر چارت…</p>}
+      : <p role="status">در حال بارگذاری تصویر چارت…</p>}
     {image?.nearby && <div className="outlook-grid outlook-overlay-key">
       {(["support", "resistance"] as const).map(side => <div key={side}><h4>{side === "support" ? "حمایت‌های احتمالی" : "مقاومت‌های احتمالی"}</h4>
         {image.nearby![side].length ? image.nearby![side].map(l => <p key={l.id}><bdi>{l.code} · {price(l.price)}</bdi> — {l.label_fa}</p>) : <p>سطحی در داده‌های این گزارش موجود نیست.</p>}</div>)}
