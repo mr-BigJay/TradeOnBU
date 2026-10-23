@@ -98,8 +98,14 @@ def render_report_image(snapshot_json: str) -> bytes:
                 fy = [offset+slope*channel["end_day"], offset+slope*7]
                 all_prices.extend(hy+fy)
                 ax.plot(hx, hy, color="#80aaff", linewidth=1.1, alpha=.8, linestyle=":" if name=="mid" else "-",
-                        label="Pivot channel (descriptive)" if name=="upper" else None)
+                        label="Major-swing channel" if name=="upper" else None)
                 ax.plot([channel["end_day"],7],fy,color="#80aaff",linewidth=.8,linestyle="-.",alpha=.5)
+            anchor_side = 2 if channel.get("anchor_side") == "upper" else 3
+            anchors = set(channel.get("anchor_times_ms", []))
+            for row in data["bars"]:
+                if row[0] in anchors:
+                    ax.scatter([(row[0]/1000-anchor.timestamp())/DAY], [row[anchor_side]],
+                               s=35, facecolors="none", edgecolors="#a8c4ff", linewidths=1.2, zorder=7)
             ax.fill_between([channel["start_day"],channel["end_day"]],
                 [channel["lower"]+slope*channel["start_day"],channel["lower"]+slope*channel["end_day"]],
                 [channel["upper"]+slope*channel["start_day"],channel["upper"]+slope*channel["end_day"]],color="#80aaff",alpha=.04)
