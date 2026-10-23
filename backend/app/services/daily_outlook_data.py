@@ -35,7 +35,7 @@ def aggregate_complete(bars: list[Candle], *, days: int, now_ms: int) -> list[Ca
     return result
 
 
-def validate_bars(bars: list[Candle], *, step: int, now_ms: int, minimum: int) -> None:
+def validate_bars(bars: list[Candle], *, step: int, now_ms: int, minimum: int, check_body: bool = True) -> None:
     if len(bars) < minimum:
         raise ValueError("insufficient_market_history")
     expected_last = (now_ms // step) * step - step
@@ -45,7 +45,7 @@ def validate_bars(bars: list[Candle], *, step: int, now_ms: int, minimum: int) -
         prices = [bar.open, bar.high, bar.low, bar.close]
         if not all(math.isfinite(p) and p > 0 for p in prices):
             raise ValueError("invalid_market_prices")
-        if bar.low > min(bar.open, bar.close) or bar.high < max(bar.open, bar.close) or bar.low > bar.high:
+        if bar.low > bar.high or (check_body and (bar.low > min(bar.open, bar.close) or bar.high < max(bar.open, bar.close))):
             raise ValueError("invalid_candle_range")
         if bar.time_ms % step or (i and bar.time_ms - bars[i - 1].time_ms != step):
             raise ValueError("market_history_gap")
@@ -75,10 +75,24 @@ async def build_daily_context(symbol: str, market: MarketDataService | None = No
     if not bundle.data_complete:
         raise ValueError("incomplete_4h_history")
     bars = sorted(bundle.closed, key=lambda b: b.time_ms)
-    validate_bars(bars, step=4 * HOUR, now_ms=now_ms, minimum=80 * 6)
+    # Validate the full history for finite prices, ordered ranges and continuity.
+    # Only the latest 120 raw 4h bars are sent to the model; older bars feed daily aggregation.
+    validate_bars(bars, step=4 * HOUR, now_ms=now_ms, minimum=80 * 6, check_body=False)
+    validate_bars(bars[-120:], step=4 * HOUR, now_ms=now_ms, minimum=120)
     daily = aggregate_complete(bars, days=1, now_ms=now_ms)
     weekly = aggregate_complete(daily, days=7, now_ms=now_ms)
     validate_bars(daily, step=DAY, now_ms=now_ms, minimum=80)
+    # Every constituent open/close must fit the unchanged daily extrema, including
+    # internal 4h bars that are not the day's opening/closing bar. Never clamp prices.
+    day_by_time = {b.time_ms: b for b in daily}
+    warnings = []
+    for b in bars[:-120]:
+        day = day_by_time.get(b.time_ms // DAY * DAY)
+        if b.low > min(b.open, b.close) or b.high < max(b.open, b.close):
+            if day is None or min(b.open, b.close) < day.low or max(b.open, b.close) > day.high:
+                raise ValueError("invalid_candle_range")
+            warnings.append({"time_ms": b.time_ms, "scope": "historical_4h_not_sent",
+                             "reason": "body_outside_4h_range_but_inside_valid_daily_range"})
     if len(weekly) < 10:
         raise ValueError("insufficient_weekly_history")
     quote = await market.fetch_live_price(symbol)
@@ -93,7 +107,7 @@ async def build_daily_context(symbol: str, market: MarketDataService | None = No
     return {
         "symbol": symbol, "as_of": datetime.now(timezone.utc).isoformat(),
         "source": "Bitunix futures; 1D/1W aggregated from complete 4h candles, UTC Monday weeks",
-        "horizon_days": [3, 7], "live_price": quote.price,
+        "data_quality_warnings": warnings, "horizon_days": [3, 7], "live_price": quote.price,
         "columns": ["open_time_ms", "open", "high", "low", "close", "volume"],
         "candles": {"1w": compact(weekly[-12:]), "1d": compact(daily[-80:]), "4h": compact(bars[-120:])},
         "levels": level_context(daily, weekly, bars),
