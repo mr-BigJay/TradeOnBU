@@ -1,3 +1,4 @@
+import { DailyOutlookChart } from "./DailyOutlookChart";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { apiFetch } from "./api";
 import { displayTehranTime } from "./displayTime";
@@ -8,7 +9,7 @@ type Scenario = {
   title_fa: string; direction: "bullish" | "bearish" | "range";
   thesis_fa: string; activation_fa: string; invalidation_fa: string;
   activation_level_ids: string[]; invalidation_level_ids: string[]; target_level_ids: string[];
-  path_fa: string[];
+  path_fa: string[]; path_level_ids?: string[];
 };
 type Report = {
   summary_fa: string; weekly_context_fa: string; daily_structure_fa: string;
@@ -20,7 +21,7 @@ type Run = {
   started_at: string; completed_at: string | null; model: string | null; error_code?: string;
   report?: Report; usage?: { input_tokens?: number; output_tokens?: number; total_tokens?: number };
   context?: { as_of: string; source: string; live_price: number; daily_atr14: number;
-    levels: Level[]; daily_candles: number[][]; data_quality_warnings?: unknown[] };
+    levels: Level[]; daily_candles: number[][]; four_hour_candles?: number[][]; data_quality_warnings?: unknown[] };
 };
 type Schedule = { enabled: boolean; hour: number; minute: number; next_run_at: string | null };
 type Dashboard = { settings: Schedule; latest: Run | null; latest_completed: Run | null;
@@ -49,23 +50,6 @@ function ScenarioCard({ scenario: s, levels, primary }: { scenario: Scenario; le
     <div className="outlook-invalidation"><h4>چه چیزی سناریو را باطل می‌کند؟</h4><p>{s.invalidation_fa}</p>
       <LevelList ids={s.invalidation_level_ids} levels={levels} /></div>
   </article>;
-}
-
-function HistoryChart({ bars }: { bars: number[][] }) {
-  if (bars.length < 2) return null;
-  const values = bars.map(b => b[4]);
-  const lo = Math.min(...values), hi = Math.max(...values);
-  const points = values.map((v, i) => `${30 + i / (values.length - 1) * 690},${160 - (v - lo) / Math.max(hi - lo, 1) * 130}`).join(" ");
-  return <div className="outlook-history-chart" dir="ltr">
-    <svg viewBox="0 0 750 190" role="img" aria-label="قیمت بسته‌شدن روزانه در ۳۰ روز گذشته؛ نمودار تاریخی">
-      {[30, 95, 160].map(y => <line key={y} x1="30" y1={y} x2="720" y2={y} stroke="#253246" />)}
-      <polyline points={points} fill="none" stroke="#5ed8b0" strokeWidth="3" />
-      <text x="30" y="20" fill="#a6b4c8" fontSize="12">{price(hi)}</text>
-      <text x="30" y="180" fill="#a6b4c8" fontSize="12">{price(lo)}</text>
-    </svg>
-    <div className="outlook-chart-dates"><span>{new Date(bars[0][0]).toISOString().slice(0, 10)}</span>
-      <span>{new Date(bars[bars.length - 1][0]).toISOString().slice(0, 10)}</span></div>
-  </div>;
 }
 
 export function DailyOutlookPage() {
@@ -135,8 +119,7 @@ export function DailyOutlookPage() {
         <h3>برداشت غالب بازار</h3><p>{report.summary_fa}</p>
         <div className="outlook-meta"><span>زمان داده: {displayTehranTime(null, run.context?.as_of)}</span>
           <span>قیمت هنگام تحلیل: <bdi>{run.context?.live_price ? price(run.context.live_price) : "—"}</bdi></span></div>
-        <HistoryChart bars={run.context?.daily_candles || []} />
-        <p className="hint">نمودار تاریخی قیمت بسته‌شدن روزانه؛ مسیر آینده در سناریوهای مشروط زیر توضیح داده شده است.</p>
+        {run.context && <DailyOutlookChart context={run.context} dominant={report.dominant} alternative={report.alternative} />}
       </div>
       <div className="outlook-grid"><article className="card"><h3>ساختار هفتگی</h3><p>{report.weekly_context_fa}</p></article>
         <article className="card"><h3>ساختار روزانه</h3><p>{report.daily_structure_fa}</p></article></div>

@@ -19,6 +19,7 @@ class Scenario(StrictModel):
     invalidation_level_ids: list[str] = Field(min_length=1, max_length=3)
     target_level_ids: list[str] = Field(min_length=1, max_length=3)
     path_fa: list[str] = Field(min_length=2, max_length=4)
+    path_level_ids: list[str] = Field(default_factory=list, max_length=6)
 
 
 class Outlook(StrictModel):
@@ -45,7 +46,9 @@ def parse_outlook(text: str, context: dict) -> dict:
     result = Outlook.model_validate(json.loads(raw))
     allowed = {level["id"] for level in context["levels"]}
     for scenario in (result.dominant, result.alternative):
-        ids = scenario.activation_level_ids + scenario.invalidation_level_ids + scenario.target_level_ids
+        ids = scenario.activation_level_ids + scenario.invalidation_level_ids + scenario.target_level_ids + scenario.path_level_ids
+        if scenario.path_level_ids and (len(scenario.path_level_ids) < 2 or scenario.path_level_ids[-1] not in scenario.target_level_ids):
+            raise ValueError("invalid_chart_path")
         if not set(ids) <= allowed:
             raise ValueError("unknown_evidence_level")
         if any(not stage.strip() or len(stage) > 800 for stage in scenario.path_fa):
@@ -59,7 +62,7 @@ and optional source-labelled market intelligence. This is market context, not an
 entry signal. Assess weekly context, daily structure and 4h development. Select a
 dominant conditional scenario and a different alternative. Give explicit activation
 and invalidation conditions (timeframe and close/retest), referenced level IDs,
-and 2–4 conditional stages of a plausible path. Do not forecast exact daily prices,
+and 2–4 conditional stages of a plausible path. Provide path_level_ids with 2–6 known level IDs in the same traversal order, ending at a target_level_id. Retracements may repeat IDs. This sequence is a schematic scenario overlay, not predicted timestamps. Do not forecast exact daily prices,
 dates of target arrival, guaranteed direction, confidence percentages or win rates.
 Only use IDs from levels; never invent a price level. Refer to level labels in prose.
 If evidence is weak prefer range/unclear descriptions and explain uncertainty.

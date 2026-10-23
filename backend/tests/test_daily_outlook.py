@@ -254,3 +254,17 @@ def test_possible_paid_requests_never_retry(field,value):
     row=SimpleNamespace(status='failed',error_code='invalid_candle_range',model_slug=None,usage={},context={})
     setattr(row,field,value)
     assert not service.retryable(row)
+
+
+def test_chart_path_uses_only_known_levels_and_ends_at_target():
+    result=report();result['dominant']['path_level_ids']=['low','high']
+    assert parse_outlook(json.dumps(result),context())['dominant']['path_level_ids']==['low','high']
+    result['dominant']['path_level_ids']=['imaginary','high']
+    with pytest.raises(ValueError,match='unknown_evidence_level'):parse_outlook(json.dumps(result),context())
+    result['dominant']['path_level_ids']=['high','low']
+    with pytest.raises(ValueError,match='invalid_chart_path'):parse_outlook(json.dumps(result),context())
+
+
+def test_serialize_returns_original_4h_snapshot_without_fetch():
+    row=DailyOutlookRun(id=9,symbol='BTCUSDT',report_date='2026-10-23',trigger='manual',status='completed',started_at=datetime.now(timezone.utc),context={'candles':{'4h':[[1,2,3,1,2]],'1d':[]}})
+    assert service.serialize_run(row)['context']['four_hour_candles']==[[1,2,3,1,2]]

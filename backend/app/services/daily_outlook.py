@@ -239,6 +239,7 @@ def serialize_run(row: DailyOutlookRun, *, detail: bool = True) -> dict:
             "daily_atr14": ctx.get("daily_atr14"),
             "data_quality_warnings": ctx.get("data_quality_warnings", []),
             "daily_candles": (ctx.get("candles") or {}).get("1d", [])[-30:],
+            "four_hour_candles": (ctx.get("candles") or {}).get("4h", [])[-120:],
         })
     return out
 
