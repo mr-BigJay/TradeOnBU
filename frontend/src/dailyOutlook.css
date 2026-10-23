@@ -46,3 +46,17 @@
 .outlook-chart-toolbar { display:flex; gap:14px; align-items:center; justify-content:space-between; flex-wrap:wrap; margin-bottom:14px; }
 .outlook-chart-toolbar label { display:flex; align-items:center; gap:8px; font-size:.8rem; }
 .outlook-chart-toolbar input { width:auto; margin:0; }
+
+.outlook-timeline{position:relative;margin:28px 0;padding-right:22px;border-right:2px solid #30435a}
+.outlook-timeline-entry{position:relative;margin-bottom:28px}
+.outlook-timeline-entry:before{content:"";position:absolute;right:-29px;top:8px;width:12px;height:12px;background:#65cfb2;border:2px solid #152031;border-radius:50%}
+.outlook-timeline-date{display:flex;justify-content:space-between;gap:12px;color:#9badc5;font-size:.85rem;margin-bottom:10px}
+.outlook-timeline-date time{font-weight:700;color:#d6e4f5}
+.outlook-post h3 a,.outlook-back{color:#deebfa;text-decoration:none}
+.outlook-post a{color:#75d9c0}.outlook-post p{line-height:1.9}
+.outlook-back{display:inline-block;margin:10px 0 24px}
+.outlook-report-image{margin:0 0 22px;padding:12px!important}
+.outlook-report-image img{display:block;width:100%;height:auto;border-radius:10px}
+.outlook-report-image figcaption{color:#a5b5cb;font-size:.85rem;line-height:1.9;margin-top:12px}
+.outlook-report-image a{display:inline-block;margin-top:12px;color:#75d9c0}
+@media(max-width:600px){.outlook-timeline-date{flex-direction:column;gap:4px}.outlook-timeline{padding-right:16px}.outlook-timeline-entry:before{right:-23px}}

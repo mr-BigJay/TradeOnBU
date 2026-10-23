@@ -25,7 +25,14 @@ export default function App() {
   const [authBoot, setAuthBoot] = useState<"loading" | "done">("loading");
   const [authed, setAuthed] = useState(false);
   const [sessionUser, setSessionUser] = useState<string | null>(null);
-  const [page, setPage] = useState<Page>("analysis");
+  const readPage = (): Page => NAV.find(n => n.id === window.location.hash.split("/")[1])?.id || "analysis";
+  const [page, setPage] = useState<Page>(readPage);
+  const navigate = (next: Page) => { window.location.hash = "/" + next; setPage(next); };
+  useEffect(() => {
+    const update = () => setPage(readPage());
+    window.addEventListener("hashchange", update);
+    return () => window.removeEventListener("hashchange", update);
+  }, []);
   const [positionPrefill, setPositionPrefill] = useState<PositionPrefill | null>(null);
   const [apiKeyInput, setApiKeyInput] = useState(getApiKey());
 
@@ -125,7 +132,7 @@ export default function App() {
         {sessionUser && <p className="header-user">{sessionUser}</p>}
         <nav className="desktop-tabs" aria-label="منوی اصلی">
           {NAV.map((n) => (
-            <button key={n.id} type="button" className={page === n.id ? "active" : ""} onClick={() => setPage(n.id)}>
+            <button key={n.id} type="button" className={page === n.id ? "active" : ""} onClick={() => navigate(n.id)}>
               {n.label}
             </button>
           ))}
@@ -140,7 +147,7 @@ export default function App() {
           <AiAnalysisPage
             onOpenPaperPosition={(p) => {
               setPositionPrefill(p);
-              setPage("position");
+              navigate("position");
             }}
           />
         )}
@@ -160,7 +167,7 @@ export default function App() {
             key={n.id}
             type="button"
             className={`bottom-nav-item ${page === n.id ? "active" : ""}`}
-            onClick={() => setPage(n.id)}
+            onClick={() => navigate(n.id)}
           >
             <span className="bottom-nav-icon" aria-hidden>
               {n.short}

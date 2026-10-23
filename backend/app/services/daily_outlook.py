@@ -231,6 +231,12 @@ def serialize_run(row: DailyOutlookRun, *, detail: bool = True) -> dict:
            "completed_at": utc(row.completed_at).isoformat() if row.completed_at else None,
            "model": row.model_slug, "error_code": row.error_code,
            "stale": row.report_date != datetime.now(TEHRAN).date().isoformat()}
+    report = row.report or {}
+    dominant = report.get("dominant") or {}
+    out.update(title=dominant.get("title_fa") or "چشم‌انداز روزانه بیت‌کوین",
+               summary=(report.get("summary_fa") or "")[:240],
+               direction=dominant.get("direction"),
+               snapshot_price=(row.context or {}).get("live_price"))
     if detail:
         ctx = row.context or {}
         out.update(report=row.report, usage=row.usage, context={
@@ -252,7 +258,7 @@ async def dashboard() -> dict:
         cfg = await settings_row(session)
         rows = (await session.execute(select(DailyOutlookRun).where(
             DailyOutlookRun.symbol == symbol,
-        ).order_by(DailyOutlookRun.id.desc()).limit(30))).scalars().all()
+        ).order_by(DailyOutlookRun.id.desc()).limit(31))).scalars().all()
         today = next((r for r in rows if r.report_date == now.astimezone(TEHRAN).date().isoformat()), None)
         nxt = scheduled_time(now, cfg.hour, cfg.minute)
         if today:
@@ -265,7 +271,8 @@ async def dashboard() -> dict:
             "latest": serialize_run(rows[0]) if rows else None,
             "latest_completed": serialize_run(next(r for r in rows if r.status == "completed"))
                 if any(r.status == "completed" for r in rows) else None,
-            "history": [serialize_run(r, detail=False) for r in rows],
+            "history": [serialize_run(r, detail=False) for r in rows[:30]],
+            "next_cursor": rows[29].id if len(rows) > 30 else None,
             "attempted_today": today is not None,
             "can_retry_today": retryable(today),
         }
