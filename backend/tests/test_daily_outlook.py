@@ -22,7 +22,7 @@ def report():
         activation_fa='بسته شدن روزانه بالای سقف روز قبل', invalidation_fa='بسته شدن روزانه زیر کف روز قبل',
         activation_level_ids=['high'], invalidation_level_ids=['low'], target_level_ids=['high'],
         path_fa=['ابتدا تأیید شکست سقف', 'سپس بررسی حفظ سطح در بازآزمایی'])
-    return dict(summary_fa='ساختار بازار برای چند روز آینده به تأیید شکست و حفظ سطح وابسته است.',
+    return dict(trade_plan=dict(action='wait', rationale_fa='سطوح برای نسبت سود به زیان کافی نیست.', trigger_fa='منتظر تشکیل ساختار معتبر بمانید.', entry_level_id=None, stop_level_id=None, target_level_ids=[]), summary_fa='ساختار بازار برای چند روز آینده به تأیید شکست و حفظ سطح وابسته است.',
         weekly_context_fa='ساختار هفتگی نیاز به تأیید دارد.', daily_structure_fa='ساختار روزانه در محدوده است.',
         dominant=scenario, alternative={**scenario, 'direction':'bearish'},
         uncertainty_fa='داده خبری در این گزارش وجود ندارد.', watch_next_fa=['بسته شدن روزانه'],
@@ -116,17 +116,21 @@ async def test_disabled_schedule_busy_and_single_attempt(isolated):
 
 
 @pytest.mark.asyncio
-async def test_success_and_usage_without_trade_writes(isolated,monkeypatch):
-    monkeypatch.setattr(service,'build_daily_context',AsyncMock(return_value=context()))
+@pytest.mark.parametrize("action", ["wait", "long", "short"])
+async def test_success_and_usage_without_trade_writes(isolated,monkeypatch,action):
+    snapshot = context() if action == "wait" else plan_context(action)
+    generated = report() if action == "wait" else planned_report(action)
+    monkeypatch.setattr(service,'build_daily_context',AsyncMock(return_value=snapshot))
     monkeypatch.setattr(service,'load_ai_market_intelligence',AsyncMock(return_value={}))
     monkeypatch.setattr(service,'provider_credentials',AsyncMock(return_value=('test','test-model','high')))
-    inference=AsyncMock(return_value=SimpleNamespace(text=json.dumps(report()),response_metadata={'usage':{'input_tokens':123}}))
+    inference=AsyncMock(return_value=SimpleNamespace(text=json.dumps(generated),response_metadata={'usage':{'input_tokens':123}}))
     monkeypatch.setattr(service,'stream_analysis_response',inference)
     run_id,owner,_=await service.reserve_run('manual')
     await service.execute_reserved(run_id,owner)
     data=await service.dashboard()
     assert data['latest']['status']=='completed'
     assert data['latest']['usage']['input_tokens']==123
+    assert data['latest']['report']['trade_plan']['action'] == action
     assert data['attempted_today'] is True
     inference.assert_awaited_once()
     service.release_analysis_lock.assert_awaited_once_with(owner)
@@ -333,3 +337,52 @@ async def test_timeline_pagination_and_chart_endpoint(isolated, client):
         row.status = 'running'
         await s.commit()
     assert (await client.get(f'/api/gui/daily-outlook/runs/{rid}/chart-image')).status_code == 409
+
+
+def planned_report(action='long'):
+    result = report()
+    result['trade_plan'] = dict(action=action, rationale_fa='ورود مشروط بر بازآزمایی سطح معتبر است.',
+        trigger_fa='بسته شدن کندل چهار ساعته و بازآزمایی سطح ورود',
+        entry_level_id='entry', stop_level_id='stop', target_level_ids=['tp1', 'tp2'])
+    return result
+
+
+def plan_context(action='long'):
+    prices = [100, 90, 120, 130] if action == 'long' else [100, 110, 80, 70]
+    return {**context(), 'levels': context()['levels'] + [
+        {'id': id, 'price': value} for id, value in zip(['entry', 'stop', 'tp1', 'tp2'], prices)]}
+
+
+@pytest.mark.parametrize('action', ['long', 'short'])
+def test_plan_resolves_prices_and_computes_rr(action):
+    result = parse_outlook(json.dumps(planned_report(action)), plan_context(action))['trade_plan']
+    assert result['entry_price'] == 100
+    assert result['risk_reward'] == [2, 3]
+    assert result['take_profits'] == ([120, 130] if action == 'long' else [80, 70])
+
+
+@pytest.mark.parametrize('field,value,error', [
+    ('entry_level_id', 'invented', 'unknown_trade_plan_level'),
+    ('stop_level_id', 'entry', 'invalid_trade_plan_geometry'),
+    ('stop_level_id', 'tp1', 'invalid_trade_plan_geometry'),
+    ('target_level_ids', ['stop'], 'invalid_trade_plan_geometry'),
+    ('target_level_ids', ['tp2', 'tp1'], 'invalid_trade_plan_target_order'),
+    ('target_level_ids', ['high'], 'trade_plan_rr_below_two'),
+    ('target_level_ids', [], 'incomplete_trade_plan'),
+])
+def test_plan_rejects_unsafe_or_invented_levels(field, value, error):
+    result = planned_report()
+    result['trade_plan'][field] = value
+    with pytest.raises(ValueError, match=error):
+        parse_outlook(json.dumps(result), plan_context())
+
+
+def test_wait_plan_has_no_prices_and_new_report_requires_plan():
+    result = report()
+    assert parse_outlook(json.dumps(result), context())['trade_plan']['action'] == 'wait'
+    result['trade_plan']['entry_level_id'] = 'high'
+    with pytest.raises(ValueError, match='wait_plan_must_not_have_prices'):
+        parse_outlook(json.dumps(result), context())
+    del result['trade_plan']
+    with pytest.raises(ValueError):
+        parse_outlook(json.dumps(result), context())
