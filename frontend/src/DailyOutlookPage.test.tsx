@@ -61,7 +61,7 @@ it('allows manual retry when backend confirms a pre-AI failure',async()=>{
  await waitFor(()=>expect(apiFetch).toHaveBeenCalledWith('/api/gui/daily-outlook/generate',{method:'POST'}));
 });
 
-it('puts a dated conditional summary at the end and explains chart overlays',async()=>{
+it('keeps legacy reports readable without fabricating a trade plan',async()=>{
  window.location.hash='#/outlook/reports/1';
  apiFetch.mockImplementation((url:string)=>Promise.resolve(url.endsWith('/chart-image')?{
    data_url:'data:image/png;base64,abc',filename:'report.png',
@@ -69,8 +69,32 @@ it('puts a dated conditional summary at the end and explains chart overlays',asy
    channel:{available:false}
  }:url.endsWith('/runs/1')?run:empty()));
  render(<DailyOutlookPage/>);
- expect(await screen.findByRole('article',{name:'خلاصه نهایی سناریو'})).toHaveTextContent('شرط فعال‌شدن:');
- expect(screen.getByRole('article',{name:'خلاصه نهایی سناریو'})).toHaveTextContent('ابطال سناریو:');
+ expect(await screen.findByRole('article',{name:'پلن معاملاتی'})).toHaveTextContent('این گزارش قدیمی');
+ expect(screen.getByText('جزئیات تحلیل و سناریوها').parentElement).not.toHaveAttribute('open');
  expect(await screen.findByText(/کانال قابل اتکایی با معیارهای ترسیم/)).toBeInTheDocument();
  expect(screen.getByText('S1 · 80,000')).toBeInTheDocument();
 });
+
+for (const action of ['long', 'short', 'wait'] as const) {
+ it(`renders the final ${action} plan from stored validated prices`,async()=>{
+  window.location.hash='#/outlook/reports/1';
+  const plan = {action, rationale_fa:'دلیل انتخاب پلن', trigger_fa:'تأیید بسته شدن و بازآزمایی',
+    entry_price:80000, stop_loss:action === 'long' ? 79000 : 81000,
+    take_profits:action === 'long' ? [82000,83000] : [78000,77000], risk_reward:[2,3]};
+  const planned={...run,report:{...run.report,trade_plan:plan}};
+  apiFetch.mockImplementation((url:string)=>Promise.resolve(url.endsWith('/chart-image')?{data_url:'data:image/png;base64,abc',filename:'report.png'}:url.endsWith('/runs/1')?planned:empty()));
+  render(<DailyOutlookPage/>);
+  const card=await screen.findByRole('article',{name:'پلن معاملاتی'});
+  expect(card).toHaveTextContent('تأیید بسته شدن و بازآزمایی');
+  expect(card).toHaveTextContent('2026-10-22');
+  if(action === 'wait') {
+    expect(card).toHaveTextContent('انتظار؛ فعلاً بدون معامله');
+    expect(card).not.toHaveTextContent('Entry');
+  } else {
+    expect(card).toHaveTextContent('80,000');
+    expect(card).toHaveTextContent('TP2');
+    expect(card).toHaveTextContent('1:2.00');
+  }
+  expect(card.nextElementSibling).toBeNull();
+ });
+}

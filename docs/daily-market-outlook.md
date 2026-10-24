@@ -50,9 +50,9 @@ New AI reports can specify `path_level_ids` (2–6 known IDs, ending at a target
 
 GET `/api/gui/daily-outlook/runs?before_id=N` paginates archive metadata. GET `/api/gui/daily-outlook/runs/{id}/chart-image` returns a PNG data URL and download filename. Rendering runs off the event loop, is serialized for Matplotlib safety, and caches at most eight snapshots in process memory. No schema migration or extra provider cost is required.
 
-## Scenario recap and technical overlays
+## Report summary and technical overlays
 
-The report ends with a dated recap of the existing dominant thesis, activation, path, targets, invalidation and alternative activation. It does not re-run AI or claim that historical conditions are currently active.
+The report ends with a dated conditional trade plan (or an explicit wait decision), described below. Existing reports without a stored plan show a legacy notice. Opening a report does not re-run AI or claim that historical conditions are currently active.
 
 The chart labels up to three candidate supports (S1–S3) below the saved quote and resistances (R1–R3) above it, selected from the saved daily/weekly/range extrema. Levels closer than 0.15% of the quote are deduplicated per side. These labels are relative to the quote, not proof of support/resistance reactions.
 
@@ -63,3 +63,25 @@ Candidates need two separated contacts on each edge, width of at least two media
 Only 4h snapshots get channel overlays. Historical broken channels remain available; the saved quote is classified relative to their extension. No new market data or AI calls are made, so old reports are rerenderable but channels older than the saved 20-day history cannot be recovered. These are descriptive heuristics, not a uniquely correct technical drawing or a backtested trading signal.
 
 Blue solid bounds/midline stop at the fitted historical window endpoint; blue dash-dot extension is geometric extrapolation, separate from the report's conditional scenario paths. The Persian legend explains the channel and lists exact S/R prices and source labels. The snapshot stays fixed; no new AI or exchange requests are made.
+
+## Concise reports and conditional trade plan
+
+New reports target 250–350 Persian narrative words, with bounded field lengths and
+at most two watch items. The default detail page shows the summary, material
+uncertainty and a final trade plan. Weekly/daily structure and both scenarios remain
+available in collapsed details; the duplicated bottom scenario recap is removed.
+
+The AI supplies one `trade_plan` (long, short or wait) in the same inference request.
+An actionable plan references existing snapshot level IDs for entry, stop and one or
+two ordered targets, and gives a timeframe/close/retest trigger. The backend resolves
+prices and calculates gross price-based reward/risk; it rejects unknown levels,
+nonfinite/nonpositive prices, invalid stop/target direction, unordered targets and
+any target below 1:2. No valid structural plan means wait with a reason and a condition
+to reassess, without prices. Ratios exclude fees and slippage. Schema checks do not
+prove the model's technical rationale or that the entry condition has occurred.
+
+Existing reports are read as stored and show an explicit missing-plan message;
+opening them does not regenerate AI or invent a plan. Chart persistence, scheduling,
+hourly analysis, execution gates and order creation are unchanged. No migration or
+additional inference call is needed. New concise text and plans apply to future
+reports only; historical text is retained inside the compact layout.

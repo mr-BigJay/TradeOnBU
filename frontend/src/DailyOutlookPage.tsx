@@ -10,7 +10,12 @@ type Scenario = {
   activation_level_ids: string[]; invalidation_level_ids: string[]; target_level_ids: string[];
   path_fa: string[]; path_level_ids?: string[];
 };
+type TradePlan = {
+  action: "long" | "short" | "wait"; rationale_fa: string; trigger_fa: string;
+  entry_price?: number; stop_loss?: number; take_profits?: number[]; risk_reward?: number[];
+};
 type Report = {
+  trade_plan?: TradePlan;
   summary_fa: string; weekly_context_fa: string; daily_structure_fa: string;
   dominant: Scenario; alternative: Scenario; uncertainty_fa: string;
   watch_next_fa: string[]; change_since_previous_fa: string;
@@ -49,6 +54,22 @@ function ScenarioCard({ scenario: s, levels, primary }: { scenario: Scenario; le
     <h4>نواحی هدف احتمالی</h4><LevelList ids={s.target_level_ids} levels={levels} />
     <div className="outlook-invalidation"><h4>چه چیزی سناریو را باطل می‌کند؟</h4><p>{s.invalidation_fa}</p>
       <LevelList ids={s.invalidation_level_ids} levels={levels} /></div>
+  </article>;
+}
+
+function TradePlanCard({ plan, date }: { plan?: TradePlan; date: string }) {
+  return <article className="card outlook-bottom-summary" aria-label="پلن معاملاتی">
+    <h3>پلن معاملاتی</h3>
+    {!plan ? <p>این گزارش قدیمی پلن معاملاتی ساختاریافته ندارد؛ پلن در گزارش‌های جدید نمایش داده می‌شود.</p> : <>
+      <p><strong>{plan.action === "long" ? "لانگ مشروط" : plan.action === "short" ? "شورت مشروط" : "انتظار؛ فعلاً بدون معامله"}</strong> — {plan.rationale_fa}</p>
+      <p><strong>{plan.action === "wait" ? "شرط بررسی مجدد:" : "شرط ورود:"}</strong> {plan.trigger_fa}</p>
+      {plan.action !== "wait" && <div className="outlook-level-chips">
+        <span>ورود (Entry): <bdi>{plan.entry_price != null ? price(plan.entry_price) : "—"}</bdi></span>
+        <span>حد ضرر (SL): <bdi>{plan.stop_loss != null ? price(plan.stop_loss) : "—"}</bdi></span>
+        {plan.take_profits?.map((target, i) => <span key={i}>حد سود <bdi>TP{i + 1}: {price(target)}</bdi> · سود به زیان <bdi>1:{plan.risk_reward?.[i]?.toFixed(2) ?? "—"}</bdi></span>)}
+      </div>}
+    </>}
+    <p className="hint">مبنای پلن: داده‌های {date}؛ تحقق شرط ورود با قیمت زنده بررسی نشده است. نسبت‌ها پیش از کارمزد و لغزش قیمت‌اند؛ این بخش سفارش ایجاد نمی‌کند.</p>
   </article>;
 }
 
@@ -182,27 +203,20 @@ export function DailyOutlookPage() {
         <div className="outlook-meta"><span>زمان داده: {displayTehranTime(null, run.context?.as_of)}</span>
           <span>قیمت هنگام تحلیل: <bdi>{run.context?.live_price ? price(run.context.live_price) : "—"}</bdi></span></div>
       </div>
+      <details className="card"><summary>جزئیات تحلیل و سناریوها</summary>
       <div className="outlook-grid"><article className="card"><h3>ساختار هفتگی</h3><p>{report.weekly_context_fa}</p></article>
         <article className="card"><h3>ساختار روزانه</h3><p>{report.daily_structure_fa}</p></article></div>
       <div className="outlook-grid"><ScenarioCard primary scenario={report.dominant} levels={levels} />
         <ScenarioCard primary={false} scenario={report.alternative} levels={levels} /></div>
       <div className="outlook-grid"><article className="card"><h3>چه چیزهایی را پیگیری کنیم؟</h3><ul>{report.watch_next_fa.map((s, i) => <li key={i}>{s}</li>)}</ul></article>
-        <article className="card"><h3>تغییر نسبت به گزارش قبلی</h3><p>{report.change_since_previous_fa}</p><h4>ابهام‌های تحلیل</h4><p>{report.uncertainty_fa}</p></article></div>
+        <article className="card"><h3>تغییر نسبت به گزارش قبلی</h3><p>{report.change_since_previous_fa}</p></article></div>
+      </details>
+      <p className="card"><strong>ابهام‌های مهم:</strong> {report.uncertainty_fa}</p>
       <details className="card"><summary>منابع داده و مصرف گزارش</summary><p>کندل‌های Bitunix؛ روزانه و هفتگی از کندل‌های کامل ۴ساعته با مرز UTC ساخته شده‌اند. اطلاعات تکمیلی بازار، در صورت تازگی، زمینهٔ کمکی است.</p>
         <p>منبع اخبار و تقویم اقتصادی متصل نیست. این بخش سفارش معاملاتی ایجاد نمی‌کند.</p>
         <p>مدل: <bdi>{run.model || "—"}</bdi> · توکن ورودی: <bdi>{run.usage?.input_tokens ?? "—"}</bdi> · توکن خروجی: <bdi>{run.usage?.output_tokens ?? "—"}</bdi></p>
       </details>
-      <article className="card outlook-bottom-summary" aria-label="خلاصه نهایی سناریو">
-        <h3>خلاصهٔ سناریوی این گزارش</h3>
-        <p><strong>سناریوی غالب: {dir[report.dominant.direction]}.</strong> {report.dominant.thesis_fa}</p>
-        <p><strong>شرط فعال‌شدن:</strong> {report.dominant.activation_fa}</p>
-        <p><strong>مسیر مورد انتظار:</strong> {report.dominant.path_fa.join(" ← ")}</p>
-        <h4>اهداف مشروط</h4><LevelList ids={report.dominant.target_level_ids} levels={levels} />
-        <p><strong>ابطال سناریو:</strong> {report.dominant.invalidation_fa}</p>
-        <LevelList ids={report.dominant.invalidation_level_ids} levels={levels} />
-        <p><strong>سناریوی جایگزین: {dir[report.alternative.direction]}.</strong> {report.alternative.activation_fa}</p>
-        <p className="hint">این جمع‌بندی مربوط به {run.report_date} است؛ فعال‌شدن شروط با دادهٔ زنده بررسی نشده است.</p>
-      </article>
+      <TradePlanCard plan={report.trade_plan} date={run.report_date} />
     </>}
     {!reportId && !!history.length && <div className="outlook-timeline" aria-label="تایم‌لاین گزارش‌های روزانه">
       {history.map(r => <article className="outlook-timeline-entry" key={r.id}>
