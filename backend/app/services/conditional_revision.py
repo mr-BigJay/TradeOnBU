@@ -75,6 +75,9 @@ def _entry_zones_equivalent(
 
 
 def assess_conditional_revision_impact(row: Any, plan: dict[str, Any]) -> RevisionImpact:
+    old_plan = row.conditional_plan or {}
+    if old_plan.get("strategy_id", "ict_reversal") != plan.get("strategy_id", "ict_reversal") or old_plan.get("breakout_level") != plan.get("breakout_level"):
+        return RevisionImpact.STRUCTURAL
     direction = str(plan.get("potential_direction") or "").upper()
     if str(row.direction or "").upper() != direction:
         return RevisionImpact.STRUCTURAL

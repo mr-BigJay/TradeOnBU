@@ -79,7 +79,10 @@ def _try_token_on_1m(
     zone_hi: float,
     structured: dict[str, Any],
 ) -> bool:
-    if token in _TOUCH_TOKENS:
+    if token in {"trend_pullback", "trend_resume", "breakout_close", "breakout_retest"}:
+        # Real closed 1m bars prevent a prior wick becoming a false later retest.
+        window = sorted([c for c in closed_1m if c.time_ms <= bar_1m.time_ms], key=lambda c: c.time_ms)[-48:]
+    elif token in _TOUCH_TOKENS:
         window = [bar_1m]
     else:
         window = _ict_window_at_1m_close(

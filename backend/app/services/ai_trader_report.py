@@ -240,6 +240,9 @@ def build_trader_report_fa(data: dict[str, Any], *, symbol: str = "BTCUSDT") -> 
         _format_bias(data),
         "",
     ]
+    if "strategy_id" in data:
+        from app.services.entry_strategies import LABELS
+        lines.insert(1, "استراتژی: " + LABELS.get(str(data["strategy_id"]), "نامشخص"))
     regime = _s(data.get("market_regime")).lower()
     if regime in ("bullish", "bearish", "range", "unclear"):
         regime_fa = {

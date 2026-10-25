@@ -152,6 +152,11 @@ async def maybe_auto_open_paper_position(
     """
     meta: dict[str, Any] = {"attempted": True, "created": False, "skipped": False}
 
+    from app.services.entry_strategies import strategy_enabled_error
+    strategy_err = await strategy_enabled_error(session, setup.structured_snapshot or {})
+    if strategy_err:
+        return {**meta, "skipped": True, "reason": strategy_err}
+
     settings: SimPositionSettings = await get_or_create_settings(session)
     if not settings.auto_open_paper_positions:
         meta["skipped"] = True
@@ -289,6 +294,7 @@ async def maybe_auto_open_paper_position(
             "ai_run_id": run_id,
             "source": "gpt_auto_paper",
             "ict_entry_snapshot": ict_snapshot,
+            "strategy_id": (setup.structured_snapshot or {}).get("strategy_id", "ict_reversal"),
             "paper_entry_mode": mode,
             "execution_pipeline_state": pipe.get("state"),
             "pre_entry_order": bool(allow_pre_entry_without_touch),

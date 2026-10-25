@@ -28,6 +28,7 @@ from app.services.ai_api_reasoning import effective_luna_api_effort
 from app.services.siwc.model_profiles import get_model_profile, resolve_model_selection
 from app.services.siwc.responses_client import AnalysisResponse, OpenAIResponsesError, stream_analysis_response
 from app.services.ai_trader_instructions import ICT_TRADER_INSTRUCTIONS
+from app.services.entry_strategies import strategy_settings, shared_strategy_instructions
 from app.services.ai_trader_report import finalize_user_report, prepare_structured_for_user_report
 from app.services.telegram_notifier import TelegramNotifier
 
@@ -401,6 +402,7 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
             symbol, settings, market=market_svc
         )
         async with SessionLocal() as session:
+            enabled_strategies = await strategy_settings(session)
             memory = await build_ai_memory_context(
                 session,
                 symbol=symbol,
@@ -427,7 +429,7 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
         analysis: AnalysisResponse = await stream_analysis_response(
             token,
             model=model,
-            instructions=INSTRUCTIONS,
+            instructions=shared_strategy_instructions(INSTRUCTIONS, enabled_strategies),
             user_input=user_payload,
             reasoning_effort=reasoning_effort,
             timeout=settings.ai_response_timeout_seconds,
@@ -447,6 +449,8 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
             draft.error_detail = ",".join(safety["warnings"])
 
         inference_meta = {
+            "enabled_strategies": enabled_strategies,
+            "strategy_prompt_version": 1,
             "provider": provider,
             "requested_model": analysis.requested_model,
             "requested_reasoning_effort": analysis.requested_reasoning_effort,

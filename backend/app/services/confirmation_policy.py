@@ -11,6 +11,8 @@ from app.services.ict_confirmation_engine import sequence_order_valid
 
 # Structural tokens that must not be dropped by AI optional/required hints alone.
 PROFILE_MIN_STRUCTURAL: dict[str, tuple[str, ...]] = {
+    "trend_pullback_resume": ("trend_pullback", "trend_resume"),
+    "level_breakout_retest": ("breakout_close", "breakout_retest"),
     "sweep_mss_poi": ("liquidity_sweep", "mss"),
     "sweep_bos_poi": ("liquidity_sweep", "bos"),
     "bos_fvg_retest": ("bos", "fvg_retest"),

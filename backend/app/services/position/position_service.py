@@ -125,6 +125,14 @@ class SimPositionService:
     async def create_order(
         self, session: AsyncSession, req: OrderRequest, *, commit: bool = True
     ) -> ExecutionResult:
+        if req.ai_setup_id:
+            from app.models import AiProposedSetup
+            from app.services.entry_strategies import strategy_enabled_error
+            setup = (await session.execute(select(AiProposedSetup).where(AiProposedSetup.setup_id == req.ai_setup_id))).scalar_one_or_none()
+            if setup:
+                err = await strategy_enabled_error(session, setup.structured_snapshot or {})
+                if err:
+                    raise PositionServiceError(err)
         settings = await get_or_create_settings(session)
         await self._validate_order(settings, req)
         summary = await wallet.wallet_summary(session)
@@ -252,6 +260,16 @@ class SimPositionService:
     ) -> bool:
         if pos.status not in ("pending_entry",):
             return pos.status == "open"
+        if pos.ai_setup_id:
+            from app.models import AiProposedSetup
+            from app.services.entry_strategies import strategy_enabled_error
+            setup = (await session.execute(select(AiProposedSetup).where(AiProposedSetup.setup_id == pos.ai_setup_id))).scalar_one_or_none()
+            if setup:
+                err = await strategy_enabled_error(session, setup.structured_snapshot or {})
+                if err:
+                    await self.cancel_pending(session, pos.public_id, commit=False)
+                    pos.extra = {**(pos.extra or {}), "auto_paper_cancel_reason": err}
+                    return False
         fees = fee_profile_from_settings(settings)
         adverse = pos.order_type == "market"
         fill = apply_slippage(

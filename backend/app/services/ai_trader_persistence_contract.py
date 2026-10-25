@@ -13,6 +13,8 @@ from app.services.conditional_setup import (
 
 ALLOWED_CONFIRMATION_TYPES = frozenset(
     {
+        "trend_pullback_resume",
+        "level_breakout_retest",
         "sweep_mss_poi",
         "sweep_bos_poi",
         "bos_fvg_retest",
@@ -29,6 +31,11 @@ def validate_structured_for_persistence(structured: dict[str, Any]) -> str | Non
     """
     if not isinstance(structured, dict):
         return "structured_not_object"
+
+    from app.services.entry_strategies import validate_strategy_plan
+    err = validate_strategy_plan(structured)
+    if err:
+        return err
 
     if _has_conditional_plan(structured):
         _, err = parse_conditional_plan(structured)

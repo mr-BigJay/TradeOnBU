@@ -12,6 +12,7 @@ from app.config import get_settings
 
 class SecurityMiddleware(BaseHTTPMiddleware):
     ADMIN_PREFIXES = (
+        "/api/gui/chatgpt/strategies/settings",
         "/api/settings",
         "/api/worker",
         "/api/signals/import",

@@ -8,6 +8,8 @@ from app.domain.entry_execution import ENTRY_MODE_STRICT
 from app.domain.setup_monitor_boundary import monitor_start_open_ms
 from app.services.ai_trader_report import _has_conditional_plan
 
+from app.services.entry_strategies import SEQUENCES, validate_strategy_plan
+
 MIN_EXPIRES_HOURS = 1.0
 MAX_EXPIRES_HOURS = 168.0
 
@@ -20,10 +22,12 @@ ALLOWED_CONFIRMATION_TOKENS = frozenset(
         "order_block_retest",
         "entry_zone_touch",
         "displacement",
+        "trend_pullback", "trend_resume", "breakout_close", "breakout_retest",
     }
 )
 
 CONFIRMATION_PROFILES: dict[str, list[str]] = {
+    **SEQUENCES,
     "sweep_mss_poi": ["liquidity_sweep", "mss", "entry_zone_touch"],
     "sweep_bos_poi": ["liquidity_sweep", "bos", "entry_zone_touch"],
     "bos_fvg_retest": ["bos", "fvg_retest", "entry_zone_touch"],
@@ -80,6 +84,9 @@ def resolve_confirmation_sequence(structured: dict[str, Any]) -> tuple[list[str]
 
 
 def parse_conditional_plan(structured: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
+    strategy_error = validate_strategy_plan(structured)
+    if strategy_error:
+        return None, strategy_error
     if not _has_conditional_plan(structured):
         return None, "not_conditional_plan"
 
@@ -125,6 +132,8 @@ def parse_conditional_plan(structured: dict[str, Any]) -> tuple[dict[str, Any] |
     expires_hours = max(MIN_EXPIRES_HOURS, min(MAX_EXPIRES_HOURS, expires_hours))
 
     plan: dict[str, Any] = {
+        "strategy_id": structured.get("strategy_id", "ict_reversal"),
+        "breakout_level": structured.get("breakout_level"),
         "potential_direction": direction,
         "setup_timeframe": structured.get("setup_timeframe") or structured.get("confirmation_timeframe"),
         "entry_zone_low": lo,
