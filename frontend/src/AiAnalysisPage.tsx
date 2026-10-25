@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { EntryStrategies } from "./EntryStrategies";
 import { apiFetch } from "./api";
 import { displayTehranTime } from "./displayTime";
 import type { PositionPrefill } from "./PositionPage";
@@ -47,6 +48,8 @@ type HistoryDetail = {
     requested_reasoning_effort?: string;
     confirmed_reasoning_effort?: string;
     response_model?: string;
+    enabled_strategies?: Record<string, boolean>;
+    response_metadata?: { usage?: { input_tokens?: number; output_tokens?: number } };
   };
 };
 
@@ -128,11 +131,13 @@ export function AiAnalysisPage({ onOpenPaperPosition }: Props) {
   return (
     <div className="page">
       <header className="page-header">
-        <h1>تحلیل ICT</h1>
+        <h1>تحلیل بازار و فرصت‌های ورود</h1>
         <p className="hint">
-          BTCUSDT · ICT Trader · gpt-6.1-sol · MAX reasoning · Paper
+          BTCUSDT · تحلیل مشترک استراتژی‌ها · Paper
         </p>
       </header>
+
+      <EntryStrategies />
 
       {msg && <p className={`toast ${msg.includes("خطا") || msg.includes("409") ? "toast-error" : "toast-ok"}`}>{msg}</p>}
 
@@ -200,6 +205,10 @@ export function AiAnalysisPage({ onOpenPaperPosition }: Props) {
                     : ""}
                 </p>
               )}
+              {detail.inference?.response_metadata?.usage && <p className="hint">
+                توکن ورودی: {detail.inference.response_metadata.usage.input_tokens ?? "—"} · توکن خروجی (شامل استدلال): {detail.inference.response_metadata.usage.output_tokens ?? "—"}
+                {detail.inference.enabled_strategies && <> · استراتژی‌های فعال در این اجرا: {Object.entries(detail.inference.enabled_strategies).filter(([, on]) => on).map(([key]) => key).join("، ")}</>}
+              </p>}
               {detail.has_chart && detail.chart_url ? (
                 <div className="chart-preview-wrap">
                   <button type="button" className="chart-preview-btn" onClick={() => setChartZoom(true)}>

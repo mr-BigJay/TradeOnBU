@@ -259,6 +259,7 @@ def serialize_setup_row(row: AiProposedSetup) -> dict[str, Any]:
     notes = row.objective_notes or {}
     return {
         "setup_id": row.setup_id,
+        "strategy_id": (row.structured_snapshot or {}).get("strategy_id", "ict_reversal"),
         "run_id": row.run_id,
         "symbol": row.symbol,
         "direction": row.direction,
@@ -818,6 +819,9 @@ async def _persist_conditional_setup(
     direction = plan["potential_direction"]
     dup = await _find_duplicate_open(session, symbol=symbol, direction=direction, entry=plan["proposed_entry_mid"])
     if dup:
+        from app.services.entry_strategies import strategy_id
+        if strategy_id(dup.structured_snapshot or {}) != strategy_id(structured):
+            return None, {**meta, "skipped": True, "reason": "cannot_change_setup_strategy"}
         if await _setup_has_active_execution(session, dup.setup_id):
             meta["skipped"] = True
             meta["reason"] = "setup_locked_active_position"
@@ -931,6 +935,11 @@ async def create_setup_from_structured(
     meta: dict[str, Any] = {"created": False, "updated": False, "skipped": False}
     from app.services.ai_trader_persistence_contract import validate_structured_for_persistence
 
+    from app.services.entry_strategies import strategy_enabled_error, strategy_id
+    strategy_err = await strategy_enabled_error(session, structured)
+    if strategy_err:
+        return None, {**meta, "skipped": True, "reason": strategy_err}
+
     contract_err = validate_structured_for_persistence(structured)
     if contract_err and _has_conditional_plan(structured):
         meta["skipped"] = True
@@ -999,6 +1008,8 @@ async def create_setup_from_structured(
             meta["skipped"] = True
             meta["reason"] = "continue_setup_mismatch"
             return None, meta
+        if strategy_id(existing.structured_snapshot or {}) != strategy_id(structured):
+            return None, {**meta, "skipped": True, "reason": "cannot_change_setup_strategy"}
         _store_original_forecast(existing)
         _append_revision(existing, source_run_id=run_id, structured=structured, proposed=proposed, kind="continue")
         meta["updated"] = True
@@ -1008,6 +1019,8 @@ async def create_setup_from_structured(
         return existing, meta
 
     dup = await _find_duplicate_open(session, symbol=symbol, direction=decision, entry=entry)
+    if dup and strategy_id(dup.structured_snapshot or {}) != strategy_id(structured):
+        return None, {**meta, "skipped": True, "reason": "cannot_change_setup_strategy"}
     if dup and not _levels_materially_different(dup, entry, sl, tp):
         _store_original_forecast(dup)
         _append_revision(dup, source_run_id=run_id, structured=structured, proposed=proposed, kind="dedupe")

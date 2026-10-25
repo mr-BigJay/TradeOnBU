@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -509,3 +509,30 @@ async def history_chart(run_id: int, session: AsyncSession = Depends(get_db), _=
         filename=f"analysis_{run_id}.png",
         content_disposition_type="inline",
     )
+
+
+class EntryStrategiesBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    ict_reversal: bool
+    trend_continuation: bool
+    breakout_retest: bool
+
+
+@router.get("/strategies")
+async def get_entry_strategies(session: AsyncSession = Depends(get_db), _=Depends(require_dashboard_access)):
+    from app.services.entry_strategies import strategy_settings
+    return await strategy_settings(session)
+
+
+@router.put("/strategies/settings")
+async def put_entry_strategies(body: EntryStrategiesBody, session: AsyncSession = Depends(get_db), _=Depends(require_dashboard_access)):
+    from app.services.entry_strategies import save_strategy_settings, strategy_settings
+    from app.services.settings_store import audit
+    values = body.model_dump()
+    try:
+        await save_strategy_settings(session, values)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    await audit(session, None, "entry_strategies", "update", values)
+    await session.commit()
+    return await strategy_settings(session)

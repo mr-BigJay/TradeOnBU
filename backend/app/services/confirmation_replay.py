@@ -248,7 +248,10 @@ def _first_token_hit_ms_on_1m(
             closed_1m=closed_1m,
             eval_1m_ms=c.time_ms,
         )
-        if token in ("entry_zone_touch", "order_block_retest"):
+        if token in {"trend_pullback", "trend_resume", "breakout_close", "breakout_retest"}:
+            window_for_tok = sorted([b for b in closed_1m if b.time_ms <= c.time_ms], key=lambda b: b.time_ms)[-48:]
+            bar = c
+        elif token in ("entry_zone_touch", "order_block_retest"):
             window_for_tok = [c]
             bar = c
         else:

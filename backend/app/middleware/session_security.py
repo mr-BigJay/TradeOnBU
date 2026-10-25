@@ -24,6 +24,7 @@ class SessionSecurityMiddleware(BaseHTTPMiddleware):
     CSRF_SAFE = {"GET", "HEAD", "OPTIONS"}
     CSRF_EXEMPT = {"/api/auth/login", "/api/auth/logout"}
     ADMIN_PREFIXES = (
+        "/api/gui/chatgpt/strategies/settings",
         "/api/gui/daily-outlook/settings",
         "/api/gui/daily-outlook/generate",
         "/api/settings",

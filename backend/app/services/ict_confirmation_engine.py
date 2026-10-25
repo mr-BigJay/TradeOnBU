@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -135,6 +137,26 @@ def _token_on_bar(
         return False
     bar = window[-1]
     d = direction.upper()
+    if token == "trend_pullback":
+        return _bar_in_zone(bar, zone_lo, zone_hi)
+    if token == "trend_resume":
+        if len(window) < 2:
+            return False
+        prior = window[-2]
+        return (bar.close > prior.high and bar.close > bar.open) if d == "LONG" else (bar.close < prior.low and bar.close < bar.open)
+    if token in ("breakout_close", "breakout_retest"):
+        try:
+            level = float(structured.get("breakout_level"))
+        except (TypeError, ValueError):
+            return False
+        if not math.isfinite(level) or level <= 0:
+            return False
+        if token == "breakout_close":
+            if len(window) < 2:
+                return False
+            return (window[-2].close <= level < bar.close) if d == "LONG" else (bar.close < level <= window[-2].close)
+        touched = bar.low <= level <= bar.high and _bar_in_zone(bar, zone_lo, zone_hi)
+        return touched and (bar.close > level if d == "LONG" else bar.close < level)
     if token == "entry_zone_touch":
         return _bar_in_zone(bar, zone_lo, zone_hi)
     if token == "liquidity_sweep":
