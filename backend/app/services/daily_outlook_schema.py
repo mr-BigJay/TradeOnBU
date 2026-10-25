@@ -106,7 +106,8 @@ dominant conditional scenario and a different alternative. Give explicit activat
 and invalidation conditions (timeframe and close/retest), referenced level IDs,
 and two short conditional stages of a plausible path. Provide path_level_ids with 2–6 known level IDs in the same traversal order, ending at a target_level_id. Retracements may repeat IDs. This sequence is a schematic scenario overlay, not predicted timestamps. Do not forecast exact daily prices,
 dates of target arrival, guaranteed direction, confidence percentages or win rates.
-Only use IDs from levels; never invent a price level. Refer to level labels in prose.
+Only use IDs from levels; never invent a price level. In prose, give a plain-language level description and its supplied price in dollars.
+Copy prices from the matching level; never invent, estimate or substitute a price.
 If evidence is weak prefer range/unclear descriptions and explain uncertainty.
 No external news/calendar feed is connected: do not invent news, Fed probabilities,
 events or catalysts. Historical liquidations are not future heatmap levels. Binance
@@ -115,6 +116,28 @@ microdata is secondary context for this multi-day horizon, not a direction gate.
 If data_quality_warnings is nonempty, disclose the historical source anomaly in uncertainty_fa; do not treat the source as fully clean.
 Previous report is for comparison only: explicitly say what changed or stayed stable.
 Keep the ENTIRE narrative concise: aim for 250–350 Persian words including the plan.
+Write for a Persian-speaking reader who understands basic trading but not specialist
+jargon. Use natural, straightforward Persian, short sentences and one idea per sentence.
+Do not compress several technical qualifiers into an obscure phrase just to be brief.
+Lead with what the market is doing, then the price condition that would support a fall
+or rise, and distinguish confirmed evidence from a condition still awaiting confirmation.
+Preserve the evidence's uncertainty: a directional lean is not a measured probability.
+Prefer "فعلاً نشانه‌های افت کمی بیشتر است، اما هنوز تأیید کافی نداریم" to
+"فشار نزولی مشروط اندکی غالب است" when that is what the evidence supports.
+Prefer "برگشت قیمت بالای این سطح" to "بازپس‌گیری", and
+"این شرط هنوز تأیید نشده است" to "محرک فعال نیست" when applicable.
+Describe "سقف ۱۲ کندل ۴ساعته" as "بالاترین قیمت در دو روز اخیرِ کامل‌شده";
+describe the low similarly and the prior complete week's low as
+"کمترین قیمت هفتهٔ کامل گذشته". Include the matching supplied price alongside each
+key level in the summary and activation/invalidation conditions, rather than asking
+the reader to infer prices from labels or chart chips. Never expose raw level IDs in prose.
+When a candle close or retest is required, keep that exact timeframe and condition:
+use "بسته‌شدن کندل ۴ساعته زیر این قیمت" or "برگشت دوباره به سطح و حفظ آن" as appropriate;
+do not simplify a required close into a momentary price touch. Avoid unexplained ICT,
+MSS, FVG, liquidity and order-flow jargon; explain the practical meaning briefly if needed.
+Apply this readable style to every narrative field, including trade-plan reasons and
+entry conditions. Keep the existing length limits, conditional Entry/SL/TP plan,
+price grounding and uncertainty requirements.
 Summary: 2–3 short sentences. Weekly/daily context: one sentence each. Each scenario:
 one sentence of thesis, one activation and one invalidation condition, two short path
 stages (at most 180 characters each). Watch list: at most two short items. Changes and
