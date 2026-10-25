@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { apiFetch } from "./api";
+import "./entryStrategies.css";
 
 const labels = {
   ict_reversal: "A · ICT Reversal — برگشت قیمت",
@@ -26,14 +27,17 @@ export function EntryStrategies() {
     } catch (e) { setMessage(e instanceof Error ? e.message : "خطا در ذخیره تنظیمات"); }
     finally { setBusy(false); }
   }
-  return <section className="card" dir="rtl" aria-label="استراتژی‌های تحلیل">
+  return <section className="card entry-strategies" dir="rtl" aria-label="استراتژی‌های تحلیل">
     <h3>استراتژی‌های تحلیل</h3>
-    <p className="hint">همهٔ استراتژی‌های فعال در یک درخواست بررسی می‌شوند؛ هر نوبت حداکثر یک ستاپ انتخاب می‌شود. فاصلهٔ تحلیل تغییر نمی‌کند.</p>
-    {values && (Object.keys(labels) as (keyof Strategies)[]).map(key => <label key={key} style={{display: "block", margin: "12px 0"}}>
-      <input type="checkbox" checked={values[key]} disabled={busy} onChange={e => setValues({...values, [key]: e.target.checked})} /> {labels[key]}
+    <p className="hint">یک درخواست مشترک؛ حداکثر یک ستاپ در هر تحلیل.</p>
+    {values && (Object.keys(labels) as (keyof Strategies)[]).map(key => <label key={key} className="entry-strategies__option">
+      <input type="checkbox" checked={values[key]} disabled={busy} onChange={e => setValues({...values, [key]: e.target.checked})} /> <span>{labels[key]}</span>
     </label>)}
     <button disabled={!values || busy || !Object.values(values).some(Boolean)} onClick={save}>ذخیره استراتژی‌ها</button>
-    <p className="hint">ذخیره نیاز به دسترسی مدیر دارد. غیرفعال‌سازی جلوی ستاپ و ورود جدید را می‌گیرد؛ سفارش در انتظار هنگام بررسی ورود لغو می‌شود. مدیریت پوزیشن باز ادامه دارد.</p>
+    <details className="entry-strategies__help">
+      <summary>راهنمای تنظیمات</summary>
+      <p className="hint">فاصلهٔ تحلیل تغییر نمی‌کند. ذخیره نیاز به دسترسی مدیر دارد. غیرفعال‌سازی جلوی ستاپ و ورود جدید را می‌گیرد؛ سفارش در انتظار هنگام بررسی ورود لغو می‌شود. مدیریت پوزیشن باز ادامه دارد.</p>
+    </details>
     {message && <p role="status">{message}</p>}
   </section>;
 }
