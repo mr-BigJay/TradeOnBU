@@ -9,11 +9,11 @@ Runs a dedicated Chromium browser on the VPS, with a persistent profile. No Tele
 Run in this directory on a Docker Compose VPS:
 
 ```sh
-docker compose up -d --build
+READER_HEADLESS=0 docker compose up -d --build
 docker compose ps
 ```
 
-Initial installation downloads Chromium and supporting packages. Allow approximately 1.5 GB available RAM for this container in addition to the trading app. This limit is provisional; measure real usage with `docker stats`.
+Initial installation downloads Chromium and supporting packages. The container is limited to 0.25 CPU (a quarter of one core) and 768 MiB RAM, in addition to the trading app. Normal collection defaults to headless Chromium with image rendering disabled, reduced motion, a 20-second poll and no Xvfb/VNC processes. Measure real usage with `docker stats`; the CPU cap protects the host but does not prove low underlying demand. A constrained browser may load more slowly or fail to initialize.
 
 On your own computer, keep an SSH tunnel open (replace SERVER_IP):
 
@@ -39,18 +39,20 @@ docker compose exec -T reader python /reader/reader.py status
 
 `counts` are for the last poll, so zero counts between posts are normal. `stored` is the current deduplicated row count. First observed messages after startup or interruption are a baseline, never a new trading event. Text-free posts are marked unsupported; captions/text are not image/chart interpretation. No historical backfill, deleted-message tracking, complete album handling, or exactly-once delivery guarantee. Web K virtualizes messages and changes its UI; posts during outages may be missed. Use only the guarded paper consumer described above for execution.
 
-After login, disable the interactive viewer (within three seconds) while keeping collection running:
+After login, switch to headless collection. This recreates the container and preserves the profile. The first scan is a fresh baseline:
 
 ```sh
-docker compose exec -T reader touch /state/viewer.disabled
+READER_HEADLESS=1 docker compose up -d
 ```
 
 For a later manual re-login:
 
 ```sh
 docker compose exec -T reader rm -f /state/viewer.disabled
-docker compose restart reader
+READER_HEADLESS=0 docker compose up -d
 ```
+
+To persist a mode preference, set READER_HEADLESS=1 (normal) or 0 (manual login) in the reader .env. A restart alone does not change the container environment.
 
 The persistent named volume survives restarts/rebuilds. It stores the session plus at most 500 latest message records, pruned to seven days on successful scans. These contain private text, but routine logs/status never include it. Stop with `docker compose down`; do not use `down -v` unless intentionally deleting the session and test records. To remove account authorization, revoke this browser session in Telegram Settings > Devices as well.
 

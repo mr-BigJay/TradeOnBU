@@ -1,6 +1,10 @@
 #!/bin/sh
 set -eu
 umask 077
+# Normal collection has no X server, VNC server or graphical viewer.
+if [ "${READER_HEADLESS:-1}" = "1" ]; then
+    exec python /reader/reader.py
+fi
 Xvfb :99 -screen 0 1280x800x24 -nolisten tcp &
 XVFB_PID=$!
 trap 'kill "$XVFB_PID" ${VNC_PID:-} ${WEB_PID:-} ${READER_PID:-} 2>/dev/null || true' EXIT INT TERM

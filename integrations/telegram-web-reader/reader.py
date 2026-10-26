@@ -39,7 +39,8 @@ EXTRACT = r"""({peer, title}) => {
  });
  // Follow the bottom of this channel only. Next poll sees newly rendered bubbles.
  const scroll = roots[0].closest('.scrollable');
- if (scroll) scroll.scrollTop = scroll.scrollHeight;
+ if (scroll && scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop > 2)
+   scroll.scrollTop = scroll.scrollHeight;
  return {state: messages.length ? 'observing' : 'no_readable_messages', messages};
 }"""
 
@@ -112,7 +113,7 @@ def flush_exports(db, directory):
 
 
 def status(state, **extra):
-    payload = dict(state=state, heartbeat=time.time(), mode='read_only', coverage='rendered_messages_only', **extra)
+    payload = dict(state=state, heartbeat=time.time(), mode='read_only', headless=os.environ.get('READER_HEADLESS', '1') == '1', coverage='rendered_messages_only', **extra)
     temp = STATE / 'status.tmp'
     temp.write_text(json.dumps(payload))
     temp.replace(STATE / 'status.json')
@@ -125,9 +126,12 @@ def run():
     db = connect(STATE / 'messages.sqlite3')
     status('starting')
     with sync_playwright() as p:
-        context = p.chromium.launch_persistent_context(str(STATE / 'profile'), headless=False,
+        headless = os.environ.get('READER_HEADLESS', '1') == '1'
+        context = p.chromium.launch_persistent_context(str(STATE / 'profile'), headless=headless,
             executable_path='/usr/bin/chromium', viewport={'width':1280,'height':800},
-            args=['--disable-dev-shm-usage'])
+            reduced_motion='reduce',
+            args=['--disable-dev-shm-usage', '--disable-gpu'] +
+                 (['--blink-settings=imagesEnabled=false'] if headless else []))
         page = context.pages[0] if context.pages else context.new_page()
         page.goto('https://web.telegram.org/k/#' + PEER, wait_until='domcontentloaded', timeout=90000)
         baseline = True
@@ -157,7 +161,7 @@ def run():
                 baseline = True
                 if page.is_closed():
                     raise RuntimeError('browser closed') from None
-            time.sleep(10)
+            time.sleep(20)
 
 
 if __name__ == '__main__':
