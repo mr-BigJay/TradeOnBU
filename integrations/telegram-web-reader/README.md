@@ -13,7 +13,7 @@ READER_HEADLESS=0 docker compose up -d --build
 docker compose ps
 ```
 
-Initial installation downloads Chromium and supporting packages. The container is limited to 0.25 CPU (a quarter of one core) and 768 MiB RAM, in addition to the trading app. Normal collection defaults to headless Chromium with image rendering disabled, reduced motion, a 20-second poll and no Xvfb/VNC processes. Measure real usage with `docker stats`; the CPU cap protects the host but does not prove low underlying demand. A constrained browser may load more slowly or fail to initialize.
+Initial installation downloads Chromium and supporting packages. The container is limited to 0.25 CPU (a quarter of one core) and 768 MiB RAM, in addition to the trading app. Normal collection defaults to headless Chromium with normal image/graphics initialization, reduced motion, a 20-second poll and no Xvfb/VNC processes. Measure real usage with `docker stats`; the CPU cap protects the host but does not prove low underlying demand. A constrained browser may load more slowly or fail to initialize.
 
 On your own computer, keep an SSH tunnel open (replace SERVER_IP):
 
@@ -84,3 +84,5 @@ Selectors were checked against the official Web K source, not a live private acc
 ## One-command headless repair and diagnostics
 
 Run `scripts/repair_telegram_reader.sh COMMIT_SHA` as root after fetching the pinned commit in `/opt/tradeonbu`. It updates only the separate reader, backs up its installed files/env, leaves paper export disabled, checks that no other container uses the profile before clearing stale symlinks, and samples status/CPU. It leaves the reader running only after three consecutive observing samples below 20% CPU; otherwise stops it. This is a short acceptance check, not a long-term stability guarantee. The startup tries up to three bounded channel-opening actions after page load, keeping exact numeric channel/title checks for collection. Diagnostics include readiness, counts and login-field presence, never field values or chat text. Real server results remain required.
+
+Boot compatibility: blanket image disabling and the explicit GPU-disable override were removed after a server run showed no chat/login DOM in headless mode. This is a hypothesis under test, not a confirmed root cause. Normal Chromium defaults now apply; resource caps and the bounded repair script remain in place. Extra diagnostics report only counts and fixed error-screen hints, never page text or credential values.

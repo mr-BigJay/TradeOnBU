@@ -18,6 +18,11 @@ EXTRACT = r"""({peer, title}) => {
  const norm = s => s.replace(/[\u200e\u200f]/g, '').replace(/\s+/g, ' ').trim();
  const diagnostics = {
    ready:document.readyState, visible_headers:headers.length,
+   body_elements:document.body?.children.length || 0,
+   visible_text_chars:document.body?.innerText.length || 0,
+   qr_login_hint:/log in.*qr|scan.*qr|qr.*code/i.test(document.body?.innerText || ''),
+   webgl_hint:/webgl/i.test(document.body?.innerText || ''),
+   unsupported_hint:/unsupported browser|browser.*not supported|update your browser/i.test(document.body?.innerText || ''),
    matching_headers:headers.filter(e=>norm(e.innerText)===norm(title)).length,
    expected_route:location.hash.split('_')[0] === '#' + peer,
    login_fields:[...document.querySelectorAll('input[type=tel], input[type=password]')].filter(visible).length,
@@ -151,9 +156,14 @@ def run():
         context = p.chromium.launch_persistent_context(str(STATE / 'profile'), headless=headless,
             executable_path='/usr/bin/chromium', viewport={'width':1280,'height':800},
             reduced_motion='reduce',
-            args=['--disable-dev-shm-usage', '--disable-gpu'] +
-                 (['--blink-settings=imagesEnabled=false'] if headless else []))
+            # Keep normal rendering during boot: disabling all images/graphics can
+            # prevent a web app's initialization promises from completing.
+            args=['--disable-dev-shm-usage'])
         page = context.pages[0] if context.pages else context.new_page()
+        page_errors = [0]
+        failed_requests = [0]
+        page.on('pageerror', lambda error: page_errors.__setitem__(0, page_errors[0] + 1))
+        page.on('requestfailed', lambda request: failed_requests.__setitem__(0, failed_requests[0] + 1))
         status('loading_page')
         page.goto('https://web.telegram.org/k/', wait_until='domcontentloaded', timeout=120000)
         opened_at = time.monotonic()
@@ -179,6 +189,8 @@ def run():
                     else:
                         baseline = True
                         diagnostics = result.get('diagnostics', {})
+                        diagnostics['javascript_error_count'] = page_errors[0]
+                        diagnostics['failed_request_count'] = failed_requests[0]
                         if result['state'] in ('waiting_for_channel', 'wrong_channel') and attempts < 3 and time.monotonic() - opened_at >= 40:
                             action = page.evaluate(OPEN_TARGET, {'peer':PEER, 'title':TITLE})
                             diagnostics['open_action'] = action
