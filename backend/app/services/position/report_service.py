@@ -104,6 +104,7 @@ async def build_report(
         history.append(
             {
                 "symbol": t.symbol,
+                "source_label": (t.extra or {}).get("source_label"),
                 "direction": t.direction,
                 "margin_usdt": t.margin_usdt,
                 "leverage": t.leverage,

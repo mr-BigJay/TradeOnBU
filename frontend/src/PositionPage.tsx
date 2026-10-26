@@ -1,3 +1,4 @@
+import { TelegramPaperStatus } from "./TelegramPaperStatus";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { apiFetch } from "./api";
 import { displayTehranTime } from "./displayTime";
@@ -361,6 +362,7 @@ export function PositionPage({ prefill, onConsumePrefill, initialTab }: Props) {
       {tab === "open" && (
         <div className="position-open-dashboard">
           <PositionWalletOverview wallet={wallet} />
+          <TelegramPaperStatus />
           <section className="section position-trading-layout">
           <form id="position-new-order" className="card form-card position-order-form" onSubmit={submitOpen}>
             <div className="position-section-heading">
@@ -574,7 +576,7 @@ export function PositionPage({ prefill, onConsumePrefill, initialTab }: Props) {
                 <tbody>
                   {((report.history as Record<string, unknown>[]) || []).map((row, i) => (
                     <tr key={String(row.public_id ?? i)}>
-                      <td><strong dir="ltr">{String(row.symbol ?? "—")}</strong></td>
+                      <td><strong dir="ltr">{String(row.symbol ?? "—")}</strong>{row.source_label === "BehDark" && <small> · BehDark</small>}</td>
                       <td><span className={"position-direction position-direction--" +
                         (row.direction === "LONG" ? "long" : "short")}>{String(row.direction ?? "—")}</span></td>
                       <td dir="ltr">{numberText(row.entry_price)}</td>

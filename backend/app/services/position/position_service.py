@@ -599,6 +599,7 @@ class SimPositionService:
             "execution_take_profit_2": (pos.extra or {}).get("execution_take_profit_2"),
             "execution_tp_cap_capped": (pos.extra or {}).get("execution_tp_cap_capped"),
             "mark_price": mark_price,
+            "source_label": (pos.extra or {}).get("source_label"),
             "ai_setup_id": pos.ai_setup_id,
             "quantity_btc": pos.quantity_btc,
             "execution_state": pos.execution_state,

@@ -33,7 +33,8 @@ EXTRACT = r"""({peer, title}) => {
    const body = e.querySelector('.message');
    const clone = body?.cloneNode(true);
    clone?.querySelectorAll('.time, .reply, .replies, .peer-title').forEach(e=>e.remove());
-   return {id:e.dataset.mid, timestamp:e.dataset.timestamp || '',
+   clone?.querySelectorAll('br').forEach(e=>e.replaceWith('\n'));
+   return {id:e.dataset.mid, timestamp:e.dataset.timestamp || '', has_reply:!!e.querySelector('.reply'),
            text:clone?.textContent?.trim() || ''};
  });
  // Follow the bottom of this channel only. Next poll sees newly rendered bubbles.
@@ -46,10 +47,11 @@ EXTRACT = r"""({peer, title}) => {
 def connect(path):
     db = sqlite3.connect(path)
     db.execute('CREATE TABLE IF NOT EXISTS messages(peer TEXT, mid TEXT, body TEXT, digest TEXT, seen REAL, kind TEXT, PRIMARY KEY(peer,mid))')
+    db.execute('CREATE TABLE IF NOT EXISTS exports(event_key TEXT PRIMARY KEY, payload TEXT, received REAL)')
     return db
 
 
-def record(db, messages, baseline=False, now=None):
+def record(db, messages, baseline=False, now=None, export=False):
     now = time.time() if now is None else now
     counts = {'baseline': 0, 'new': 0, 'edited': 0, 'unsupported': 0}
     with db:
@@ -66,10 +68,47 @@ def record(db, messages, baseline=False, now=None):
             if not body:
                 kind = 'unsupported'
             counts[kind] += 1
+            if export:
+                key = PEER + ':' + mid
+                prior_export = db.execute('SELECT payload FROM exports WHERE event_key=?', (key,)).fetchone()
+                try:
+                    published = float(msg.get('timestamp', 0))
+                except (TypeError, ValueError):
+                    published = 0
+                # Publish only newly seen fresh posts; existing history is never executable.
+                if kind == 'new' and not msg.get('has_reply') and 0 <= now - published <= 120:
+                    payload = dict(key=key, peer=PEER, body=body, published=published, received=now, kind='new')
+                    db.execute('INSERT OR IGNORE INTO exports VALUES(?,?,?)', (key,json.dumps(payload),now))
+                elif prior_export:
+                    payload = json.loads(prior_export[0])
+                    payload.update(body=body, kind='edited')
+                    db.execute('UPDATE exports SET payload=? WHERE event_key=?', (json.dumps(payload),key))
             db.execute('INSERT OR REPLACE INTO messages VALUES(?,?,?,?,?,?)', (PEER, mid, body, digest, now, kind))
+        db.execute('DELETE FROM exports WHERE received < ?', (now - 86400,))
         db.execute('DELETE FROM messages WHERE seen < ?', (now - 7 * 86400,))
         db.execute('DELETE FROM messages WHERE rowid NOT IN (SELECT rowid FROM messages ORDER BY seen DESC LIMIT 500)')
     return counts
+
+
+def flush_exports(db, directory):
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    keys = set()
+    for key, payload in db.execute('SELECT event_key, payload FROM exports'):
+        name = hashlib.sha256(key.encode()).hexdigest() + '.json'
+        keys.add(name)
+        destination = directory / name
+        if destination.exists() and destination.read_text() == payload:
+            continue
+        temp = directory / (name + '.tmp')
+        temp.write_text(payload)
+        temp.replace(destination)
+    for old in directory.glob('*.json'):
+        if old.name not in keys and old.name != '_feed.json':
+            old.unlink()
+    temp = directory / '_feed.tmp'
+    temp.write_text(json.dumps({'heartbeat':time.time()}))
+    temp.replace(directory / '_feed.json')
 
 
 def status(state, **extra):
@@ -103,7 +142,9 @@ def run():
                 else:
                     result = page.evaluate(EXTRACT, {'peer':PEER, 'title':TITLE})
                     if result['state'] == 'observing':
-                        counts = record(db, result['messages'], baseline)
+                        counts = record(db, result['messages'], baseline, export=os.environ.get('PAPER_EXPORT') == '1')
+                        if os.environ.get('PAPER_EXPORT') == '1':
+                            flush_exports(db, '/export')
                         baseline = False
                         status('observing', last_scan=time.time(), counts=counts,
                             stored=db.execute('SELECT COUNT(*) FROM messages').fetchone()[0])

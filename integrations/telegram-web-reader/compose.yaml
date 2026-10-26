@@ -7,7 +7,9 @@ services:
       - "127.0.0.1:6080:6080"
     volumes:
       - reader_state:/state
+      - signal_inbox:/export
     environment:
+      PAPER_EXPORT: "${PAPER_EXPORT:-0}"
       CHANNEL_PEER: "-1878414449"
       CHANNEL_TITLE: "BehDark (VIP)"
     shm_size: 256m
@@ -25,3 +27,5 @@ services:
       retries: 3
 volumes:
   reader_state:
+  signal_inbox:
+    name: tradeonbu_telegram_inbox

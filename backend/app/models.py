@@ -661,3 +661,13 @@ class DailyOutlookRun(Base):
     report: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     usage: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+
+
+class TelegramPaperEvent(Base):
+    __tablename__ = "telegram_paper_events"
+    event_key: Mapped[str] = mapped_column(String(80), primary_key=True)
+    status: Mapped[str] = mapped_column(String(24))
+    reason: Mapped[str] = mapped_column(String(64), default="")
+    symbol: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    position_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

@@ -2,7 +2,7 @@
 
 Runs a dedicated Chromium browser on the VPS, with a persistent profile. No Telegram developer API credentials are needed. Sign in manually using the server browser over an SSH tunnel. Once authorized, the browser can remain connected without the phone being online; Telegram can revoke the session and require login again.
 
-**This is a read-only feasibility test, not a production signal feed.** There is no parsing into orders, AI call, exchange access, or TradeOnBU database access. Protected-channel compatibility is unverified. It reads rendered text only and does not forward, download protected media, take screenshots, use OCR, or access Telegram internal stores/APIs. If the normal client cannot expose a message, this probe cannot import it.
+**Default mode is a read-only feasibility test. Optional paper execution is documented in [telegram-paper.md](../../docs/telegram-paper.md).** The reader itself has no order execution, AI call, exchange access, or TradeOnBU database access. With PAPER_EXPORT=1 it publishes fresh events to a separate shared inbox for the optional paper consumer. Protected-channel compatibility is unverified. It reads rendered text only and does not forward, download protected media, take screenshots, use OCR, or access Telegram internal stores/APIs. If the normal client cannot expose a message, this probe cannot import it.
 
 ## Start
 
@@ -37,7 +37,7 @@ docker compose exec -T reader python /reader/reader.py status
 - `no_readable_messages`: no recognized message elements yet.
 - `offline`, `browser_error`: collection is not confirmed. Heartbeat health only proves the loop is alive, not that Telegram is delivering fresh messages.
 
-`counts` are for the last poll, so zero counts between posts are normal. `stored` is the current deduplicated row count. First observed messages after startup or interruption are a baseline, never a new trading event. Text-free posts are marked unsupported; captions/text are not image/chart interpretation. No historical backfill, deleted-message tracking, complete album handling, or exactly-once delivery guarantee. Web K virtualizes messages and changes its UI; posts during outages may be missed. Do not connect this probe directly to order execution.
+`counts` are for the last poll, so zero counts between posts are normal. `stored` is the current deduplicated row count. First observed messages after startup or interruption are a baseline, never a new trading event. Text-free posts are marked unsupported; captions/text are not image/chart interpretation. No historical backfill, deleted-message tracking, complete album handling, or exactly-once delivery guarantee. Web K virtualizes messages and changes its UI; posts during outages may be missed. Use only the guarded paper consumer described above for execution.
 
 After login, disable the interactive viewer (within three seconds) while keeping collection running:
 

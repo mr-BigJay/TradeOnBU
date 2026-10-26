@@ -26,3 +26,17 @@ class StorageTests(unittest.TestCase):
         self.assertEqual(self.db.execute('SELECT COUNT(*) FROM messages').fetchone()[0],500)
 
 if __name__ == '__main__': unittest.main()
+
+class ExportTests(unittest.TestCase):
+    def test_only_fresh_new_exports_and_edit_cancels(self):
+        db=connect(':memory:')
+        record(db,[{'id':'1','text':'history','timestamp':99}],True,now=100,export=True)
+        self.assertEqual(db.execute('SELECT COUNT(*) FROM exports').fetchone()[0],0)
+        record(db,[{'id':'2','text':'new','timestamp':100}],now=101,export=True)
+        self.assertEqual(db.execute('SELECT COUNT(*) FROM exports').fetchone()[0],1)
+        record(db,[{'id':'3','text':'old','timestamp':1}],now=300,export=True)
+        self.assertEqual(db.execute('SELECT COUNT(*) FROM exports').fetchone()[0],1)
+        record(db,[{'id':'2','text':'edited','timestamp':100}],now=301,export=True)
+        import json
+        self.assertEqual(json.loads(db.execute('SELECT payload FROM exports').fetchone()[0])['kind'],'edited')
+        db.close()
