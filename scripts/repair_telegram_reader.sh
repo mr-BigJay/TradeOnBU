@@ -53,8 +53,8 @@ docker compose up -d reader
 CID="$(docker compose ps -q reader)"
 GOOD=0
 HOT=0
-# Fifteen bounded checks, plus command timeouts; no wait for a new post.
-for iteration in $(seq 1 15); do
+# Twenty-four bounded checks including one settings reload, plus command timeouts; no wait for a new post.
+for iteration in $(seq 1 24); do
   sleep 20
   STATUS="$(timeout 10 docker compose exec -T reader python /reader/reader.py status 2>/dev/null || true)"
   echo "CHECK $iteration: ${STATUS:-status_unavailable}"
@@ -64,6 +64,9 @@ for iteration in $(seq 1 15); do
 try:
  d=json.load(sys.stdin); print(d["state"] if 0<=time.time()-d["heartbeat"]<60 else "stale")
 except Exception: print("unavailable")')"
+  if [ "$STATE" = power_saving_failed ]; then
+    echo 'Power Saving UI could not be verified; no private settings were modified directly.'; break
+  fi
   if [ "$STATE" = login_required ]; then
     echo 'Manual Telegram login is required; no credentials were read.'; break
   fi

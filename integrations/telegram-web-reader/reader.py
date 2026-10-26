@@ -71,6 +71,26 @@ OPEN_TARGET = r"""({peer, title}) => {
 }"""
 
 
+def enable_power_saving(page):
+    """Use Telegram's visible settings controls, never private app stores/APIs."""
+    menu = page.locator('#column-left .btn-menu-toggle:not(.btn-new-menu):visible')
+    if menu.count() != 1:
+        raise RuntimeError('menu_not_unique')
+    menu.click(timeout=10000)
+    page.locator('.btn-menu-item .tgico-settings:visible').click(timeout=10000)
+    page.locator('.tgico-general_filled:visible').click(timeout=10000)
+    page.locator('.tgico-sputnik_filled:visible').click(timeout=10000)
+    toggle = page.locator('.power-saving-container #input-power-saving-all')
+    toggle.wait_for(state='attached', timeout=10000)
+    if not toggle.is_checked():
+        page.locator('.power-saving-container label').filter(has=toggle).click(timeout=10000)
+    if not toggle.is_checked():
+        raise RuntimeError('power_saving_not_checked')
+    # Telegram's visible control delays its settings update by 200ms.
+    page.wait_for_timeout(1500)
+    return True
+
+
 def connect(path):
     db = sqlite3.connect(path)
     db.execute('CREATE TABLE IF NOT EXISTS messages(peer TEXT, mid TEXT, body TEXT, digest TEXT, seen REAL, kind TEXT, PRIMARY KEY(peer,mid))')
@@ -169,6 +189,8 @@ def run():
         opened_at = time.monotonic()
         attempts = 0
         baseline = True
+        power_marker = STATE / 'power-saving-v1.json'
+        power_verified = power_marker.exists()
         while True:
             try:
                 if not page.url.startswith('https://web.telegram.org/k/'):
@@ -180,11 +202,29 @@ def run():
                 else:
                     result = page.evaluate(EXTRACT, {'peer':PEER, 'title':TITLE})
                     if result['state'] == 'observing':
+                        if not power_verified:
+                            status('configuring_power_saving')
+                            try:
+                                enable_power_saving(page)
+                            except Exception as exc:
+                                status('power_saving_failed', error_type=type(exc).__name__)
+                                # Let the wrapper read the diagnostic and stop safely.
+                                while True:
+                                    time.sleep(20)
+                                    status('power_saving_failed')
+                            power_marker.write_text(json.dumps({'verified_at':time.time()}))
+                            power_verified = True
+                            baseline = True
+                            attempts = 0
+                            page.goto('https://web.telegram.org/k/#' + PEER, wait_until='domcontentloaded', timeout=60000)
+                            page.reload(wait_until='domcontentloaded', timeout=120000)
+                            opened_at = time.monotonic()
+                            continue
                         counts = record(db, result['messages'], baseline, export=os.environ.get('PAPER_EXPORT') == '1')
                         if os.environ.get('PAPER_EXPORT') == '1':
                             flush_exports(db, '/export')
                         baseline = False
-                        status('observing', last_scan=time.time(), counts=counts,
+                        status('observing', power_saving='verified_in_profile', last_scan=time.time(), counts=counts,
                             stored=db.execute('SELECT COUNT(*) FROM messages').fetchone()[0])
                     else:
                         baseline = True

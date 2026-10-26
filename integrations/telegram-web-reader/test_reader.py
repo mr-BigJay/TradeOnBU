@@ -40,3 +40,33 @@ class ExportTests(unittest.TestCase):
         import json
         self.assertEqual(json.loads(db.execute('SELECT payload FROM exports').fetchone()[0])['kind'],'edited')
         db.close()
+
+class PowerSavingTests(unittest.TestCase):
+    def test_enable_and_idempotent(self):
+        from unittest.mock import MagicMock
+        from reader import enable_power_saving
+        for initially_on in (True, False):
+            page = MagicMock()
+            menu = MagicMock(); menu.count.return_value = 1
+            toggle = MagicMock(); toggle.is_checked.side_effect = [initially_on, True]
+            label = MagicMock()
+            def locate(selector):
+                if selector.startswith('#column-left'): return menu
+                if '#input-power-saving-all' in selector: return toggle
+                if selector.endswith(' label'): return label
+                return MagicMock()
+            page.locator.side_effect = locate
+            self.assertTrue(enable_power_saving(page))
+            self.assertEqual(label.filter.return_value.click.call_count, 0 if initially_on else 1)
+    def test_ambiguous_menu_stops(self):
+        from unittest.mock import MagicMock
+        from reader import enable_power_saving
+        page=MagicMock(); page.locator.return_value.count.return_value=2
+        with self.assertRaisesRegex(RuntimeError,'menu_not_unique'): enable_power_saving(page)
+        page.locator.return_value.click.assert_not_called()
+    def test_unchecked_after_click_stops(self):
+        from unittest.mock import MagicMock
+        from reader import enable_power_saving
+        page=MagicMock(); page.locator.return_value.count.return_value=1
+        page.locator.return_value.is_checked.return_value=False
+        with self.assertRaisesRegex(RuntimeError,'power_saving_not_checked'): enable_power_saving(page)
