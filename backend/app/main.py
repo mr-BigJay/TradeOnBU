@@ -134,6 +134,10 @@ async def lifespan(app: FastAPI):
             coalesce=True,
         )
 
+        from app.services.telegram_paper import telegram_paper_tick
+        scheduler.add_job(telegram_paper_tick, "interval", seconds=15,
+                          id="telegram_paper", max_instances=1, coalesce=True)
+
         # Public-only market data keeps flowing; no ChatGPT forecast job is scheduled.
         async def _public_market_snapshot_tick() -> None:
             from app.services.price_forecast.public_market_snapshots import persist_public_market_snapshot

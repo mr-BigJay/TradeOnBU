@@ -1,0 +1,12 @@
+# Use with: docker compose -f docker-compose.yml -f deploy/telegram-paper.compose.yml ...
+services:
+  tradeonbu:
+    environment:
+      TELEGRAM_PAPER_ENABLED: "${TELEGRAM_PAPER_ENABLED:-0}"
+      TELEGRAM_PAPER_INBOX: /telegram-inbox
+    volumes:
+      - telegram_inbox:/telegram-inbox:ro
+volumes:
+  telegram_inbox:
+    external: true
+    name: tradeonbu_telegram_inbox

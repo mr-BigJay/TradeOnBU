@@ -174,6 +174,7 @@ export function PositionTradeCard({
       <div className="position-trade-card__top">
         <div className="position-trade-card__symbol">
           <strong dir="ltr">{String(p.symbol || "BTCUSDT")}</strong>
+          {p.source_label === "BehDark" && <span dir="ltr">BehDark</span>}
           <span className={"position-direction position-direction--" + (direction === "LONG" ? "long" : "short")}>
             {direction === "LONG" ? "LONG" : "SHORT"}
           </span>

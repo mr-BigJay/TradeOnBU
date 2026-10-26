@@ -6,3 +6,6 @@ data/
 frontend/node_modules/
 frontend/dist/
 *.db
+
+# Local optional Telegram paper Compose wiring
+/docker-compose.override.yml

@@ -241,6 +241,27 @@ class SimPositionMonitorService:
         positions = list(result.scalars().all())
         if not positions:
             return 0
+        groups: dict[str, list[SimPosition]] = {}
+        for pos in positions:
+            groups.setdefault(pos.symbol, []).append(pos)
+        processed = 0
+        for group in groups.values():
+            try:
+                processed += await self._monitor_symbol(session, settings, group)
+            except (httpx.RequestError, httpx.HTTPStatusError, RuntimeError):
+                logger.warning("Skipping paper symbol monitor: market data unavailable")
+        try:
+            await record_equity_snapshot(session, self.positions)
+        except (httpx.RequestError, httpx.HTTPStatusError) as exc:
+            # MTM is observational; a quote outage must not roll back a validated
+            # candle-based paper fill, cancel, or stop/take-profit transition.
+            # Do not fabricate equity using an invented market price.
+            logger.warning("Skipping paper equity snapshot: market quote unavailable (%s)", exc)
+        if processed or positions:
+            await session.commit()
+        return processed
+
+    async def _monitor_symbol(self, session, settings, positions) -> int:
         symbol = positions[0].symbol
         limit = self._kline_limit_for_positions(positions)
         bundle = await self.market.fetch_kline_bundle(symbol, "1m", limit)
@@ -516,13 +537,4 @@ class SimPositionMonitorService:
                 prev_ms = bar.time_ms
                 pos.last_processed_candle_ms = bar.time_ms
 
-        try:
-            await record_equity_snapshot(session, self.positions)
-        except (httpx.RequestError, httpx.HTTPStatusError) as exc:
-            # MTM is observational; a quote outage must not roll back a validated
-            # candle-based paper fill, cancel, or stop/take-profit transition.
-            # Do not fabricate equity using an invented market price.
-            logger.warning("Skipping paper equity snapshot: market quote unavailable (%s)", exc)
-        if processed or positions:
-            await session.commit()
         return processed

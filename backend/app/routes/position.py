@@ -328,3 +328,25 @@ async def export_csv(
         end_date=end_date,
     )
     return PlainTextResponse(history_to_csv(data["history"]), media_type="text/csv; charset=utf-8")
+
+
+@router.get('/telegram-status')
+async def telegram_status(session: AsyncSession = Depends(get_db), _=Depends(require_dashboard_access)):
+    import json
+    import os
+    import time
+    from pathlib import Path
+    from sqlalchemy import select
+    from app.models import TelegramPaperEvent
+    enabled = os.environ.get('TELEGRAM_PAPER_ENABLED') == '1'
+    fresh = False
+    if enabled:
+        try:
+            feed = json.loads((Path(os.environ.get('TELEGRAM_PAPER_INBOX', '/telegram-inbox')) / '_feed.json').read_text())
+            fresh = 0 <= time.time() - float(feed['heartbeat']) <= 45
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+    rows = (await session.scalars(select(TelegramPaperEvent).order_by(TelegramPaperEvent.created_at.desc()).limit(20))).all()
+    return {'enabled': enabled, 'reader_fresh': fresh, 'events': [
+        {'id':r.event_key, 'symbol':r.symbol, 'status':r.status, 'reason':r.reason, 'position_id':r.position_id}
+        for r in rows]}

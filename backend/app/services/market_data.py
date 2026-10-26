@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -55,10 +56,18 @@ class MarketDataService:
         rows = body.get("data") or []
         if not rows:
             raise RuntimeError("Empty ticker response")
-        row = rows[0]
+        matches = [r for r in rows if str(r.get("symbol", "")).upper() == symbol.upper()]
+        if len(matches) != 1:
+            raise RuntimeError("Ticker symbol mismatch")
+        row = matches[0]
+        price = float(row["lastPrice"])
+        if not math.isfinite(price) or price <= 0:
+            raise RuntimeError("Invalid ticker price")
         exchange_ts = row.get("time") or row.get("ts")
         exchange_ms = int(exchange_ts) if exchange_ts is not None else None
-        return float(row["lastPrice"]), exchange_ms
+        if exchange_ms is not None and not -5000 <= self._now_ms() - exchange_ms <= 60000:
+            raise RuntimeError("Stale ticker timestamp")
+        return price, exchange_ms
 
     async def fetch_klines(self, symbol: str, interval: str, limit: int = 200) -> list[Candle]:
         return await self.fetch_closed_klines(symbol, interval, limit)
