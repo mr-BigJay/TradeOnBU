@@ -90,3 +90,19 @@ Boot compatibility: blanket image disabling and the explicit GPU-disable overrid
 ## Telegram Power Saving
 
 After the channel is first recognized, the reader navigates the visible menu → Settings → General Settings → Power Saving and enables the master checkbox. Selectors come from Web K's `sidebarLeft/tabs/powerSaving.tsx`, `generalSettings.tsx` and `checkboxField.ts`. It verifies the checkbox before recording a marker in its private profile volume, then reloads. Subsequent runs retain the normal Telegram preference and skip repeat navigation. This disables the effects covered by Telegram's master lite-mode control; it does not delete backgrounds, block startup images, or alter unrelated account privacy/notification settings. An unrecognized UI stops the automated repair rather than claiming success. The marker records a prior UI verification, not continuous verification of Telegram's internal state. To reapply after manually changing settings, stop the reader and remove only `/state/power-saving-v1.json` in a one-off container. Real CPU improvement still must be measured on the VPS.
+
+### Deployment after manual Power Saving setup
+
+`scripts/deploy_telegram_paper.sh <commit>` preserves the existing browser profile
+and Power Saving confirmation. It saves the reader environment alongside the app
+backup, persists `READER_HEADLESS=1`, `READER_CPUS=0.75` and
+`READER_MEMORY_LIMIT=1g`, and removes only Chromium singleton symlinks after
+stopping the reader and checking that no other container uses its state volume.
+These resource values match the tested server budget; they are limits, not
+reserved capacity. Standalone Compose defaults remain 0.25 CPU and 768m.
+
+The installer requires two fresh `observing` scans before building the app and
+again after enabling export. Failure stops the reader and sets export off; it
+does not automatically roll back the application or database. Success establishes
+reader readiness, not proof of receipt of a future channel signal. Old messages
+are baselined rather than submitted as new trading signals.
