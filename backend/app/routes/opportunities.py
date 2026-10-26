@@ -69,6 +69,7 @@ def _serialize_setup(row: AiProposedSetup, live_price: float | None = None) -> d
     conf = row.confirmation_state or {}
     return {
         "setup_id": row.setup_id,
+        "strategy_id": (row.structured_snapshot or {}).get("strategy_id", "ict_reversal"),
         "symbol": row.symbol,
         "direction": row.direction,
         "lifecycle_state": row.lifecycle_state,

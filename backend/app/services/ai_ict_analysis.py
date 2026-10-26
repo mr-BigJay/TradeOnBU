@@ -17,7 +17,7 @@ from app.services.ai_analysis_scheduler import get_or_create_settings, record_ru
 from app.domain.candles import Candle
 from app.services.ai_market_payload import MarketContextError, build_raw_market_payload
 from app.services.ai_market_intelligence import load_ai_market_intelligence
-from app.services.ai_setup_memory import build_ai_memory_context, create_setup_from_structured
+from app.services.ai_setup_memory import build_ai_memory_context
 from app.services.ai_telegram_format import format_ai_chart_caption, split_ai_telegram_report_messages
 from app.services.chart_media import chart_artifact_meta, chart_path_for_run
 from app.services.chart_renderer import ChartRenderError, render_ict_chart_png
@@ -314,14 +314,23 @@ async def _persist_run_draft(run_id: int, draft: _RunDraft, *, symbol: str) -> A
         setup_row: AiProposedSetup | None = None
         if draft.status.startswith("completed") and draft.structured:
             mi_ctx = ((draft.structured or {}).get("_artifacts") or {}).get("market_intelligence_context")
-            setup_row, setup_meta = await create_setup_from_structured(
+            from app.services.strategy_candidates import persist_strategy_candidates
+
+            candidate_rows, candidate_results = await persist_strategy_candidates(
                 session,
                 run_id=run_id,
                 symbol=symbol,
                 structured=draft.structured,
                 market_intelligence=mi_ctx if isinstance(mi_ctx, dict) else None,
             )
-            draft.structured = _merge_artifacts(draft.structured, {"setup_persistence": setup_meta})
+            primary = draft.structured.get("strategy_id", "ict_reversal")
+            primary = primary if isinstance(primary, str) else "unknown_entry_strategy"
+            setup_row = candidate_rows.get(primary)
+            setup_meta = candidate_results.get(primary, {"skipped": True, "reason": "unknown_entry_strategy"})
+            draft.structured = _merge_artifacts(draft.structured, {
+                "setup_persistence": setup_meta,
+                "strategy_persistence": candidate_results,
+            })
             run.structured = draft.structured
         cfg = await get_or_create_settings(session)
         record_run_outcome(cfg, run.status, draft.error_detail, trigger=run.trigger or "scheduled")
@@ -413,9 +422,13 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
             market_intelligence = await load_ai_market_intelligence(session, symbol=symbol)
             await session.commit()
 
+        from app.services.strategy_features import strategy_features
+
+        features = strategy_features(candles_by_interval)
         user_payload = json.dumps(
             {
                 "market": market_payload,
+                "strategy_features": features,
                 "memory": memory,
                 "market_intelligence": market_intelligence,
                 "requested_inference": {
@@ -448,9 +461,12 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
             draft.error_code = "safety_warning"
             draft.error_detail = ",".join(safety["warnings"])
 
+        from app.services.strategy_timing_review import review_recent_patterns
+
+        timing_review = review_recent_patterns(structured, candles_by_interval.get("5m", []))
         inference_meta = {
             "enabled_strategies": enabled_strategies,
-            "strategy_prompt_version": 1,
+            "strategy_prompt_version": 2,
             "provider": provider,
             "requested_model": analysis.requested_model,
             "requested_reasoning_effort": analysis.requested_reasoning_effort,
@@ -464,6 +480,8 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
             {
                 "inference": inference_meta,
                 "market_intelligence_context": market_intelligence,
+                "strategy_features": features,
+                "strategy_timing_review": timing_review,
             },
         )
 

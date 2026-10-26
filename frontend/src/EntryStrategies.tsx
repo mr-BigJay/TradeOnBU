@@ -28,7 +28,7 @@ export function EntryStrategies() {
   }
   return <section className="card" dir="rtl" aria-label="استراتژی‌های تحلیل">
     <h3>استراتژی‌های تحلیل</h3>
-    <p className="hint">همهٔ استراتژی‌های فعال در یک درخواست بررسی می‌شوند؛ هر نوبت حداکثر یک ستاپ انتخاب می‌شود. فاصلهٔ تحلیل تغییر نمی‌کند.</p>
+    <p className="hint">همهٔ استراتژی‌های فعال در یک درخواست بررسی می‌شوند؛ هر روش می‌تواند یک فرصت مستقل را پایش کند؛ اجازهٔ ورود تابع محدودیت مشترک ریسک است. فاصلهٔ تحلیل تغییر نمی‌کند.</p>
     {values && (Object.keys(labels) as (keyof Strategies)[]).map(key => <label key={key} style={{display: "block", margin: "12px 0"}}>
       <input type="checkbox" checked={values[key]} disabled={busy} onChange={e => setValues({...values, [key]: e.target.checked})} /> {labels[key]}
     </label>)}

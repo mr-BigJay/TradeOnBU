@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { StrategyDiagnostics } from "./StrategyDiagnostics";
 import { EntryStrategies } from "./EntryStrategies";
 import { apiFetch } from "./api";
 import { displayTehranTime } from "./displayTime";
@@ -236,6 +237,7 @@ export function AiAnalysisPage({ onOpenPaperPosition }: Props) {
                   ایجاد پوزیشن تمرینی
                 </button>
               )}
+              <StrategyDiagnostics structured={detail.structured} />
               <pre>{detail.report_fa || ""}</pre>
             </div>
           </div>

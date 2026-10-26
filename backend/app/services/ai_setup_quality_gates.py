@@ -431,6 +431,9 @@ async def validate_setup_quality_gates(
         if direction
         else []
     )
+    # Monitoring opportunities are independent; execution remains portfolio-wide.
+    from app.services.entry_strategies import strategy_id
+    open_same = [s for s in open_same if strategy_id(s.structured_snapshot or {}) == strategy_id(structured)]
     if direction and open_same and not is_revision:
         checks.append(
             {

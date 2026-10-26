@@ -781,9 +781,14 @@ async def _find_duplicate_open(
     symbol: str,
     direction: str,
     entry: float,
+    candidate_strategy: str = "ict_reversal",
 ) -> AiProposedSetup | None:
+    from app.services.entry_strategies import strategy_id
+
     opens = await load_open_setups(session, symbol)
     for row in opens:
+        if strategy_id(row.structured_snapshot or {}) != candidate_strategy:
+            continue
         # Legacy rows can remain status=open after their position has closed.
         # Reusing their ID attaches the new plan to the old execution history.
         if row.lifecycle_state not in ACTIVE_MONITOR_STATES:
@@ -817,7 +822,7 @@ async def _persist_conditional_setup(
     )
 
     direction = plan["potential_direction"]
-    dup = await _find_duplicate_open(session, symbol=symbol, direction=direction, entry=plan["proposed_entry_mid"])
+    dup = await _find_duplicate_open(session, symbol=symbol, direction=direction, entry=plan["proposed_entry_mid"], candidate_strategy=structured.get("strategy_id", "ict_reversal"))
     if dup:
         from app.services.entry_strategies import strategy_id
         if strategy_id(dup.structured_snapshot or {}) != strategy_id(structured):
@@ -1018,7 +1023,7 @@ async def create_setup_from_structured(
         await session.flush()
         return existing, meta
 
-    dup = await _find_duplicate_open(session, symbol=symbol, direction=decision, entry=entry)
+    dup = await _find_duplicate_open(session, symbol=symbol, direction=decision, entry=entry, candidate_strategy=strategy_id(structured))
     if dup and strategy_id(dup.structured_snapshot or {}) != strategy_id(structured):
         return None, {**meta, "skipped": True, "reason": "cannot_change_setup_strategy"}
     if dup and not _levels_materially_different(dup, entry, sl, tp):
