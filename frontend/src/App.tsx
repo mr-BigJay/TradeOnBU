@@ -1,3 +1,4 @@
+import { BehDarkPage } from "./BehDarkPage";
 import { DailyOutlookPage } from "./DailyOutlookPage";
 import { useEffect, useState } from "react";
 import { fetchMe, getApiKey, login, logout, setApiKey, setCsrf } from "./api";
@@ -7,7 +8,7 @@ import { TelegramSettingsPage } from "./TelegramSettingsPage";
 import { OpportunitiesPage } from "./OpportunitiesPage";
 import { PositionPage, type PositionPrefill } from "./PositionPage";
 
-type Page = "outlook" | "analysis" | "opportunities" | "chatgpt" | "telegram" | "position";
+type Page = "behdark" | "outlook" | "analysis" | "opportunities" | "chatgpt" | "telegram" | "position";
 
 const NAV: { id: Page; label: string; short: string }[] = [
   { id: "outlook", label: "چشم‌انداز روزانه", short: "🌅" },
@@ -16,6 +17,7 @@ const NAV: { id: Page; label: string; short: string }[] = [
   { id: "position", label: "پوزیشن", short: "📈" },
   { id: "chatgpt", label: "ChatGPT", short: "🤖" },
   { id: "telegram", label: "تلگرام", short: "✈️" },
+  { id: "behdark", label: "BehDark", short: "BD" },
 ];
 
 export default function App() {
@@ -140,6 +142,7 @@ export default function App() {
       </header>
 
       <main className={page === "position" ? "app-main app-main--positions" : "app-main"}>
+        {page === "behdark" && <BehDarkPage />}
         {page === "outlook" && <DailyOutlookPage />}
         {page === "chatgpt" && <ChatGptSettingsPage />}
         {page === "telegram" && <TelegramSettingsPage />}

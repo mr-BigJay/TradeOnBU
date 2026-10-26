@@ -24,6 +24,9 @@ class SessionSecurityMiddleware(BaseHTTPMiddleware):
     CSRF_SAFE = {"GET", "HEAD", "OPTIONS"}
     CSRF_EXEMPT = {"/api/auth/login", "/api/auth/logout"}
     ADMIN_PREFIXES = (
+        "/api/gui/behdark/settings",
+        "/api/gui/behdark/capital",
+        "/api/gui/behdark/cancel",
         "/api/gui/chatgpt/strategies/settings",
         "/api/gui/daily-outlook/settings",
         "/api/gui/daily-outlook/generate",
