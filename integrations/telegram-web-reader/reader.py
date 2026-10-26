@@ -15,10 +15,19 @@ TITLE = os.environ.get('CHANNEL_TITLE', 'BehDark (VIP)')
 EXTRACT = r"""({peer, title}) => {
  const visible = e => !!(e && e.getClientRects().length);
  const headers = [...document.querySelectorAll('.chat-info .user-title')].filter(visible);
- if (headers.length !== 1 || headers[0].innerText.trim() !== title)
-   return {state:'waiting_for_channel', messages:[]};
+ const norm = s => s.replace(/[\u200e\u200f]/g, '').replace(/\s+/g, ' ').trim();
+ const diagnostics = {
+   ready:document.readyState, visible_headers:headers.length,
+   matching_headers:headers.filter(e=>norm(e.innerText)===norm(title)).length,
+   expected_route:location.hash.split('_')[0] === '#' + peer,
+   login_fields:[...document.querySelectorAll('input[type=tel], input[type=password]')].filter(visible).length,
+   visible_message_roots:[...document.querySelectorAll('.bubbles-inner')].filter(visible).length
+ };
+ if (diagnostics.login_fields > 0) return {state:'login_required', messages:[], diagnostics};
+ if (headers.length !== 1 || norm(headers[0].innerText) !== norm(title))
+   return {state:'waiting_for_channel', messages:[], diagnostics};
  if (location.hash.split('_')[0] !== '#' + peer)
-   return {state:'wrong_channel', messages:[]};
+   return {state:'wrong_channel', messages:[], diagnostics};
  // Web K also assigns bubbles-inner to its outgoing-message animation buffer.
  // Exclude that buffer, but keep refusing ambiguous active message containers.
  const allRoots = [...document.querySelectorAll('.bubbles-inner')].filter(visible);
@@ -42,6 +51,18 @@ EXTRACT = r"""({peer, title}) => {
  if (scroll && scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop > 2)
    scroll.scrollTop = scroll.scrollHeight;
  return {state: messages.length ? 'observing' : 'no_readable_messages', messages};
+}"""
+
+
+OPEN_TARGET = r"""({peer, title}) => {
+ const visible = e => !!e.getClientRects().length;
+ const matches = [...document.querySelectorAll('.chatlist [data-peer-id], #column-left a[href]')]
+   .filter(visible).filter(e => (e.dataset.peerId === peer || e.getAttribute('href') === '#'+peer)
+     && e.innerText.includes(title));
+ const candidates = [...new Set(matches.map(e=>e.closest('a') || e))];
+ if (candidates.length !== 1) return {clicked:false, candidates:candidates.length};
+ candidates[0].click();
+ return {clicked:true, candidates:1};
 }"""
 
 
@@ -133,7 +154,10 @@ def run():
             args=['--disable-dev-shm-usage', '--disable-gpu'] +
                  (['--blink-settings=imagesEnabled=false'] if headless else []))
         page = context.pages[0] if context.pages else context.new_page()
-        page.goto('https://web.telegram.org/k/#' + PEER, wait_until='domcontentloaded', timeout=90000)
+        status('loading_page')
+        page.goto('https://web.telegram.org/k/', wait_until='domcontentloaded', timeout=120000)
+        opened_at = time.monotonic()
+        attempts = 0
         baseline = True
         while True:
             try:
@@ -154,7 +178,16 @@ def run():
                             stored=db.execute('SELECT COUNT(*) FROM messages').fetchone()[0])
                     else:
                         baseline = True
-                        status(result['state'], diagnostics=result.get('diagnostics', {}))
+                        diagnostics = result.get('diagnostics', {})
+                        if result['state'] in ('waiting_for_channel', 'wrong_channel') and attempts < 3 and time.monotonic() - opened_at >= 40:
+                            action = page.evaluate(OPEN_TARGET, {'peer':PEER, 'title':TITLE})
+                            diagnostics['open_action'] = action
+                            if not action['clicked']:
+                                page.goto('https://web.telegram.org/k/#' + PEER, wait_until='domcontentloaded', timeout=60000)
+                            attempts += 1
+                            opened_at = time.monotonic()
+                        diagnostics['open_attempts'] = attempts
+                        status(result['state'], diagnostics=diagnostics)
             except Exception as exc:
                 # Exception text can contain DOM/content; log type only.
                 status('browser_error', error_type=type(exc).__name__)

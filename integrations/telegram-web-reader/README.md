@@ -80,3 +80,7 @@ Selectors were checked against the official Web K source, not a live private acc
 - https://github.com/morethanwords/tweb/blob/master/src/helpers/peerIdPolyfill.ts
 - https://playwright.dev/python/docs/api/class-browsertype#browser-type-launch-persistent-context
 - https://core.telegram.org/api/content-protection
+
+## One-command headless repair and diagnostics
+
+Run `scripts/repair_telegram_reader.sh COMMIT_SHA` as root after fetching the pinned commit in `/opt/tradeonbu`. It updates only the separate reader, backs up its installed files/env, leaves paper export disabled, checks that no other container uses the profile before clearing stale symlinks, and samples status/CPU. It leaves the reader running only after three consecutive observing samples below 20% CPU; otherwise stops it. This is a short acceptance check, not a long-term stability guarantee. The startup tries up to three bounded channel-opening actions after page load, keeping exact numeric channel/title checks for collection. Diagnostics include readiness, counts and login-field presence, never field values or chat text. Real server results remain required.

@@ -23,3 +23,20 @@ assert.equal(scan('<div class="bubbles-inner"></div>').state,'selector_mismatch'
 assert.equal(scan('', '-999').state,'peer_mismatch');
 assert.equal(scan('', '-1878414449','Other channel').state,'waiting_for_channel');
 console.log('5 DOM regression cases passed');
+
+const openTarget = execFileSync('python', ['-c', 'from reader import OPEN_TARGET; print(OPEN_TARGET)'], {cwd:__dirname, encoding:'utf8'});
+function openFixture(html) {
+ const dom=new JSDOM(html,{url:'https://web.telegram.org/k/',runScripts:'outside-only'});
+ dom.window.HTMLElement.prototype.getClientRects=function(){return [1]};
+ Object.defineProperty(dom.window.HTMLElement.prototype,'innerText',{get(){return this.textContent}});
+ let clicks=0;
+ dom.window.HTMLElement.prototype.click=function(){clicks++};
+ const result=dom.window.eval(`(${openTarget})`)({peer:'-1878414449',title:'BehDark (VIP)'});
+ return {result,clicks};
+}
+const good='<div class="chatlist"><a data-peer-id="-1878414449">BehDark (VIP)</a></div>';
+assert.equal(openFixture(good).clicks,1);
+assert.equal(openFixture(good.replace('-1878414449','-999')).clicks,0);
+assert.equal(openFixture(good+good).clicks,0);
+assert.equal(openFixture('').clicks,0);
+console.log('4 automatic channel-opening cases passed');
