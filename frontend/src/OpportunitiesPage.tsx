@@ -7,6 +7,7 @@ type PaperSegment = "pending" | "open" | "closed";
 type SetupRow = {
   entity_type: "setup";
   setup_id: string;
+  strategy_id?: string;
   symbol: string;
   direction: string;
   lifecycle_state: string;
@@ -80,6 +81,10 @@ type SummaryResponse = {
     invalidated?: number;
   };
 };
+
+function strategyLabel(sid?: string) {
+  return ({ict_reversal: "A · برگشت قیمت", trend_continuation: "B · ادامهٔ روند", breakout_retest: "C · شکست و بازآزمایی"} as Record<string, string>)[sid || ""] || "روش ثبت نشده";
+}
 
 const TABS: { id: OppTab; label: string }[] = [
   { id: "wait", label: "در انتظار تأیید" },
@@ -373,7 +378,7 @@ function OppTableRow({ row, onOpen }: { row: OppItem; onOpen: () => void }) {
     const st = row.setup;
     return (
       <tr className="opp-row-click" onClick={onOpen}>
-        <td>{row.symbol}</td>
+        <td>{row.symbol}<small className="hint" style={{display: "block"}}>{strategyLabel(st?.strategy_id)}</small></td>
         <td>
           <DirectionBadge direction={row.direction} />
         </td>
@@ -389,7 +394,7 @@ function OppTableRow({ row, onOpen }: { row: OppItem; onOpen: () => void }) {
   }
   return (
     <tr className="opp-row-click" onClick={onOpen}>
-      <td>{row.symbol}</td>
+      <td>{row.symbol}<small className="hint" style={{display: "block"}}>{strategyLabel(row.strategy_id)}</small></td>
       <td>
         <DirectionBadge direction={row.direction} />
       </td>
@@ -430,7 +435,7 @@ function OppCard({ row, onOpen }: { row: OppItem; onOpen: () => void }) {
           <DirectionBadge direction={row.direction} />
           <span className="opp-state-pill opp-state-ready">{row.status}</span>
         </div>
-        <p className="opp-card-title">{row.symbol}</p>
+        <p className="opp-card-title">{row.symbol} · {strategyLabel(st?.strategy_id)}</p>
         <p className="num-ltr opp-card-meta">
           Limit {fmtNum(row.limit_entry_price)} · SL {fmtNum(row.stop_loss)} · TP {fmtNum(row.take_profit)}
         </p>
@@ -448,7 +453,7 @@ function OppCard({ row, onOpen }: { row: OppItem; onOpen: () => void }) {
         <DirectionBadge direction={row.direction} />
         <span className={`opp-state-pill ${lifecycleTone(row.lifecycle_state)}`}>{row.lifecycle_state}</span>
       </div>
-      <p className="opp-card-title">{row.symbol}</p>
+      <p className="opp-card-title">{row.symbol} · {strategyLabel(row.strategy_id)}</p>
       <p className="hint">{row.status_label_fa}</p>
       <p className="num-ltr opp-card-meta">
         SL {fmtNum(row.stop_loss)} · TP {fmtNum(row.take_profit)} · R:R {row.net_rr != null ? fmtNum(row.net_rr) : "—"}
@@ -502,6 +507,7 @@ function DetailSheet({ item, onClose }: { item: OppItem; onClose: () => void }) 
           )}
           {setup && (
             <>
+              <p>{strategyLabel(setup.strategy_id)}</p>
               <p className={`opp-state-pill ${lifecycleTone(setup.lifecycle_state)}`}>{setup.status_label_fa}</p>
               <p className="num-ltr opp-card-meta">
                 Zone {fmtNum(setup.entry_zone_low)}–{fmtNum(setup.entry_zone_high)} · Entry {fmtNum(setup.entry_price)} · SL{" "}

@@ -18,7 +18,20 @@ At least one stays enabled. Existing SettingEntry storage and audit log are used
 no migration. Disabling B/C restores the exact old A prompt. Legacy snapshots
 without strategy_id retain A semantics.
 
-One shared inference evaluates enabled strategies and selects at most one setup.
+One shared inference evaluates enabled strategies. Top-level fields retain one
+primary plan for the report/chart. `strategy_candidates` contains a complete plan
+or explicit null for each other enabled strategy. Up to one candidate per strategy
+per run is persisted independently. Missing candidates are recorded as missing,
+not silently interpreted as a completed evaluation. Each plan passes the existing
+strategy, contract, expiry, RR and enabled-setting validators.
+
+Duplicate/revision checks and the same-direction *setup* guard are scoped to
+strategy. Legacy unlabeled plans retain A semantics. Cross-strategy revisions
+remain forbidden. The same-direction *position* guard, global position capacity,
+loss/reconfirmation checks, wallet constraints and fill checks stay shared.
+Monitoring several opportunities does not authorize several simultaneous trades.
+There is no new optimal-position ranking algorithm; existing monitor order and
+execution constraints govern admission when multiple candidates are ready.
 No extra AI calls, schedule/model/reasoning changes. Actual token usage and the
 switch snapshot are retained per run and visible in detail, not a cost guarantee.
 Daily outlook is unchanged. AI judges higher-timeframe trend and price structure;
@@ -43,3 +56,41 @@ Regression note: `test_record_run_outcome_sets_future_next_attempt` also fails o
 the unchanged base: it expects completion-relative +59 minutes, while the shipped
 scheduler uses fixed UTC boundaries plus one minute. This change does not edit the
 scheduler or that test.
+
+
+## Diagnostics and local quality evidence
+
+`_artifacts.strategy_persistence` records per-strategy creation, revision, rejection,
+setup ID and lifecycle at report time. The panel displays these historical results;
+the opportunities page remains the source for the current lifecycle and rejection.
+`setup_persistence` and `opportunity` retain the primary-plan compatibility fields.
+
+`strategy_features` is computed from closed 4h/1h/5m candles: Wilder ATR14/ADX14,
+EMA20 and one-bar change, candle body and EMA distance in ATR units, relative
+volume versus the preceding 20 bars (excluding the current bar), and prior-20-bar
+extremes. Insufficient, gapped or invalid history is unavailable. These are soft
+context for the model, not fixed score weights or new mandatory entry thresholds.
+No additional market-data or LLM requests are made; extra input and candidate
+output tokens can increase cost. Existing model, cadence and report count remain.
+
+`_artifacts.strategy_timing_review` retrospectively replays B/C on the last hour
+of closed 5m bars. It is explicitly hindsight-only: current levels were selected
+AFTER those candles. It is neither a controlled backtest nor proof of a missed
+trade. It never seeds confirmation state, places orders, or changes monitor start.
+A future live change accepting earlier evidence requires an out-of-sample replay
+with levels established before the evaluated bars. Strict/Balanced behavior and
+fresh-confirmation rules have deliberately not been relaxed.
+
+Read-only production funnel and paper-result cohorts (from repository root):
+
+```bash
+docker compose exec -T tradeonbu python - --days 7 < scripts/strategy_audit.py
+```
+
+This reports creation/revision/rejection counts, current setup states and reasons,
+paper order states and realized net PnL by strategy. Older unlabeled rows remain
+`legacy_unspecified` in performance reporting rather than falsely attributing them.
+Compare cohorts with enough closed trades and different market conditions; these
+counts do not establish improved win rate, drawdown, or profitability. No historical
+production dataset is bundled. The new candidate contract should also be checked
+against the first real inference after deployment; unit tests use mocked responses.

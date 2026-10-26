@@ -127,18 +127,30 @@ ENTIRE entry zone. Existing net R:R/fees/risk limits still apply before paper or
     base += """
 MULTI-STRATEGY OUTPUT CONTRACT (strategy-specific rules above take precedence over
 legacy ICT-only wording): Evaluate ALL enabled strategies in this SAME response.
-Never make separate reports or requests per strategy. Select at most ONE strongest
-credible setup; no forced trade if none is valid. Return strategy_id for the selected
-plan. Return strategy_assessments: one brief Persian reason per enabled strategy
-key, including why other candidates were not selected (max 160 characters each).
+Never make separate reports or requests per strategy. Keep ONE strongest credible
+plan in the existing top-level fields for the report. Additionally return
+strategy_candidates: an object keyed by EVERY enabled strategy other than that
+top-level strategy_id. Each value is either null (no credible opportunity) or a
+COMPLETE, self-contained setup object using the SAME fields and validation rules
+as the top-level plan, including explicit strategy_id, proposed_setup, regime,
+confirmation_type, direction, levels and invalidation. Never inherit fields from
+another candidate. At most ONE plan per strategy. Do not include report_fa,
+chart_overlays, _artifacts or nested strategy_candidates in candidates.
+No forced trade if none is valid. Disabled strategies must not have candidates.
+Each enabled strategy must be assessed even when another strategy has a valid setup.
+Existing setups only constrain revisions WITHIN their own strategy. Other strategies
+can independently propose and monitor opportunities; shared execution risk limits
+still decide whether orders may open. Return strategy_id for the top-level plan.
+Return strategy_assessments: one brief Persian reason per enabled strategy
+key, explaining its candidate or absence (max 160 characters each).
 Shared sizing, anti-scalp, repeat-loss protection, SL and net R:R safeguards apply to
 all. Sweep/reversal and countertrend-reversal evidence apply to A, not B/C. B must
 align with the higher-timeframe trend; C needs its own explicit broken level/retest.
 B/C require fresh confirmations after monitoring starts; do not claim historical
 confirmation allows immediate entry. Do not revise a pending A setup into B/C or
-vice versa. If an existing setup remains valid, retain its strategy or choose WAIT.
+vice versa. Within each strategy, if its existing setup remains valid, retain it or choose WAIT.
 Use conditional entry zone, stop_loss, take_profit and structural_invalidation_level
-for B/C; breakout_level is additionally required for C. Use only supplied market data.
+for B/C; breakout_level is additionally required for C. Use only supplied market data. Server strategy_features are descriptive, not entry permission. Use trend strength, pullback depth, candle body/ATR, relative volume and breakout distance/ATR as soft quality evidence; never invent missing values or force threshold gates.
 Enabled strategies (do not select disabled strategies):
 """ + ", ".join(key for key, on in enabled.items() if on)
     return base

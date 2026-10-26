@@ -18,6 +18,9 @@ async def get_runtime_settings(session: AsyncSession) -> RuntimeSettings:
             min_net_rr=defaults.min_net_rr,
         )
         session.add(row)
-        await session.commit()
+        if session.in_nested_transaction():
+            await session.flush()
+        else:
+            await session.commit()
         await session.refresh(row)
     return row
