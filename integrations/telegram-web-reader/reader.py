@@ -19,8 +19,12 @@ EXTRACT = r"""({peer, title}) => {
    return {state:'waiting_for_channel', messages:[]};
  if (location.hash.split('_')[0] !== '#' + peer)
    return {state:'wrong_channel', messages:[]};
- const roots = [...document.querySelectorAll('.bubbles-inner')].filter(visible);
- if (roots.length !== 1) return {state:'selector_mismatch', messages:[]};
+ // Web K also assigns bubbles-inner to its outgoing-message animation buffer.
+ // Exclude that buffer, but keep refusing ambiguous active message containers.
+ const allRoots = [...document.querySelectorAll('.bubbles-inner')].filter(visible);
+ const roots = allRoots.filter(e => !e.closest('.bubbles-remover, .bubbles-remover-container'));
+ if (roots.length !== 1) return {state:'selector_mismatch', messages:[],
+   diagnostics:{visible_roots:allRoots.length, active_roots:roots.length}};
  const bubbles = [...roots[0].querySelectorAll('.bubble[data-mid][data-peer-id]')]
    .filter(e => !e.classList.contains('service') && !e.classList.contains('is-date'));
  if (bubbles.some(e => e.dataset.peerId !== peer))
@@ -105,7 +109,7 @@ def run():
                             stored=db.execute('SELECT COUNT(*) FROM messages').fetchone()[0])
                     else:
                         baseline = True
-                        status(result['state'])
+                        status(result['state'], diagnostics=result.get('diagnostics', {}))
             except Exception as exc:
                 # Exception text can contain DOM/content; log type only.
                 status('browser_error', error_type=type(exc).__name__)
