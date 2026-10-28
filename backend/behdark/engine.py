@@ -30,10 +30,11 @@ def parse(body):
     else:
         valid=max(tps)<low<=high<sl and tps==sorted(tps,reverse=True)
     if not valid: raise ValueError('invalid_levels')
-    if not 1<=int(lev[1])<=125 or not 0<float(allocation[1])<=100:
+    if not all(1<=int(x)<=125 for x in lev.groups() if x) or not 0<float(allocation[1])<=100:
         raise ValueError('invalid_channel_sizing')
     return dict(symbol=head[2].upper(),direction=direction,low=low,high=high,stop=sl,targets=tps,
-                channel_leverage=int(lev[1]),channel_allocation=float(allocation[1]))
+                entry_levels=list(map(float,entry.groups())),
+                channel_leverage=max(int(x) for x in lev.groups() if x),channel_allocation=float(allocation[1]))
 
 def ingest(db, event, now):
     key=event.get('key','')
@@ -49,6 +50,7 @@ def ingest(db, event, now):
             s.setdefault('revisions',[]).append(dict(at=now,body=body))
             s['digest']=digest; s['reason']='message_edited'
             s['uncertain']=True
+            cancel_legs(s, 'message_edited')
             if s['status']=='waiting': s['status']='review'
             Store.save(db,s)
         return
@@ -61,7 +63,7 @@ def ingest(db, event, now):
     # Activation cutoff is persistent; pre-activation history never becomes an order.
     if published < config['activated_at'] or received > now+5: return
     s=dict(id=key,received=received,published=published,body=body,digest=digest,status='waiting',
-           reason='',uncertain=False,remaining=0,pnl=0.0,fees=0.0,target_hits=[],revisions=[])
+           execution_version=2,reason='',uncertain=False,remaining=0,pnl=0.0,fees=0.0,target_hits=[],revisions=[])
     try: s.update(parse(body))
     except (ValueError,TypeError): s.update(status='review',reason='unsupported_template')
     if event.get('kind')!='new' or event.get('has_reply'):
@@ -90,11 +92,14 @@ def close_part(db,s,price,fraction,at,reason):
     if fraction<=1e-10: return
     sign=1 if s['direction']=='LONG' else -1
     qty=s['quantity']*fraction
-    gross=(price-s['entry'])*qty*sign; fee=qty*price*s['fee_bps']/10000
+    gross=(price-s['entry'])*qty*sign
+    rate=(s['maker_bps'] if reason.startswith('tp') else s['taker_bps']) if s.get('execution_version')==2 else s['fee_bps']
+    fee=qty*price*rate/10000
+    cancel_legs(s, 'exit_started')
     # Isolated paper margin: loss cannot consume more than the released margin share.
     net=max(gross-fee,-s['margin']*fraction)
     s['pnl']+=net; s['fees']+=fee; s['remaining']=max(0.0,s['remaining']-fraction)
-    s['exit_fills'].append(dict(price=price,fraction=fraction,at=at,reason=reason,net=net))
+    s['exit_fills'].append(dict(price=price,fraction=fraction,at=at,reason=reason,net=net,fee=fee,fee_bps=rate))
     ledger(db,s,reason,net,at)
     if s['remaining']<1e-9:
         s.update(status='closed',remaining=0.0,closed_at=at,close_reason=reason)
@@ -102,6 +107,8 @@ def close_part(db,s,price,fraction,at,reason):
 def advance(db,s,low,high,price,start,end,is_bar=False):
     """Closed bars recover missed touches; ambiguous chronology is explicitly marked."""
     if s['status'] not in ('waiting','open'): return
+    if s.get('execution_version')==2:
+        return advance_ladder(db,s,low,high,price,start,end,is_bar)
     cfg=Store.settings(db)
     if s['status']=='waiting':
         if cfg['expiry_hours'] and end-s['received']>cfg['expiry_hours']*3600:
@@ -162,3 +169,73 @@ def apply_bars(db,symbol,bars):
             if (before[0]=='waiting' and s['status']=='open') or ((s['status'],s.get('remaining',0)) != before and bar['at']+60 < s.get('last_quote',0)):
                 s['uncertain']=True
             Store.save(db,s)
+
+
+def cancel_legs(s, reason):
+    for leg in s.get('entry_legs', []):
+        if leg['status']=='pending':
+            leg.update(status='cancelled', reason=reason)
+
+
+def advance_ladder(db,s,low,high,price,start,end,is_bar):
+    """Two independently filled limits; legacy executions retain their original rules."""
+    cfg=Store.settings(db)
+    sign=1 if s['direction']=='LONG' else -1
+    if start < s.get('last_entry_at',s['received']): return
+    stop_hit=low<=s['stop'] if sign==1 else high>=s['stop']
+    hits=[i for i,t in enumerate(s['targets']) if i not in s['target_hits'] and (high>=t if sign==1 else low<=t)]
+    expired=cfg['expiry_hours'] and end-s['received']>cfg['expiry_hours']*3600
+    if expired:
+        cancel_legs(s,'configured_expiry')
+        if s['status']=='waiting':
+            s.update(status='expired',reason='configured_expiry'); return
+    if s['status']=='waiting' and stop_hit:
+        cancel_legs(s,'stop_before_entry')
+        s.update(status='review' if is_bar else 'invalidated',reason='ambiguous_entry_candle' if is_bar else 'stop_before_entry',uncertain=bool(is_bar) or s['uncertain']); return
+    # Exits take priority over adding exposure. No new leg after any partial exit.
+    if s['status']=='open':
+        liquidation=s['entry']*(1-sign/s['leverage'])
+        liq_hit=low<=liquidation if sign==1 else high>=liquidation
+        if stop_hit or liq_hit or hits:
+            if is_bar and (hits or any(l['status']=='pending' for l in s.get('entry_legs',[]))): s['uncertain']=True
+            if stop_hit or liq_hit:
+                threshold=max(s['stop'],liquidation) if sign==1 else min(s['stop'],liquidation)
+                close_part(db,s,min(price,threshold) if sign==1 else max(price,threshold),s['remaining'],end,'margin_exhausted' if threshold==liquidation else 'stop')
+            else:
+                for i in hits:
+                    s['target_hits'].append(i)
+                    close_part(db,s,s['targets'][i],1/len(s['targets']),end,f'tp{i+1}')
+            return
+    if not cfg['enabled']:
+        s['reason']='paused'; return
+    if 'entry_legs' not in s:
+        # Place only on a live quote. Never backdate a newly created limit into OHLC.
+        if is_bar: return
+        w=Store.wallet(db)
+        margin=w['balance']*s['channel_allocation']/100
+        leverage=s['channel_leverage']
+        if margin<=0 or w['available']+1e-8 < margin*(1+leverage*5/10000):
+            s['reason']='insufficient_balance'; return
+        s.update(planned_margin=margin,sizing_balance=w['balance'],leverage=leverage,maker_bps=2.0,taker_bps=5.0,
+                 placed_at=end,entry_legs=[dict(limit=p,weight=w,margin=margin*w,status='pending') for p,w in zip(s['entry_levels'],(.35,.65))])
+    if start<s['placed_at']: return
+    pending=[l for l in s['entry_legs'] if l['status']=='pending' and (low<=l['limit'] if sign==1 else high>=l['limit'])]
+    if not pending: return
+    if is_bar and hits:
+        cancel_legs(s,'ambiguous_entry_candle')
+        s.update(status='review',reason='ambiguous_entry_candle',uncertain=True); return
+    for leg in pending:
+        # Immediately marketable limits get price improvement and taker fees.
+        immediate=end==s['placed_at'] and not is_bar
+        fill=(min(price,leg['limit']) if sign==1 else max(price,leg['limit'])) if immediate else leg['limit']
+        rate=s['taker_bps'] if immediate else s['maker_bps']
+        qty=leg['margin']*s['leverage']/fill; fee=qty*fill*rate/10000
+        oldqty=s.get('quantity',0)
+        entry=(s.get('entry',0)*oldqty+fill*qty)/(oldqty+qty)
+        leg.update(status='filled',price=fill,quantity=qty,fee=fee,fee_bps=rate,at=end)
+        s.update(status='open',entry=entry,opened_at=s.get('opened_at',end),last_entry_at=end,
+                 margin=s.get('margin',0)+leg['margin'],quantity=oldqty+qty,remaining=1.0,
+                 pnl=s['pnl']-fee,fees=s['fees']+fee,reason='')
+        s.setdefault('exit_fills',[])
+        ledger(db,s,'entry_fee',-fee,end)
+        if is_bar: s['uncertain']=True

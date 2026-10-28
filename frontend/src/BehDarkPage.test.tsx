@@ -14,9 +14,10 @@ it('shows four independent tabs and keeps empty winrate unknown',async()=>{
 });
 it('saves wallet settings only through the BehDark endpoint',async()=>{
  render(<BehDarkPage/>);await screen.findByText('ورود جدید: فعال',{exact:false});fireEvent.click(screen.getByRole('button',{name:'کیف پول'}));
- expect(screen.getByLabelText('لوریج')).toHaveValue(4);
- fireEvent.change(screen.getByLabelText('لوریج'),{target:{value:'5'}});fireEvent.click(screen.getByRole('button',{name:'ذخیره تنظیمات'}));
- await waitFor(()=>expect(apiFetch).toHaveBeenCalledWith('/api/gui/behdark/settings',expect.objectContaining({method:'PUT',body:expect.stringContaining('"leverage":5')})));
+ expect(screen.queryByLabelText('لوریج')).toBeNull();
+ expect(screen.getByText('لوریج: بالاترین مقدار اعلام‌شده در همان سیگنال.')).toBeTruthy();
+ fireEvent.click(screen.getByRole('button',{name:'ذخیره تنظیمات'}));
+ await waitFor(()=>expect(apiFetch).toHaveBeenCalledWith('/api/gui/behdark/settings',expect.objectContaining({method:'PUT',body:JSON.stringify({expiry_hours:0,enabled:true})})));
  expect(vi.mocked(apiFetch).mock.calls.every(([path])=>path.startsWith('/api/gui/behdark/'))).toBe(true);
 });
 it('shows service unavailable without hiding the page',async()=>{

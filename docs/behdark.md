@@ -30,9 +30,9 @@ requires a brief main container replacement. It never merges on GitHub or change
 trading settings. On install failure inspect the printed output and backup;
 there is no automatic destructive rollback or reset. Caddy is not recreated.
 
-Open **BehDark → Wallet**, set initial virtual USDT once, then choose margin,
-leverage, assumed per-side fee in basis points, optional signal lifetime and
-entry-enabled state. No signal becomes executable before the persistent first
+Open **BehDark → Wallet**, set initial virtual USDT once, then choose optional
+signal lifetime and entry-enabled state. Sizing and leverage come from each new
+channel signal; the wallet no longer asks for manual sizing or fee overrides. No signal becomes executable before the persistent first
 activation timestamp. Turning entries off keeps exits and signal ingestion
 running; turning them on does not reset the cutoff. Initial capital cannot be
 reset over an existing ledger. New entry settings are frozen into each fill.
@@ -68,18 +68,33 @@ any later application migrations; never replace the main DB casually.
   data outages beyond this recovery window remain uncertain. No full-market
   history, depth or trades are collected. Quotes carry receipt time; venue ticker
   timestamps, when present, are checked. Without them freshness is receipt-based.
-- Current quotes inside the entry range fill at the observed price. Historical
-  candle range touches use the near edge (LONG upper, SHORT lower). No fill is
-  backdated before receipt. A candle touching entry and TP/SL with unknown order
-  becomes review-only. Candle-only entries and recovery after newer quotes are flagged uncertain.
-- Open trades take equal fractions at each distinct target, with a fixed original
-  stop (no automatic breakeven/trailing). Stop/target ambiguity uses adverse stop
-  first and excludes the result from certain winrate. Gaps use adverse observed
-  prices. No depth/queue model, funding or exchange liquidation emulation; loss
-  is capped to the released isolated virtual margin, with an approximate margin
-  exhaustion threshold. Leverage and margin come from this wallet, not A/B/C or
-  channel capital percentages. Default 6 bps is a configurable **assumption**, not
-  a verified account fee tier.
+- New signals use execution version 2. Leverage is the maximum of the stated
+  values (both must be 1–125). `Balance: 3% of capital` means 3% of the realized
+  wallet balance at limit placement, excluding unrealized P&L. The total margin
+  is frozen and split 35%/65% across prices in **written order**, not sorted order.
+  Both limits and an entry-fee buffer are reserved atomically; insufficient free
+  balance leaves the signal waiting. No manual wallet leverage/margin overrides.
+- Limits are placed on the first live quote, never backdated into historical bars.
+  Resting limits fill at their limit when crossed/touched. Immediately marketable
+  limits fill at the better observed price with taker fees. This is simulated
+  execution, without exchange depth/queue guarantees. Each leg has its own fill,
+  margin, quantity and fee. Position entry is quantity-weighted, not a simple
+  35%/65% price average. Only filled quantity earns P&L.
+- At the first TP/SL exit, cancel any unfilled entry leg. Targets close equal
+  fractions of filled quantity. Pending legs are also cancelled on an edit or
+  expiry; existing open exposure keeps its original stop/targets. Pausing new
+  entries blocks additional fills, but keeps exit monitoring running.
+- Bitunix VIP1 futures defaults: maker 2 bps (0.02%), taker 5 bps (0.05%), applied
+  to executed notional on each fill. Resting entries/TPs model maker; immediate
+  entries/stops/margin exhaustion model taker. These rates are frozen per signal.
+  Official schedule checked 2026-10-28: https://www.bitunix.com/service/handling-fee
+- Ambiguous OHLC entry+exit becomes review-only before opening; for open trades,
+  exits precede adding exposure and ambiguous results are excluded from certain
+  winrate. Candle-only entries are uncertain. Gaps use adverse observed stops.
+  No automatic breakeven/trailing, funding, depth model, or exact exchange
+  liquidation emulation; isolated margin exhaustion remains approximate.
+- Existing records without execution_version=2 retain legacy execution and fees,
+  including existing waiting signals. Deployment never rewrites historical fills.
 - Insufficient funds do not erase the signal: it remains waiting with a reason.
   Reports measure executed paper-account performance, not a capital-unlimited
   shadow backtest of every channel recommendation. Unentered/unsupported/review

@@ -60,6 +60,8 @@ class Store:
         settings = Store.settings(db)
         balance = db.execute('SELECT COALESCE(SUM(amount),0) FROM ledger').fetchone()[0]
         reserved = sum(s.get('margin', 0) * s.get('remaining', 0) for s in Store.rows(db, True) if s['status'] == 'open')
+        reserved += sum(l['margin']*(1+s['leverage']*s['taker_bps']/10000)
+                        for s in Store.rows(db,True) for l in s.get('entry_legs',[]) if l['status']=='pending')
         unrealized = 0.0
         for s in Store.rows(db, True):
             if s['status'] == 'open':

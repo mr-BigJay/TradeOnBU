@@ -7,6 +7,8 @@ type Signal = {
   received: number; opened_at?: number; closed_at?: number; entry?: number; low?: number; high?: number;
   stop?: number; targets?: number[]; target_hits: number[]; pnl: number; fees: number;
   margin?: number; leverage?: number; remaining: number; quantity?: number; uncertain: boolean;
+  execution_version?: number; planned_margin?: number; channel_leverage?: number; channel_allocation?: number;
+  entry_legs?: {limit:number;weight:number;margin:number;status:string;price?:number}[];
   body: string; revisions: { at: number; body: string }[];
 };
 type Wallet = {capital:number; balance:number; available:number; reserved:number; equity:number; unrealized:number;
@@ -24,15 +26,15 @@ const TABS=[['signals','سیگنال‌ها'],['open','پوزیشن‌های ب�
 export function BehDarkPage(){
   const [tab,setTab]=useState<string>('signals'); const [data,setData]=useState<Snapshot|null>(null);
   const [error,setError]=useState(''); const [busy,setBusy]=useState(false); const [notice,setNotice]=useState('');
-  const [form,setForm]=useState({margin:20,leverage:3,fee_bps:6,expiry_hours:0,enabled:false});
+  const [form,setForm]=useState({expiry_hours:0,enabled:false});
   const initialForm=useRef(false);
   const [capital,setCapital]=useState(1000); const [filter,setFilter]=useState('all');
   const refresh=async()=>{const d=await apiFetch('/api/gui/behdark/snapshot');setData(d);return d as Snapshot;};
   useEffect(()=>{let alive=true; let pending=false;
-    const load=async()=>{if(pending)return;pending=true;try{const d=await apiFetch('/api/gui/behdark/snapshot');if(alive){setData(d);setError('');if(!initialForm.current){const {margin,leverage,fee_bps,expiry_hours,enabled}=d.wallet;setForm({margin,leverage,fee_bps,expiry_hours,enabled});initialForm.current=true;}}}catch(e){if(alive)setError((e as Error).message);}finally{pending=false;}};
+    const load=async()=>{if(pending)return;pending=true;try{const d=await apiFetch('/api/gui/behdark/snapshot');if(alive){setData(d);setError('');if(!initialForm.current){const {expiry_hours,enabled}=d.wallet;setForm({expiry_hours,enabled});initialForm.current=true;}}}catch(e){if(alive)setError((e as Error).message);}finally{pending=false;}};
     void load();const t=window.setInterval(load,10000);return()=>{alive=false;clearInterval(t);};},[]);
   const action=async(path:string,body?:unknown,method='POST')=>{setBusy(true);setError('');setNotice('');try{await apiFetch('/api/gui/behdark/'+path,{method,body:body===undefined?undefined:JSON.stringify(body)});await refresh();setNotice('ذخیره شد.');}catch(e){setError((e as Error).message);}finally{setBusy(false);}};
-  const openWallet=()=>{if(data){const {margin,leverage,fee_bps,expiry_hours,enabled}=data.wallet;setForm({margin,leverage,fee_bps,expiry_hours,enabled});}setTab('wallet');};
+  const openWallet=()=>{if(data){const {expiry_hours,enabled}=data.wallet;setForm({expiry_hours,enabled});}setTab('wallet');};
   const download=async()=>{setBusy(true);try{const h:Record<string,string>={};if(getApiKey())h['X-API-Key']=getApiKey();if(getCsrf())h['X-CSRF-Token']=getCsrf();const r=await fetch('/api/gui/behdark/report.csv',{credentials:'include',headers:h});if(!r.ok)throw Error('دریافت گزارش ناموفق بود.');const url=URL.createObjectURL(await r.blob());const a=document.createElement('a');a.href=url;a.download='behdark.csv';a.click();URL.revokeObjectURL(url);}catch(e){setError((e as Error).message);}finally{setBusy(false);}};
   const cards=(rows:Signal[])=>rows.length?<div className="bd-list">{rows.map(s=>{
     const q=s.symbol?data?.quotes[s.symbol]:undefined;
@@ -40,7 +42,9 @@ export function BehDarkPage(){
     return <article className="card bd-signal" key={s.id}>
       <div className="bd-row"><strong dir="ltr">{s.symbol||'پیام کانال'} · {s.direction||'—'}</strong><span className={'bd-badge '+s.status}>{labels[s.status]||s.status}</span></div>
       <p className="hint">دریافت: {date(s.received)} · پیام #{s.id.split(':')[1]}</p>
-      {s.symbol&&<div className="bd-grid"><div>محدودهٔ ورود <b dir="ltr">{fmt(s.low,8)} – {fmt(s.high,8)}</b></div><div>ورود ثبت‌شده <b>{fmt(s.entry,8)}</b></div><div>حدضرر <b>{fmt(s.stop,8)}</b></div><div>قیمت آخر <b>{fmt(q?.price,8)}</b>{q&&<small>{date(q.at)}</small>}</div></div>}
+      {s.symbol&&<div className="bd-grid"><div>محدودهٔ ورود <b dir="ltr">{fmt(s.low,8)} – {fmt(s.high,8)}</b></div><div>میانگین ورود ثبت‌شده <b>{fmt(s.entry,8)}</b></div><div>حدضرر <b>{fmt(s.stop,8)}</b></div><div>قیمت آخر <b>{fmt(q?.price,8)}</b>{q&&<small>{date(q.at)}</small>}</div></div>}
+      {s.execution_version===2&&<p>لوریج سیگنال: {s.channel_leverage}× · سهم از موجودی: {s.channel_allocation}٪ · مارجین برنامه: {fmt(s.planned_margin)} USDT</p>}
+      {s.entry_legs?.map((leg,i)=><p key={i}>ورود {i+1}: <b dir="ltr">{fmt(leg.limit,8)}</b> · سهم {fmt(leg.weight*100)}٪ · {fmt(leg.margin)} USDT · {leg.status==='filled'?'پرشده':leg.status==='cancelled'?'لغوشده':'منتظر'}{leg.price!=null&&<> · قیمت اجرا: {fmt(leg.price,8)}</>}</p>)}
       {s.targets&&<p className="bd-targets">{s.targets.map((t,i)=><span key={i} dir="ltr">TP{i+1}: <b dir="ltr">{fmt(t,8)}</b>{s.target_hits.includes(i)?' ✓':''}</span>)}</p>}
       {s.margin!=null&&<p>مارجین: {fmt(s.margin)} USDT · لوریج: {s.leverage}× · حجم باقی‌مانده: {fmt(s.remaining*100)}٪</p>}
       {live!=null&&<p>سودوزیان شناور: <b dir="ltr">{fmt(live)} USDT</b> · تحقق‌یافته پس از کارمزد: <b dir="ltr">{fmt(s.pnl)} USDT</b></p>}
@@ -66,15 +70,15 @@ export function BehDarkPage(){
         <div className="bd-grid">{[['موجودی',data.wallet.balance],['آزاد',data.wallet.available],['درگیر',data.wallet.reserved],['ارزش حساب',data.wallet.equity]].map(([k,v])=><div key={k}><span>{k}</span><b dir="ltr">{fmt(v as number)} USDT</b></div>)}</div>
         {!data.wallet.capital&&<form onSubmit={e=>{e.preventDefault();void action('capital',{amount:capital});}}><label>موجودی اولیهٔ مجازی (USDT)<input type="number" min="1" max="100000000" required value={capital} onChange={e=>setCapital(Number(e.target.value))}/></label><button disabled={busy}>ثبت موجودی اولیه</button></form>}
         <form onSubmit={e=>{e.preventDefault();void action('settings',form,'PUT');}} className="bd-form">
-          <label>مارجین هر معامله (USDT)<input type="number" min="0.01" step="0.01" required value={form.margin} onChange={e=>setForm({...form,margin:Number(e.target.value)})}/></label>
-          <label>لوریج<input type="number" min="1" max="125" required value={form.leverage} onChange={e=>setForm({...form,leverage:Number(e.target.value)})}/></label>
-          <label>کارمزد هر سمت (bps؛ هر ۱ واحد = ۰٫۰۱٪)<input type="number" min="0" max="100" step="0.1" required value={form.fee_bps} onChange={e=>setForm({...form,fee_bps:Number(e.target.value)})}/></label>
+          <p>مارجین کل هر سیگنال: درصد Balance از موجودی کیف پول هنگام ثبت سفارش؛ ۳۵٪ برای قیمت اول و ۶۵٪ برای قیمت دوم.</p>
+          <p>لوریج: بالاترین مقدار اعلام‌شده در همان سیگنال.</p>
+          <p>کارمزد فیوچرز Bitunix VIP1: میکر ۰٫۰۲٪ · تیکر ۰٫۰۵٪ از ارزش معامله.</p>
           <label>اعتبار سیگنال، ساعت (۰ = بدون انقضای زمانی)<input type="number" min="0" max="720" required value={form.expiry_hours} onChange={e=>setForm({...form,expiry_hours:Number(e.target.value)})}/></label>
           <label className="bd-check"><input type="checkbox" checked={form.enabled} onChange={e=>setForm({...form,enabled:e.target.checked})}/>فعال‌سازی ورودهای جدید</label>
-          <p className="hint">توقف ورود جدید، پایش پوزیشن‌های باز را متوقف نمی‌کند. مارجین و لوریج از این تنظیمات گرفته می‌شود؛ تغییر آن‌ها روی پوزیشن‌های باز اثر ندارد.</p>
+          <p className="hint">توقف ورود جدید، پایش پوزیشن‌های باز را متوقف نمی‌کند. مارجین و لوریج سیگنال‌های جدید از متن کانال گرفته می‌شود. سفارش‌های نسخهٔ قبلی با شرایط قبلی ادامه می‌یابند.</p>
           <button disabled={busy||!data.wallet.capital}>ذخیره تنظیمات</button>
         </form>
-        <p className="hint">آغاز ثبت: {date(data.wallet.activated_at)}. تقسیم مساوی حجم بین اهداف؛ حدضرر ثابت. کارمزد پیش‌فرض یک فرض قابل تنظیم است. فاندینگ در نسخهٔ اول محاسبه نمی‌شود.</p>
+        <p className="hint">آغاز ثبت: {date(data.wallet.activated_at)}. تقسیم مساوی حجم بین اهداف؛ حدضرر ثابت. ورود لیمیتِ منتظر و خروج هدف با کارمزد میکر؛ ورود فوری و خروج حدضرر با کارمزد تیکر شبیه‌سازی می‌شوند. با اولین خروج، پلهٔ ورود پرنشده لغو می‌شود. فاندینگ در نسخهٔ اول محاسبه نمی‌شود.</p>
       </div>}
       {tab==='report'&&<><div className="card"><div className="bd-grid">{[['رکوردهای کانال',data.report.total],['بسته‌شده',data.report.closed],['برد / باخت',`${data.report.wins} / ${data.report.losses}`],['وین‌ریت قطعی',data.report.winrate==null?'—':fmt(data.report.winrate)+'٪'],['خالص معاملات بسته‌شده',fmt(data.report.net)+' USDT'],['افت از سود تحقق‌یافته',fmt(data.report.realized_drawdown)+' USDT']].map(([k,v])=><div key={k}><span>{k}</span><b dir="ltr">{v}</b></div>)}</div>
         <p className="hint">وین‌ریت بر پایهٔ {data.report.certain_closed} معاملهٔ بسته‌شده با نتیجهٔ قابل اتکا است؛ {data.report.uncertain_closed} نتیجهٔ نامطمئن جدا شده. لمس TP1 به‌تنهایی برد کامل نیست. نمایش آخرین {data.history_limit} رکورد پایان‌یافته؛ خروجی شامل کل تاریخچه است.</p>
