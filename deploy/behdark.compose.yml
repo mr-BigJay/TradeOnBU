@@ -1,0 +1,33 @@
+# Use as an explicit override with docker-compose.yml; no public BehDark port.
+services:
+  tradeonbu:
+    environment:
+      BEHDARK_URL: http://behdark:8010
+  behdark:
+    build:
+      context: .
+      dockerfile: backend/behdark/Dockerfile
+    restart: unless-stopped
+    cpus: 0.25
+    mem_limit: 256m
+    pids_limit: 64
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      BEHDARK_DB: /behdark-data/behdark.db
+      BEHDARK_INBOX: /telegram-inbox
+    volumes:
+      - behdark_data:/behdark-data
+      - telegram_inbox:/telegram-inbox:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,json; d=json.load(urllib.request.urlopen('http://127.0.0.1:8010/health', timeout=4)); assert d['worker_fresh']"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+volumes:
+  behdark_data:
+    name: tradeonbu_behdark_data
+  telegram_inbox:
+    external: true
+    name: tradeonbu_telegram_inbox
