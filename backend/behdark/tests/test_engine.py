@@ -32,7 +32,11 @@ def quote(store,p,at=NOW+1):
     with store.connect() as db: apply_quote(db,'TESTUSDT',p,at)
 
 def add(store,e=None,now=NOW):
-    with store.connect() as db: ingest(db,e or event(),now)
+    with store.connect() as db:
+        ingest(db,e or event(),now)
+        for s in Store.rows(db):
+            s.pop('execution_version',None)
+            Store.save(db,s)
 
 def test_persistent_dedup_and_partial_targets(store):
     add(store);add(store);quote(store,100)

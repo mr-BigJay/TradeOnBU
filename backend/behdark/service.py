@@ -16,9 +16,9 @@ from .market import Market
 
 class Config(BaseModel):
     model_config=ConfigDict(extra='forbid',allow_inf_nan=False)
-    margin: float=Field(gt=0,le=1_000_000)
-    leverage: int=Field(ge=1,le=125)
-    fee_bps: float=Field(ge=0,le=100)
+    margin: float=Field(default=20,gt=0,le=1_000_000)
+    leverage: int=Field(default=3,ge=1,le=125)
+    fee_bps: float=Field(default=6,ge=0,le=100)
     expiry_hours: int=Field(ge=0,le=720)
     enabled: bool
 
@@ -144,7 +144,7 @@ def create_app(path=None,background=True):
         with store.connect() as db:
             cfg=Store.settings(db)
             if body.enabled and cfg['capital']<=0: raise HTTPException(409,'ابتدا موجودی آزمایشی را ثبت کنید.')
-            cfg.update(body.model_dump())
+            cfg.update(body.model_dump(exclude_unset=True))
             if body.enabled and cfg['activated_at'] is None: cfg['activated_at']=time.time()
             db.execute('UPDATE settings SET data=? WHERE id=1',(json.dumps(cfg),))
         return {'ok':True}
@@ -170,7 +170,7 @@ def create_app(path=None,background=True):
     @api.get('/report.csv',response_class=PlainTextResponse)
     def export():
         with store.connect() as db: rows=Store.rows(db)
-        out=io.StringIO(); keys=['id','symbol','direction','status','received','opened_at','closed_at','entry','stop','targets','pnl','fees','uncertain','reason']
+        out=io.StringIO(); keys=['id','symbol','direction','status','received','opened_at','closed_at','entry','stop','targets','pnl','fees','uncertain','reason','execution_version','planned_margin','sizing_balance','leverage','entry_legs','exit_fills']
         writer=csv.writer(out); writer.writerow(keys)
         for s in rows: writer.writerow([s.get(k,'') for k in keys])
         return PlainTextResponse('\ufeff'+out.getvalue(),media_type='text/csv',headers={'Content-Disposition':'attachment; filename="behdark.csv"'})
