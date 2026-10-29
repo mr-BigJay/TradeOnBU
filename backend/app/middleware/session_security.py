@@ -99,7 +99,7 @@ class SessionSecurityMiddleware(BaseHTTPMiddleware):
                 return JSONResponse({"detail": "Unauthorized"}, status_code=401)
             else:
                 if is_admin_path:
-                    if api_key != self.settings.admin_api_key:
+                    if not self.settings.admin_api_key or api_key != self.settings.admin_api_key:
                         return JSONResponse({"detail": "Unauthorized"}, status_code=401)
                 elif api_key not in (self.settings.dashboard_api_key, self.settings.admin_api_key) or not api_key:
                     return JSONResponse({"detail": "Unauthorized"}, status_code=401)
