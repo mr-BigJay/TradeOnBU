@@ -128,7 +128,7 @@ class BitunixReadOnlyClient:
 
     async def open_btc_orders(self) -> list[dict[str, Any]]:
         data = await self._get(
-            "/api/v1/futures/trade/get_pending_orders", {"symbol": "BTCUSDT"}
+            "/api/v1/futures/trade/get_pending_orders", {"symbol": "BTCUSDT", "limit": "100"}
         )
         if not isinstance(data, dict) or not isinstance(data.get("orderList"), list):
             raise BitunixReadOnlyError("Unexpected pending orders response")
@@ -165,7 +165,7 @@ class BitunixReadOnlyClient:
 
     async def btc_pending_tpsl(self) -> list[dict[str, Any]]:
         data = await self._get(
-            "/api/v1/futures/tpsl/get_pending_orders", {"symbol": "BTCUSDT"}
+            "/api/v1/futures/tpsl/get_pending_orders", {"symbol": "BTCUSDT", "limit": "100"}
         )
         if not isinstance(data, list) or any(not isinstance(x, dict) for x in data):
             raise BitunixReadOnlyError("Unexpected TP/SL response")
