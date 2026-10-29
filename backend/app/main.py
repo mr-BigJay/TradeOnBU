@@ -18,6 +18,7 @@ from app.bootstrap import validate_settings
 from app.config import get_settings
 from app.db import SessionLocal, get_db, init_db
 from app.middleware.session_security import SessionSecurityMiddleware
+from app.routes import bitunix_dashboard as bitunix_dashboard_routes
 from app.routes import behdark as behdark_routes
 from app.routes import daily_outlook as daily_outlook_routes
 from app.routes import auth as auth_routes
@@ -196,6 +197,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title=settings.app_name, lifespan=lifespan)
+app.include_router(bitunix_dashboard_routes.router)
 app.include_router(behdark_routes.router)
 app.include_router(daily_outlook_routes.router)
 app.include_router(auth_routes.router)

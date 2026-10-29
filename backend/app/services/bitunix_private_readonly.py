@@ -18,6 +18,9 @@ _ALLOWED_GET_PATHS = frozenset({
     "/api/v1/futures/account",
     "/api/v1/futures/position/get_pending_positions",
     "/api/v1/futures/trade/get_pending_orders",
+    "/api/v1/futures/account/get_leverage_margin_mode",
+    "/api/v1/futures/position/get_history_positions",
+    "/api/v1/futures/tpsl/get_pending_orders",
 })
 
 
@@ -125,7 +128,7 @@ class BitunixReadOnlyClient:
 
     async def open_btc_orders(self) -> list[dict[str, Any]]:
         data = await self._get(
-            "/api/v1/futures/trade/get_pending_orders", {"symbol": "BTCUSDT"}
+            "/api/v1/futures/trade/get_pending_orders", {"symbol": "BTCUSDT", "limit": "100"}
         )
         if not isinstance(data, dict) or not isinstance(data.get("orderList"), list):
             raise BitunixReadOnlyError("Unexpected pending orders response")
@@ -133,3 +136,37 @@ class BitunixReadOnlyClient:
             x for x in data["orderList"]
             if isinstance(x, dict) and x.get("symbol") == "BTCUSDT"
         ]
+
+    async def btc_leverage_settings(self) -> dict[str, Any]:
+        data = await self._get(
+            "/api/v1/futures/account/get_leverage_margin_mode",
+            {"symbol": "BTCUSDT", "marginCoin": "USDT"},
+        )
+        if not isinstance(data, dict) or data.get("symbol") != "BTCUSDT":
+            raise BitunixReadOnlyError("Unexpected BTC leverage configuration response")
+        return data
+
+    async def btc_position_history(self, limit: int = 20) -> dict[str, Any]:
+        if not 1 <= limit <= 100:
+            raise ValueError("History limit must be 1-100")
+        data = await self._get(
+            "/api/v1/futures/position/get_history_positions",
+            {"symbol": "BTCUSDT", "limit": str(limit), "skip": "0"},
+        )
+        if not isinstance(data, dict) or not isinstance(data.get("positionList"), list):
+            raise BitunixReadOnlyError("Unexpected position history response")
+        entries = data["positionList"]
+        if any(not isinstance(x, dict) for x in entries):
+            raise BitunixReadOnlyError("Invalid position history item")
+        return {
+            "positions": [x for x in entries if x.get("symbol") == "BTCUSDT"],
+            "total": data.get("total"),
+        }
+
+    async def btc_pending_tpsl(self) -> list[dict[str, Any]]:
+        data = await self._get(
+            "/api/v1/futures/tpsl/get_pending_orders", {"symbol": "BTCUSDT", "limit": "100"}
+        )
+        if not isinstance(data, list) or any(not isinstance(x, dict) for x in data):
+            raise BitunixReadOnlyError("Unexpected TP/SL response")
+        return [x for x in data if x.get("symbol") == "BTCUSDT"]

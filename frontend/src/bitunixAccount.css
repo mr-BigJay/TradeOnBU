@@ -1,0 +1,83 @@
+.bu-page {
+  max-width: 1040px;
+  margin: 0 auto;
+  padding-bottom: 2rem;
+}
+.bu-header,
+.bu-toolbar,
+.bu-section__heading,
+.bu-trade__top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.bu-header { align-items: flex-start; margin-bottom: 1rem; }
+.bu-readonly {
+  background: rgba(56, 189, 248, .12);
+  color: #7dd3fc;
+  border: 1px solid rgba(56, 189, 248, .3);
+  border-radius: 999px;
+  padding: .35rem .65rem;
+  white-space: nowrap;
+  font-size: .75rem;
+  font-weight: 700;
+}
+.bu-toolbar {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: .75rem 1rem;
+  margin-bottom: 1.5rem;
+}
+.bu-toolbar button { min-height: 38px; }
+.bu-sync { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; font-size: .88rem; font-weight: 600; }
+.bu-sync small { flex-basis: 100%; color: var(--muted); font-size: .75rem; font-weight: 400; }
+.bu-sync__dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--success); }
+.bu-sync__dot--error { background: var(--danger); }
+.bu-sync__dot--off { background: var(--muted); }
+.bu-section { margin: 1.5rem 0; }
+.bu-section__heading { margin-bottom: .75rem; }
+.bu-section__heading h2 { font-size: 1.05rem; margin: 0; }
+.bu-section__meta { font-size: .8rem; color: var(--muted); }
+.bu-count { border-radius: 99px; padding: .1rem .6rem; background: var(--surface-2); border: 1px solid var(--border); }
+.bu-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; }
+.bu-metric { display: flex; flex-direction: column; gap: .35rem; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: .9rem; min-width: 0; }
+.bu-metric__label { color: var(--muted); font-size: .83rem; }
+.bu-metric strong { text-align: right; font-size: 1.15rem; white-space: nowrap; }
+.bu-metric small { font-size: .74rem; color: var(--muted); }
+.bu-configuration { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .75rem; margin-top: .75rem; }
+.bu-configuration > div { display: flex; flex-direction: column; gap: .3rem; background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; padding: .75rem; min-width: 0; }
+.bu-configuration span { color: var(--muted); font-size: .75rem; }
+.bu-configuration strong { font-size: .92rem; }
+.bu-profit { color: #4ade80; }
+.bu-loss { color: #fb7185; }
+.bu-tag { display: inline-flex; background: #334155; color: #e2e8f0; border-radius: 6px; padding: .12rem .45rem; font-size: .75rem; font-weight: 800; }
+.bu-tag--long { background: rgba(34, 197, 94, .17); color: #86efac; }
+.bu-tag--short { background: rgba(239, 68, 68, .17); color: #fca5a5; }
+.bu-trade { margin-bottom: .75rem; }
+.bu-trade__top { padding-bottom: .7rem; border-bottom: 1px solid var(--border); }
+.bu-trade__top > div { display: flex; align-items: center; gap: .4rem; }
+.bu-meta { color: var(--muted); font-size: .8rem; }
+.bu-trade__pnl { display: flex; flex-direction: column; gap: .15rem; margin: .75rem 0; }
+.bu-trade__pnl > span { font-size: .8rem; color: var(--muted); }
+.bu-trade__pnl > strong { font-size: 1.55rem; text-align: right; }
+.bu-trade__pnl > span:last-child.bu-profit { color: #4ade80; }
+.bu-trade__pnl > span:last-child.bu-loss { color: #fb7185; }
+.bu-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .6rem 1rem; margin-top: .75rem; }
+.bu-field { display: flex; flex-direction: column; gap: .2rem; min-width: 0; }
+.bu-field span { color: var(--muted); font-size: .79rem; }
+.bu-field strong { font-size: .9rem; font-weight: 600; text-align: right; word-break: break-word; }
+.bu-footnote { color: var(--muted); font-size: .77rem; margin: .75rem 0 0; }
+.bu-empty { padding: 1.35rem 1rem; color: var(--muted); font-size: .88rem; }
+.bu-note code { display: block; white-space: normal; overflow-wrap: anywhere; margin-top: .75rem; }
+.bu-bottom-note { color: var(--muted); font-size: .77rem; text-align: center; margin: 1.5rem 0 0; line-height: 1.9; }
+@media (max-width: 420px) {
+  .bu-header { flex-wrap: wrap; gap: .5rem; }
+  .bu-configuration { grid-template-columns: 1fr 1fr; }
+  .bu-metric strong { font-size: 1rem; }
+}
+@media (min-width: 780px) {
+  .bu-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .bu-fields { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}

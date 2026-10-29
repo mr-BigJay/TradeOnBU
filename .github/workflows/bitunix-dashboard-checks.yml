@@ -1,0 +1,36 @@
+name: Bitunix Read-Only Dashboard Checks
+on:
+  pull_request:
+    paths:
+      - "backend/app/routes/bitunix_dashboard.py"
+      - "backend/app/services/bitunix_dashboard.py"
+      - "backend/app/services/bitunix_private_readonly.py"
+      - "backend/app/middleware/session_security.py"
+      - "backend/tests/test_bitunix_dashboard.py"
+      - "backend/tests/test_bitunix_private_readonly.py"
+      - ".github/workflows/bitunix-dashboard-checks.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  backend:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Read-only API tests (no Bitunix requests)
+        env:
+          SKIP_CONFIG_GUARD: "1"
+          DISABLE_APP_BACKGROUND: "1"
+          DATABASE_URL: sqlite+aiosqlite:///./data/test_tradeonbu.db
+        run: |
+          mkdir -p data
+          python3 -m pytest -q tests/test_bitunix_private_readonly.py tests/test_bitunix_dashboard.py
