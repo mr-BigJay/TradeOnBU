@@ -1,4 +1,5 @@
 import { BehDarkPage } from "./BehDarkPage";
+import { BitunixAccountPage } from "./BitunixAccountPage";
 import { DailyOutlookPage } from "./DailyOutlookPage";
 import { useEffect, useState } from "react";
 import { fetchMe, getApiKey, login, logout, setApiKey, setCsrf } from "./api";
@@ -8,13 +9,14 @@ import { TelegramSettingsPage } from "./TelegramSettingsPage";
 import { OpportunitiesPage } from "./OpportunitiesPage";
 import { PositionPage, type PositionPrefill } from "./PositionPage";
 
-type Page = "behdark" | "outlook" | "analysis" | "opportunities" | "chatgpt" | "telegram" | "position";
+type Page = "bitunix" | "behdark" | "outlook" | "analysis" | "opportunities" | "chatgpt" | "telegram" | "position";
 
 const NAV: { id: Page; label: string; short: string }[] = [
   { id: "outlook", label: "چشم‌انداز روزانه", short: "🌅" },
   { id: "analysis", label: "تحلیل", short: "📊" },
   { id: "opportunities", label: "فرصت‌ها", short: "🎯" },
   { id: "position", label: "پوزیشن", short: "📈" },
+  { id: "bitunix", label: "حساب Bitunix", short: "💼" },
   { id: "chatgpt", label: "ChatGPT", short: "🤖" },
   { id: "telegram", label: "تلگرام", short: "✈️" },
   { id: "behdark", label: "BehDark", short: "BD" },
@@ -141,8 +143,9 @@ export default function App() {
         </nav>
       </header>
 
-      <main className={page === "position" ? "app-main app-main--positions" : "app-main"}>
+      <main className={page === "position" || page === "bitunix" ? "app-main app-main--positions" : "app-main"}>
         {page === "behdark" && <BehDarkPage />}
+        {page === "bitunix" && <BitunixAccountPage />}
         {page === "outlook" && <DailyOutlookPage />}
         {page === "chatgpt" && <ChatGptSettingsPage />}
         {page === "telegram" && <TelegramSettingsPage />}
