@@ -1,0 +1,40 @@
+name: Paper opportunity freshness
+on:
+  pull_request:
+    paths:
+      - 'backend/app/**'
+      - 'backend/tests/**'
+      - '.github/workflows/paper-opportunity-freshness.yml'
+permissions:
+  contents: read
+jobs:
+  lifecycle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - run: pip install -r backend/requirements.txt
+      - name: Verify conditional lifecycle and pending order chronology
+        working-directory: backend
+        run: |
+          mkdir -p data
+          python -m pytest -q \
+            tests/test_opportunity_freshness.py \
+            tests/test_execution_order_reconciliation.py \
+            tests/test_pending_invalidation.py \
+            tests/test_fail_closed_5m_pending_fill.py \
+            tests/test_stale_pending_recovery.py \
+            tests/test_conditional_revision_lifecycle.py \
+            tests/test_revision_replay_levels_hardening.py \
+            tests/test_revision_replay_miss_audit.py \
+            tests/test_balanced_e2e_pr32.py \
+            tests/test_balanced_entry_execution.py \
+            tests/test_entry_execution_pr32_regressions.py \
+            tests/test_paper_auto_trading.py \
+            tests/test_ready_paper_confirmation_guards.py \
+            tests/test_opportunity_monitor.py \
+            tests/test_opportunity_monitor_ict_confirmed.py
