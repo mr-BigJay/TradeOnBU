@@ -94,6 +94,7 @@ from app.services.monitor_1m_integrity import (
     assess_1m_monitor_integrity,
     balanced_1m_allows_new_orders,
 )
+from app.services.opportunity_freshness import active as fresh_plan, retire, seed_recent_structure, consume_unordered_opportunity
 from app.services.paper_auto_trading import maybe_auto_open_paper_position
 
 logger = logging.getLogger(__name__)
@@ -274,6 +275,9 @@ async def _monitor_pending_structural_invalidation(
     if setup.invalidation_level is None:
         return
     pos = await _pending_position_for_setup(session, setup.setup_id)
+    if (setup.objective_notes or {}).get("pending_target_review_required"):
+        setup.last_monitor_at = now
+        return
     new_bars = _eligible_closed_bars_since_cursor(setup, bundle.closed, now_ms)
     settings = get_effective_settings()
     closed_5m = list(bundle.closed) if bundle.closed else []
@@ -316,13 +320,26 @@ async def _monitor_pending_structural_invalidation(
             five_m_data_verified=True,
             one_m_data_complete=bundle_1m.data_complete,
             gaps_remaining=list(bundle_1m.gaps_remaining or []),
+            target_price=setup.take_profit if fresh_plan(setup) else None,
+            entry_zone=_zone_bounds(setup) if fresh_plan(setup) else None,
         )
         if outcome.action == "suspend":
             notes = dict(setup.objective_notes or {})
             notes["pending_fill_suspended"] = True
             notes["pending_fill_block_reason"] = outcome.reason
+            if outcome.terminal_bar_1m is not None:
+                notes["pending_target_review_required"] = {"reason": outcome.reason, "bar_ms": outcome.terminal_bar_1m.time_ms}
+                setup.last_rejection_reason = outcome.reason
+                setup.last_validation_result = {"ok": False, "reason": outcome.reason, "requires_review": True}
             setup.objective_notes = notes
             setup.last_monitor_at = now
+            return
+        if outcome.action == "cancel" and outcome.terminal_bar_1m is not None:
+            await SimPositionService().cancel_pending(session, pos.public_id, commit=False)
+            pos.extra = {**(pos.extra or {}), "auto_paper_cancel_reason": outcome.reason}
+            retire(setup, outcome.reason, outcome.terminal_bar_1m.time_ms + 60_000)
+            await log_setup_event(session, setup_id=setup.setup_id, event_type="opportunity_retired", reason_code=outcome.reason)
+            summary["expired"] += 1
             return
         if outcome.action == "fill":
             setup.last_monitor_at = now
@@ -860,6 +877,12 @@ class OpportunityMonitorService:
             policy = policy_for_setup(setup, sequence)
             zone_lo, zone_hi = _zone_bounds(setup)
             structured = setup.structured_snapshot or {}
+            seed_reason = seed_recent_structure(setup, bundle.closed, data_complete=bundle.data_complete)
+            if seed_reason:
+                await log_setup_event(session, setup_id=setup.setup_id, event_type="opportunity_retired", reason_code=seed_reason)
+                setup.last_monitor_at = now
+                summary["expired"] += 1
+                continue
             conf_state = dict(setup.confirmation_state or {})
             new_1m: list = []
             balanced_1m_integrity_ok = True
@@ -898,6 +921,19 @@ class OpportunityMonitorService:
                 notes = dict(setup.objective_notes or {})
                 notes["monitor_1m_integrity"] = {"ok": False, "reason": "missing_1m_closed_bars"}
                 setup.objective_notes = notes
+
+            # Run before promotion/order creation; historical touches never become fills.
+            consumption_bars = new_1m if live_engine == ENTRY_MODE_BALANCED else new_bars
+            consumed_reason = consume_unordered_opportunity(
+                setup, consumption_bars,
+                interval_ms=60_000 if live_engine == ENTRY_MODE_BALANCED else 300_000,
+            )
+            if consumed_reason:
+                await log_setup_event(session, setup_id=setup.setup_id, event_type="opportunity_retired", reason_code=consumed_reason,
+                                      payload=(setup.objective_notes or {}).get("unfilled_opportunity"))
+                setup.last_monitor_at = now
+                summary["expired"] += 1
+                continue
 
             if shadow_simulation_enabled(paper_entry_mode, balanced_shadow) and new_1m:
                 run_balanced_shadow_tick(
@@ -998,6 +1034,7 @@ class OpportunityMonitorService:
                 setup.status = "invalidated"
                 setup.lifecycle_state = INVALIDATED
                 setup.last_rejection_reason = REASON_STRUCTURAL_INVALIDATION
+                setup.last_validation_result = {"ok": False, "reason": REASON_STRUCTURAL_INVALIDATION, "detail": inv_reason}
                 await log_setup_event(
                     session,
                     setup_id=setup.setup_id,

@@ -141,6 +141,17 @@ def assess_revision_replay_trust(
         notes.append(reason or "incompatible_live_timestamps")
         return REPLAY_STATUS_SEQUENCE_LIMITED, notes, None, None
 
+    historical = (objective_notes or {}).get("historical_confirmation_seed") or {}
+    later_revision = any(_entry_affects_confirmations(e) and
+                         (_parse_revision_at_ms(e) or 0) > int(historical.get("cutoff_ms") or 0)
+                         for e in (objective_notes or {}).get("revision_history", []))
+    if historical.get("checked") and historical.get("snapshot") and not later_revision:
+        # Explicit registered evidence is the initial state, not a live/replay mismatch.
+        seeded = sanitize_conf_snapshot(historical["snapshot"])
+        if _sequence_from_conf(seeded) == seq:
+            return REPLAY_STATUS_OK, ["verified_pre_registration_structure"], seeded, monitor_from_ms
+        return REPLAY_STATUS_SEQUENCE_LIMITED, ["historical_seed_sequence_changed"], None, None
+
     rev_hist = list((objective_notes or {}).get("revision_history") or [])
     if not rev_hist:
         return REPLAY_STATUS_OK, notes, None, None

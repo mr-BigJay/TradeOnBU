@@ -425,6 +425,13 @@ def apply_conditional_revision_to_setup_row(
 ) -> RevisionImpact:
     """Apply a duplicate conditional revision; preserve monitor + confirmations when safe."""
     impact = assess_conditional_revision_impact(row, plan)
+    if (row.conditional_plan or {}).get("freshness_policy_version") == 1:
+        changed_levels = any(getattr(row, field, None) != plan.get(key) for field, key in (
+            ("entry_zone_low", "entry_zone_low"), ("entry_zone_high", "entry_zone_high"),
+            ("entry_price", "proposed_entry_mid"), ("stop_loss", "proposed_stop_loss"),
+            ("take_profit", "proposed_take_profit"), ("invalidation_level", "structural_invalidation_level")))
+        if changed_levels:
+            impact = RevisionImpact.STRUCTURAL
     old_lifecycle = row.lifecycle_state
     old_monitor_from = row.monitor_from_ms
     old_monitor_cursor = row.monitor_cursor_ms
@@ -435,6 +442,21 @@ def apply_conditional_revision_to_setup_row(
     snapshot_before = dict(old_conf)
 
     if impact == RevisionImpact.STRUCTURAL:
+        # Archive price outcomes before replacing levels; no old touches on new prices.
+        notes = dict(row.objective_notes or {})
+        archive = list(notes.get("price_revision_history") or [])
+        fields = ("entry_touched", "sl_touched", "tp_touched", "sequencing_ambiguous", "paper_fill_recorded", "last_tracked_candle_ms")
+        archive.append({"at": revision_time.isoformat(), "levels": prior_levels,
+                        "tracking": {k: getattr(row, k, None) for k in fields},
+                        "notes": {k: notes.get(k) for k in ("first_touch_ms", "tp_pre_entry", "lifecycle_phase", "historical_confirmation_seed", "unfilled_opportunity")}})
+        for key in ("first_touch_ms", "tp_pre_entry", "lifecycle_phase", "historical_confirmation_seed", "unfilled_opportunity", "opportunity_retirement", "execution_pipeline", "pending_tracking_from_ms"):
+            notes.pop(key, None)
+        notes["price_revision_history"] = archive
+        row.objective_notes = notes
+        for key in fields:
+            setattr(row, key, 0 if key == "last_tracked_candle_ms" else False)
+        row.last_validation_result = {}
+        row.last_rejection_reason = None
         apply_conditional_plan_to_setup_row(
             row,
             plan=plan,
@@ -484,7 +506,8 @@ def apply_conditional_revision_to_setup_row(
     row.take_profit = plan["proposed_take_profit"]
     row.invalidation_level = plan.get("structural_invalidation_level")
     row.invalidation = structured.get("conditional_invalidation") or structured.get("invalidation_condition")
-    row.conditional_plan = plan
+    row.conditional_plan = {**plan, **{k: v for k, v in (row.conditional_plan or {}).items()
+                                      if k in ("freshness_policy_version", "registered_at_ms")}}
     row.structured_snapshot = structured
     row.run_id = run_id
 

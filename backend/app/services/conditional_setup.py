@@ -11,7 +11,7 @@ from app.services.ai_trader_report import _has_conditional_plan
 from app.services.entry_strategies import SEQUENCES, validate_strategy_plan
 
 MIN_EXPIRES_HOURS = 1.0
-MAX_EXPIRES_HOURS = 168.0
+MAX_EXPIRES_HOURS = 4.0  # Intraday entry opportunity; not a two-day forecast
 
 ALLOWED_CONFIRMATION_TOKENS = frozenset(
     {
@@ -178,6 +178,8 @@ def apply_conditional_plan_to_setup_row(
     row.take_profit = plan["proposed_take_profit"]
     row.invalidation_level = plan.get("structural_invalidation_level")
     row.invalidation = structured.get("conditional_invalidation") or structured.get("invalidation_condition")
+    plan = {**plan, "freshness_policy_version": 1,
+            "registered_at_ms": int(created_at.timestamp() * 1000)}
     row.conditional_plan = plan
     from app.services.confirmation_policy import resolve_confirmation_policy
 

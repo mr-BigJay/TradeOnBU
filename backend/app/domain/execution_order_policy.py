@@ -1,4 +1,4 @@
-"""Timestamp ordering between 5m setup invalidation and 1m simulated limit fills."""
+"""Order closed-candle invalidations, consumed opportunities and Paper limit fills."""
 
 from __future__ import annotations
 
@@ -127,6 +127,7 @@ class PendingLimitReconciliation:
     reason: str | None = None
     fill_bar_1m: Candle | None = None
     invalidation_bar_5m: Candle | None = None
+    terminal_bar_1m: Candle | None = None
 
 
 def _collect_reconciliation_events(
@@ -184,6 +185,8 @@ def reconcile_pending_ai_limit_order(
     five_m_data_verified: bool,
     one_m_data_complete: bool = True,
     gaps_remaining: list[int] | None = None,
+    target_price: float | None = None,
+    entry_zone: tuple[float, float] | None = None,
 ) -> PendingLimitReconciliation:
     """
     Event-time merge of closed 5m invalidations vs 1m limit touches after order creation.
@@ -204,10 +207,44 @@ def reconcile_pending_ai_limit_order(
         closed_5m=closed_5m,
         now_ms=now_ms,
     )
+    if entry_zone is not None:
+        touched = False
+        lo, hi = entry_zone
+        for candidate in sorted(closed_1m, key=lambda c: c.time_ms):
+            close_ms = candle_close_ms(candidate, INTERVAL_1M)
+            if candidate.time_ms < order_ms or close_ms > now_ms:
+                continue
+            touched = touched or candidate.low <= hi and candidate.high >= lo
+            departed = candidate.close > hi if direction == "LONG" else candidate.close < lo
+            if touched and departed and not bar_hits_limit(candidate, limit_price):
+                events.append((close_ms, "zone_consumed", candidate))
+                break
+    if target_price is not None:
+        for candidate in closed_1m:
+            close_ms = candle_close_ms(candidate, INTERVAL_1M)
+            if close_ms <= order_ms or close_ms > now_ms:
+                continue
+            hits_target = candidate.high >= target_price if direction == "LONG" else candidate.low <= target_price
+            if hits_target:
+                events.append((close_ms, "target_ambiguous" if candidate.time_ms < order_ms else "target", candidate))
+    # Target and fill inside one minute have unknown ordering: never invent a fill.
+    events.sort(key=lambda item: (item[0], 0 if item[1].startswith("target") else 1 if item[1] == "inv" else 2))
     if not events:
         return PendingLimitReconciliation(action="hold")
 
     first_time, kind, bar = events[0]
+    if kind.startswith("target") or kind == "zone_consumed":
+        if kind == "target_ambiguous" or bar_hits_limit(bar, limit_price):
+            return PendingLimitReconciliation(action="suspend", reason="target_fill_chronology_ambiguous", terminal_bar_1m=bar)
+        if not one_m_history_rules_out_fill_before_invalidation(
+            order_ms=order_ms, invalidation_close_ms=first_time, closed_1m=closed_1m,
+            one_m_data_complete=one_m_data_complete, gaps_remaining=gaps_remaining,
+        ):
+            return PendingLimitReconciliation(action="suspend", reason="insufficient_1m_history_for_target_cancel", terminal_bar_1m=bar)
+        # An order-creation candle might contain an unprovable post-order touch.
+        if any(c.time_ms < order_ms < candle_close_ms(c, INTERVAL_1M) and bar_hits_limit(c, limit_price) for c in closed_1m):
+            return PendingLimitReconciliation(action="suspend", reason="target_fill_chronology_ambiguous", terminal_bar_1m=bar)
+        return PendingLimitReconciliation(action="cancel", reason="first_zone_reaction_before_fill" if kind == "zone_consumed" else "target_reached_before_fill", terminal_bar_1m=bar)
     if kind == "inv":
         if not one_m_history_rules_out_fill_before_invalidation(
             order_ms=order_ms,

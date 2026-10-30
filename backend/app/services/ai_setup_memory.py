@@ -81,7 +81,8 @@ def _has_blocking_tracking_issues(notes: dict[str, Any]) -> bool:
 
 
 def _tracking_start_ms(setup: AiProposedSetup) -> int:
-    created_ms = int(_ensure_utc(setup.created_at).timestamp() * 1000)
+    created_ms = int((setup.conditional_plan or {}).get("registered_at_ms") or
+                     int(_ensure_utc(setup.created_at).timestamp() * 1000))
     step = interval_ms("5m")
     return ((created_ms // step) + 1) * step
 
@@ -858,7 +859,9 @@ async def _persist_conditional_setup(
             entry_mode=paper_mode,
         )
         meta["revision_impact"] = impact.value
-        dup.expires_at = datetime.fromisoformat(plan["expires_at"])
+        proposed_expiry = datetime.fromisoformat(plan["expires_at"])
+        # Rewording/revising a report cannot renew an existing opportunity indefinitely.
+        dup.expires_at = min(_ensure_utc(dup.expires_at), proposed_expiry) if dup.expires_at else proposed_expiry
         dup.status = "open"
         dup.thesis_fa = structured.get("trade_reason") or structured.get("structure_summary") or dup.thesis_fa
         dup.structured_snapshot = structured

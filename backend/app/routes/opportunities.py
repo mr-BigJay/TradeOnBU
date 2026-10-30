@@ -46,6 +46,15 @@ _PERSIAN_STATUS: dict[str, str] = {
 }
 
 _REJECTION_FA: dict[str, str] = {
+    "first_zone_reaction_before_fill": "ناحیه واکنش داد اما سفارش پر نشد؛ فرصت برخورد اول پایان یافت",
+    "target_fill_chronology_ambiguous": "ترتیب برخورد هدف و ورود مبهم است؛ سفارش نیازمند بررسی است",
+    "insufficient_1m_history_for_target_cancel": "تاریخچه برای تعیین تقدم هدف بر ورود کافی نیست؛ سفارش نیازمند بررسی است",
+    "legacy_plan_retired_for_reassessment": "پلن قدیمی بسته شد؛ منتظر ارزیابی تازه",
+    "target_reached_before_fill": "هدف پیش از پرشدن سفارش لمس شد؛ سفارش لغو شد",
+    "target_reached_without_order": "هدف پیش از ثبت سفارش لمس شد؛ فرصت پایان یافت",
+    "target_reached_before_registration": "حرکت تا هدف پیش از ثبت پلن انجام شده بود",
+    "entry_zone_used_before_registration": "ناحیه پس از تأیید ساختار و پیش از ثبت پلن مصرف شده بود",
+    "first_touch_missed": "برخورد اول بدون سفارش و سپس حرکت قیمت؛ نیازمند ارزیابی تازه",
     "missing_confirmations": "در انتظار تأییدهای ICT (MSS، sweep، POI و …)",
     "net_rr_below_min": "نسبت ریسک به بازده خالص کافی نیست (حداقل ۱:۲)",
     "ict_confirmed_blocked_by_net_rr": DISPLAY_ICT_CONFIRMED_BLOCKED_RR,
