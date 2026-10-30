@@ -169,9 +169,9 @@ class SimPositionService:
         )
         execution_tp = tp_cap.execution_take_profit
         if req.direction == "LONG" and not (req.stop_loss < entry_for_tp_cap < execution_tp):
-            raise PositionServiceError("TP اجرایی پس از محدودیت 3R با سطوح LONG ناسازگار است")
+            raise PositionServiceError("TP اجرایی پس از محدودیت R:R اجرایی با سطوح LONG ناسازگار است")
         if req.direction == "SHORT" and not (execution_tp < entry_for_tp_cap < req.stop_loss):
-            raise PositionServiceError("TP اجرایی پس از محدودیت 3R با سطوح SHORT ناسازگار است")
+            raise PositionServiceError("TP اجرایی پس از محدودیت R:R اجرایی با سطوح SHORT ناسازگار است")
 
         public_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc)
