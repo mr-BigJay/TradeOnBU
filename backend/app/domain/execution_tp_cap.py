@@ -1,10 +1,10 @@
-"""Execution-layer cap: reward:risk at fill must not exceed 1:3 (AI levels unchanged upstream)."""
+"""Execution-layer cap: reward:risk at fill must not exceed 1:2.5 (AI levels unchanged upstream)."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-EXECUTION_MAX_REWARD_R_MULTIPLE: float = 3.0
+EXECUTION_MAX_REWARD_R_MULTIPLE: float = 2.5
 
 
 @dataclass(frozen=True)
@@ -47,7 +47,7 @@ def apply_execution_take_profit_cap(
     take_profit_2_ai: float | None = None,
 ) -> ExecutionTpCapResult:
     """
-    Cap execution TP(s) to 3R from entry/SL. Entry and SL are not modified.
+    Cap execution TP(s) to 2.5R from entry/SL. Entry and SL are not modified.
     Invalid geometry returns AI values unchanged (create_order validation rejects separately).
     """
     if entry <= 0 or take_profit_ai <= 0 or stop_loss <= 0:
