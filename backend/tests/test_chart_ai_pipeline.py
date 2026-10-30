@@ -275,7 +275,10 @@ async def test_ai_pipeline_chart_and_telegram(session, client, tmp_path, monkeyp
     assert art.get("chart", {}).get("filename")
     assert chart_path_for_run(run.id).is_file()
     assert any(p["files"] for p in posts)
-    assert any(p["json"] and "text" in (p["json"] or {}) for p in posts)
+    assert len(posts) == 1
+    assert posts[0]["url"].endswith("/sendPhoto")
+    assert "هدف تحلیلی" in posts[0]["data"]["caption"]
+    assert len(posts[0]["data"]["caption"].encode("utf-16-le")) // 2 <= 1024
 
     resp = await client.get(f"/api/gui/chatgpt/history/{run.id}/chart")
     assert resp.status_code == 200

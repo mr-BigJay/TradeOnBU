@@ -18,7 +18,7 @@ from app.domain.candles import Candle
 from app.services.ai_market_payload import MarketContextError, build_raw_market_payload
 from app.services.ai_market_intelligence import load_ai_market_intelligence
 from app.services.ai_setup_memory import build_ai_memory_context
-from app.services.ai_telegram_format import format_ai_chart_caption, split_ai_telegram_report_messages
+from app.services.ai_telegram_summary import build_ai_telegram_summary
 from app.services.chart_media import chart_artifact_meta, chart_path_for_run
 from app.services.chart_renderer import ChartRenderError, render_ict_chart_png
 from app.services.execution_model import ExecutionModel
@@ -233,20 +233,15 @@ async def _deliver_ai_telegram(
     if not notifier.enabled:
         return
 
-    trade_levels = _levels_for_chart(draft.structured)
-    telegram_meta: dict[str, Any] = {}
+    caption = build_ai_telegram_summary(
+        symbol=symbol, live=live, decision=draft.decision, structured=draft.structured,
+        validation=draft.validation, report_fa=draft.report_fa, analyzed_at=analyzed_at,
+    )
+    telegram_meta: dict[str, Any] = {"delivery_mode": "single_summary"}
 
     if chart_path is not None:
         try:
             if chart_path.is_file():
-                caption = format_ai_chart_caption(
-                    symbol=symbol,
-                    interval="15m",
-                    decision=draft.decision,
-                    live_price=live,
-                    trade_levels=trade_levels,
-                    analyzed_at=analyzed_at,
-                )
                 photo_id = await notifier.send_photo_file(chart_path, caption)
                 draft.telegram_photo_sent = photo_id is not None
                 telegram_meta["photo_message_id"] = photo_id
@@ -255,25 +250,20 @@ async def _deliver_ai_telegram(
         except Exception as exc:
             telegram_meta["photo_error"] = str(exc)[:500]
 
-    try:
-        parts = split_ai_telegram_report_messages(
-            decision=draft.decision,
-            report_fa=draft.report_fa,
-            validation=draft.validation,
-        )
-        text_ids: list[int] = []
-        for part in parts:
-            text_id = await notifier.send_ai_report(part)
-            if text_id is not None:
-                text_ids.append(text_id)
-        draft.telegram_sent = len(text_ids) > 0
-        telegram_meta["text_message_ids"] = text_ids
-        telegram_meta["text_message_id"] = text_ids[0] if text_ids else None
-        telegram_meta["text_part_count"] = len(parts)
-        if parts and not text_ids:
-            telegram_meta["text_error"] = "send_message_failed"
-    except Exception as exc:
-        telegram_meta["text_error"] = str(exc)[:500]
+    if draft.telegram_photo_sent:
+        draft.telegram_sent = True
+        telegram_meta["text_part_count"] = 0
+    else:
+        try:
+            text_id = await notifier.send_ai_report(caption)
+            draft.telegram_sent = text_id is not None
+            telegram_meta["text_message_id"] = text_id
+            telegram_meta["text_message_ids"] = [text_id] if text_id is not None else []
+            telegram_meta["text_part_count"] = 1
+            if text_id is None:
+                telegram_meta["text_error"] = "send_message_failed"
+        except Exception as exc:
+            telegram_meta["text_error"] = str(exc)[:500]
 
     draft.structured = _merge_artifacts(draft.structured, {"telegram": telegram_meta})
 
