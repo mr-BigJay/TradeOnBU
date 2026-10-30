@@ -326,6 +326,9 @@ class SimPositionMonitorService:
                             pos.last_processed_candle_ms = bar.time_ms
                             processed += 1
                         continue
+                    if (setup_row.objective_notes or {}).get("pending_target_review_required"):
+                        continue
+                    from app.services.opportunity_freshness import active as fresh_plan, retire
                     outcome = reconcile_pending_ai_limit_order(
                         order_ms=order_ms,
                         direction=setup_row.direction,
@@ -338,11 +341,17 @@ class SimPositionMonitorService:
                         five_m_data_verified=five_m_data_verified,
                         one_m_data_complete=bundle.data_complete,
                         gaps_remaining=list(bundle.gaps_remaining or []),
+                        target_price=setup_row.take_profit if fresh_plan(setup_row) else None,
+                        entry_zone=(setup_row.entry_zone_low, setup_row.entry_zone_high) if fresh_plan(setup_row) else None,
                     )
                     if outcome.action == "suspend":
                         notes = dict(setup_row.objective_notes or {})
                         notes["pending_fill_suspended"] = True
                         notes["pending_fill_block_reason"] = outcome.reason
+                        if outcome.terminal_bar_1m is not None:
+                            notes["pending_target_review_required"] = {"reason": outcome.reason, "bar_ms": outcome.terminal_bar_1m.time_ms}
+                            setup_row.last_rejection_reason = outcome.reason
+                            setup_row.last_validation_result = {"ok": False, "reason": outcome.reason, "requires_review": True}
                         setup_row.objective_notes = notes
                         for bar in eligible:
                             pos.last_processed_candle_ms = bar.time_ms
@@ -356,8 +365,13 @@ class SimPositionMonitorService:
                         }
                         from app.domain.setup_lifecycle import INVALIDATED
 
-                        setup_row.status = "invalidated"
-                        setup_row.lifecycle_state = INVALIDATED
+                        if outcome.terminal_bar_1m is not None:
+                            retire(setup_row, outcome.reason, outcome.terminal_bar_1m.time_ms + 60_000)
+                            from app.services.opportunity_audit import log_setup_event
+                            await log_setup_event(session, setup_id=setup_row.setup_id, event_type="opportunity_retired", reason_code=outcome.reason)
+                        else:
+                            setup_row.status = "invalidated"
+                            setup_row.lifecycle_state = INVALIDATED
                         for bar in eligible:
                             pos.last_processed_candle_ms = bar.time_ms
                             processed += 1

@@ -429,6 +429,9 @@ async def test_levels_and_sequence_revision_monitor_not_stuck_invalid_order():
             symbol="BTCUSDT",
             structured=_long_bos_fvg_structured(),
         )
+        # Legacy merge/replay contract; fresh plans reset when their prices change.
+        row.conditional_plan = {k: v for k, v in row.conditional_plan.items()
+                                if k not in ("freshness_policy_version", "registered_at_ms")}
         row.created_at = created
         row.monitor_from_ms = boundary
         row.monitor_cursor_ms = boundary - 1
