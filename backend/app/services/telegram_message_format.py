@@ -66,7 +66,7 @@ _LTR_ISLAND_RE = re.compile(
     r"-?\d+(?:\.\d+)?%|"
     r"\b\d+(?:\.\d+)?[mhdHDM]\b|"
     r"-?\d+\.\d+|"
-    r"1:\d+"
+    r"1:\d+(?:\.\d+)?"
     r")"
 )
 
