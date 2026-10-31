@@ -17,7 +17,18 @@ INTERVAL_1M = "1m"
 ReconcileAction = Literal["hold", "suspend", "cancel", "fill"]
 
 
-def bar_hits_limit(bar: Candle, limit: float) -> bool:
+def bar_hits_limit(bar: Candle, limit: float, direction: str | None = None) -> bool:
+    """A resting buy fills at-or-below its limit; sell at-or-above.
+
+    A gap entirely beyond the limit is marketable, not a missed touch.
+    Callers must exclude candles that opened before order placement because
+    their intra-minute chronology is unprovable from OHLC.
+    """
+    if direction == "LONG":
+        return bar.low <= limit
+    if direction == "SHORT":
+        return bar.high >= limit
+    # Backwards-compatible range-only behavior for legacy callers.
     return bar.low <= limit <= bar.high
 
 
@@ -165,7 +176,7 @@ def _collect_reconciliation_events(
             continue
         if close_ms < order_ms:
             continue
-        if bar_hits_limit(bar, limit_price):
+        if bar_hits_limit(bar, limit_price, direction):
             events.append((close_ms, "fill", bar))
 
     events.sort(key=lambda item: (item[0], 0 if item[1] == "inv" else 1))
@@ -225,7 +236,7 @@ def reconcile_pending_ai_limit_order(
 
     first_time, kind, bar = events[0]
     if kind.startswith("target"):
-        if kind == "target_ambiguous" or bar_hits_limit(bar, limit_price):
+        if kind == "target_ambiguous" or bar_hits_limit(bar, limit_price, direction):
             return PendingLimitReconciliation(action="suspend", reason="target_fill_chronology_ambiguous", terminal_bar_1m=bar)
         if not one_m_history_rules_out_fill_before_invalidation(
             order_ms=order_ms, invalidation_close_ms=first_time, closed_1m=closed_1m,
@@ -233,7 +244,7 @@ def reconcile_pending_ai_limit_order(
         ):
             return PendingLimitReconciliation(action="suspend", reason="insufficient_1m_history_for_target_cancel", terminal_bar_1m=bar)
         # An order-creation candle might contain an unprovable post-order touch.
-        if any(c.time_ms < order_ms < candle_close_ms(c, INTERVAL_1M) and bar_hits_limit(c, limit_price) for c in closed_1m):
+        if any(c.time_ms < order_ms < candle_close_ms(c, INTERVAL_1M) and bar_hits_limit(c, limit_price, direction) for c in closed_1m):
             return PendingLimitReconciliation(action="suspend", reason="target_fill_chronology_ambiguous", terminal_bar_1m=bar)
         return PendingLimitReconciliation(action="cancel", reason="target_reached_before_fill", terminal_bar_1m=bar)
     if kind == "inv":

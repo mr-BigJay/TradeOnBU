@@ -48,8 +48,8 @@ def _suspend_auto_paper_fill_on_setup(setup_row, block_reason: str | None) -> No
 MAX_RECOVERY_MINUTES = 24 * 60
 
 
-def _bar_hits_limit(bar: Candle, limit: float) -> bool:
-    return bar.low <= limit <= bar.high
+def _bar_hits_limit(bar: Candle, limit: float, direction: str | None = None) -> bool:
+    return bar_hits_limit(bar, limit, direction)
 
 
 def _tp_sl_on_bar(direction: str, bar: Candle, sl: float, tp: float) -> tuple[str | None, float | None, bool]:
@@ -341,7 +341,9 @@ class SimPositionMonitorService:
                         five_m_data_verified=five_m_data_verified,
                         one_m_data_complete=bundle.data_complete,
                         gaps_remaining=list(bundle.gaps_remaining or []),
-                        target_price=setup_row.take_profit if fresh_plan(setup_row) else None,
+                        # The pending order executes the capped TP, not the AI's
+                        # potentially farther original take-profit.
+                        target_price=pos.take_profit if fresh_plan(setup_row) else None,
                         entry_zone=(setup_row.entry_zone_low, setup_row.entry_zone_high) if fresh_plan(setup_row) else None,
                     )
                     if outcome.action == "suspend":
@@ -457,7 +459,7 @@ class SimPositionMonitorService:
                         processed += 1
                         continue
                     limit_px = pos.limit_entry_price
-                    fill_this_bar = _bar_hits_limit(bar, limit_px)
+                    fill_this_bar = _bar_hits_limit(bar, limit_px, pos.direction)
                     if force_fill_bar_ms is not None and bar.time_ms == force_fill_bar_ms:
                         if not fill_this_bar:
                             notes = dict(setup_row.objective_notes or {}) if setup_row else {}
@@ -491,11 +493,14 @@ class SimPositionMonitorService:
                             pos.last_processed_candle_ms = bar.time_ms
                             processed += 1
                             continue
-                        await self.positions._fill_entry(
+                        fill_ok = await self.positions._fill_entry(
                             session, pos, settings, limit_px, transition_suffix=f"limit:{bar.time_ms}"
                         )
-                        entry_filled_this_bar = True
-                        pos.extra = {**pos.extra, "entry_fill_bar_ms": bar.time_ms}
+                        # A fill can be rejected by post-fill geometry / net R:R.
+                        # Never record entry evidence unless the position actually opened.
+                        if fill_ok and pos.status == "open":
+                            entry_filled_this_bar = True
+                            pos.extra = {**pos.extra, "entry_fill_bar_ms": bar.time_ms}
                         processed += 1
 
                 if pos.status == "open":

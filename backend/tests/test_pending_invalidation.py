@@ -23,7 +23,7 @@ async def test_pending_cancelled_on_structural_invalidation_with_margin_release(
     now = datetime.now(timezone.utc)
     monitor_now = now + timedelta(minutes=6)
     now_ms = int(monitor_now.timestamp() * 1000)
-    bar_open = now_ms - 400_000
+    bar_open = ((now_ms - 400_000) // 300_000) * 300_000
     order_ms = bar_open - 60_000
 
     async with SessionLocal() as session:
@@ -42,8 +42,8 @@ async def test_pending_cancelled_on_structural_invalidation_with_margin_release(
             status="open",
             lifecycle_state=PENDING_ENTRY,
             monitoring_enabled=True,
-            monitor_from_ms=0,
-            monitor_cursor_ms=-1,
+            monitor_from_ms=bar_open,
+            monitor_cursor_ms=bar_open - 300_000,
             entry_price=100.0,
             stop_loss=94.0,
             take_profit=115.0,
@@ -85,7 +85,7 @@ async def test_pending_cancelled_on_structural_invalidation_with_margin_release(
     t = first_1m_open
     while t <= inv_close - INTERVAL_1M:
         pre_1m.append(
-            Candle(time_ms=t, open=98.0, high=99.0, low=97.5, close=98.5, volume=1.0)
+            Candle(time_ms=t, open=101.5, high=102.0, low=100.5, close=101.5, volume=1.0)
         )
         t += 60_000
     bundle_1m = KlineBundle(

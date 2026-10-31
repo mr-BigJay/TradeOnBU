@@ -320,7 +320,7 @@ async def _monitor_pending_structural_invalidation(
             five_m_data_verified=True,
             one_m_data_complete=bundle_1m.data_complete,
             gaps_remaining=list(bundle_1m.gaps_remaining or []),
-            target_price=setup.take_profit if fresh_plan(setup) else None,
+            target_price=pos.take_profit if fresh_plan(setup) else None,
             entry_zone=_zone_bounds(setup) if fresh_plan(setup) else None,
         )
         if outcome.action == "suspend":
@@ -551,8 +551,15 @@ async def _attempt_ready_paper_order(
                 session, setup_id=setup.setup_id, event_type="order_created", payload=auto
             )
     except Exception:
+        logger.exception("Paper order creation failed for setup %s", setup.setup_id)
         await session.refresh(setup)
         setup.lifecycle_state = ready_state_for_direction(direction)
+        setup.last_rejection_reason = "paper_order_creation_failed"
+        setup.last_validation_result = {
+            "ok": False,
+            "reason": "paper_order_creation_failed",
+            "ready_for_paper": True,
+        }
         return False
 
     summary["orders"] += 1

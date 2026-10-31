@@ -13,7 +13,7 @@ def test_invalidation_before_fill_by_close_time():
     order_ms = ORDER_MS
     inv = Candle(time_ms=order_ms, open=95, high=96, low=91, close=92, volume=1)
     pre_inv_1m = [
-        Candle(time_ms=order_ms + i * INTERVAL_1M, open=98, high=99, low=97.5, close=98.5, volume=1)
+        Candle(time_ms=order_ms + i * INTERVAL_1M, open=101.5, high=102, low=100.5, close=101.5, volume=1)
         for i in range(0, 6)
     ]
     fill = Candle(time_ms=order_ms + INTERVAL_5M + 60_000, open=99.5, high=100.5, low=99, close=100.2, volume=1)
@@ -59,7 +59,7 @@ def test_invalidation_cancel_suspended_when_interior_1m_gap():
     order_ms = ORDER_MS
     inv = Candle(time_ms=order_ms, open=95, high=96, low=91, close=92, volume=1)
     inv_close = candle_close_ms(inv, "5m")
-    dense_low_high = dict(open=98, high=99, low=97.5, close=98.5, volume=1)
+    dense_low_high = dict(open=101.5, high=102, low=100.5, close=101.5, volume=1)
     gapped_1m = [
         Candle(time_ms=order_ms, **dense_low_high),
         Candle(time_ms=order_ms + INTERVAL_1M, **dense_low_high),
@@ -87,7 +87,7 @@ def test_invalidation_cancel_suspended_when_gaps_remaining_in_window():
     order_ms = ORDER_MS
     inv = Candle(time_ms=order_ms, open=95, high=96, low=91, close=92, volume=1)
     inv_close = candle_close_ms(inv, "5m")
-    dense = dict(open=98, high=99, low=97.5, close=98.5, volume=1)
+    dense = dict(open=101.5, high=102, low=100.5, close=101.5, volume=1)
     closed_1m = [
         Candle(time_ms=order_ms + i * INTERVAL_1M, **dense)
         for i in range(0, 6)
@@ -145,3 +145,49 @@ def test_missing_5m_data_fails_closed():
     )
     assert out.action == "suspend"
     assert out.reason == "missing_or_incomplete_5m_data"
+
+
+def test_long_buy_limit_fills_on_candle_entirely_below_limit():
+    from app.domain.execution_order_policy import bar_hits_limit
+
+    bar = Candle(time_ms=ORDER_MS, open=98, high=99, low=97, close=98, volume=1)
+    assert bar_hits_limit(bar, 100.0, "LONG")
+    assert not bar_hits_limit(bar, 100.0, "SHORT")
+
+
+def test_short_sell_limit_fills_on_candle_entirely_above_limit():
+    from app.domain.execution_order_policy import bar_hits_limit
+
+    bar = Candle(time_ms=ORDER_MS, open=102, high=103, low=101, close=102, volume=1)
+    assert bar_hits_limit(bar, 100.0, "SHORT")
+    assert not bar_hits_limit(bar, 100.0, "LONG")
+
+
+def test_reconciliation_fills_marketable_buy_after_order_creation():
+    order_ms = ORDER_MS
+    # Earliest fully post-order candle is already below the resting buy limit.
+    bar = Candle(time_ms=order_ms + INTERVAL_1M, open=98, high=99, low=97, close=98, volume=1)
+    out = reconcile_pending_ai_limit_order(
+        order_ms=order_ms, direction="LONG", invalidation_level=90,
+        monitor_cursor_ms=order_ms - INTERVAL_5M, limit_price=100,
+        closed_1m=[bar], closed_5m=[],
+        now_ms=candle_close_ms(bar, "1m") + 1,
+        five_m_data_verified=True,
+    )
+    assert out.action == "fill"
+    assert out.fill_bar_1m == bar
+
+
+def test_reconciliation_never_infers_fill_from_pre_order_minute():
+    # A 1m candle that started before the order was created does not prove
+    # the favorable excursion happened after the order.
+    order_ms = ORDER_MS + 30_000
+    bar = Candle(time_ms=ORDER_MS, open=98, high=99, low=97, close=98, volume=1)
+    out = reconcile_pending_ai_limit_order(
+        order_ms=order_ms, direction="LONG", invalidation_level=90,
+        monitor_cursor_ms=ORDER_MS - INTERVAL_5M, limit_price=100,
+        closed_1m=[bar], closed_5m=[],
+        now_ms=candle_close_ms(bar, "1m") + 1,
+        five_m_data_verified=True,
+    )
+    assert out.action == "hold"
