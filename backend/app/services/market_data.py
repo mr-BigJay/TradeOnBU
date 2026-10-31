@@ -135,7 +135,7 @@ class MarketDataService:
             oldest = batch[0].time_ms
             if oldest <= from_ms or len(batch) < 200:
                 break
-            end_time = oldest - 1
+            end_time = oldest  # endTime is exclusive; use the aligned candle open
             if len(merged) >= max_bars:
                 break
 
@@ -203,7 +203,7 @@ class MarketDataService:
                 break
             if len(page) < page_size:
                 break
-            end_time_ms = oldest - 1
+            end_time_ms = oldest  # endTime is exclusive; use the aligned candle open
             remaining = max(0, limit - len(merged_pages))
         candles = sorted(merged_pages.values(), key=lambda c: c.time_ms)[-limit:]
         gaps_detected = detect_gaps(candles, interval)

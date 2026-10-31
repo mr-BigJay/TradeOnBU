@@ -29,7 +29,7 @@ async def test_paginated_1m_history_never_exceeds_exchange_page_limit(monkeypatc
         assert interval == "1m"
         assert 1 <= limit <= 200
         calls.append((limit, end_time_ms))
-        eligible = [c for c in candles if end_time_ms is None or c.time_ms <= end_time_ms]
+        eligible = [c for c in candles if end_time_ms is None or c.time_ms < end_time_ms]
         return eligible[-limit:]
 
     monkeypatch.setattr(svc, "_fetch_klines_window", fake_window)
@@ -40,6 +40,9 @@ async def test_paginated_1m_history_never_exceeds_exchange_page_limit(monkeypatc
     assert result.closed[0].time_ms == candles[-600].time_ms
     assert result.closed[-1].time_ms == candles[-1].time_ms
     assert [size for size, _ in calls] == [200, 200, 200]
+    assert calls[1][1] == candles[-200].time_ms
+    assert calls[2][1] == candles[-400].time_ms
+    assert all(bound is None or bound % step == 0 for _, bound in calls)
 
 
 @pytest.mark.asyncio
@@ -55,3 +58,33 @@ async def test_single_page_retains_existing_behavior(monkeypatch):
     result = await svc.fetch_kline_bundle("BTCUSDT", "5m", 120)
     assert len(result.closed) == 0  # This 5m bar is still forming.
     assert calls == [(120, None)]
+
+
+@pytest.mark.asyncio
+async def test_exchange_base_volume_key_is_parsed(monkeypatch):
+    # No network request: emulate the Bitunix futures response schema.
+    import httpx
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+        def json(self):
+            return {"code": 0, "data": [{
+                "time": 1_800_000_000_000, "open": "100", "high": "101",
+                "low": "99", "close": "100", "baseVol": "3.25",
+                "quoteVol": "325",
+            }]}
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            return None
+        async def get(self, url, params):
+            return FakeResponse()
+
+    monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
+    result = await MarketDataService()._fetch_klines_window("BTCUSDT", "1m", limit=1)
+    assert len(result) == 1
+    assert result[0].volume == pytest.approx(3.25)
