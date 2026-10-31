@@ -143,18 +143,32 @@ async def lifespan(app: FastAPI):
             import uuid
 
             from app.services.position.position_monitor import SimPositionMonitorService
+            from app.services.opportunity_monitor_lock import (
+                new_monitor_owner,
+                release_opportunity_monitor_lock,
+                try_acquire_opportunity_monitor_lock,
+            )
             from app.services.system_state import release_worker_lock, try_acquire_worker_lock
 
             owner = f"paper-monitor-{uuid.uuid4().hex[:8]}"
             async with SessionLocal() as lock_session:
                 if not await try_acquire_worker_lock(lock_session, owner):
                     return
+            opportunity_owner = new_monitor_owner()
+            opportunity_acquired = False
             try:
+                # Opportunity updates and paper fills both mutate the same
+                # setup/position rows; serialize them as well as worker scans.
+                opportunity_acquired = await try_acquire_opportunity_monitor_lock(opportunity_owner)
+                if not opportunity_acquired:
+                    return
                 async with SessionLocal() as session:
                     await SimPositionMonitorService().monitor_session(session)
             except Exception:
                 logger.exception("Independent paper position monitor tick failed")
             finally:
+                if opportunity_acquired:
+                    await release_opportunity_monitor_lock(opportunity_owner)
                 async with SessionLocal() as lock_session:
                     await release_worker_lock(lock_session, owner)
 

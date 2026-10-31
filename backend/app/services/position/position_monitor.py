@@ -493,11 +493,14 @@ class SimPositionMonitorService:
                             pos.last_processed_candle_ms = bar.time_ms
                             processed += 1
                             continue
-                        await self.positions._fill_entry(
+                        fill_ok = await self.positions._fill_entry(
                             session, pos, settings, limit_px, transition_suffix=f"limit:{bar.time_ms}"
                         )
-                        entry_filled_this_bar = True
-                        pos.extra = {**pos.extra, "entry_fill_bar_ms": bar.time_ms}
+                        # A fill can be rejected by post-fill geometry / net R:R.
+                        # Never record entry evidence unless the position actually opened.
+                        if fill_ok and pos.status == "open":
+                            entry_filled_this_bar = True
+                            pos.extra = {**pos.extra, "entry_fill_bar_ms": bar.time_ms}
                         processed += 1
 
                 if pos.status == "open":
