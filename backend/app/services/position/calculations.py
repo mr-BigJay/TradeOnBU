@@ -127,9 +127,20 @@ def compute_metrics(
     net_u = gross_u - exit_fee_est
     pnl_pct = (net_u / margin_usdt * 100.0) if margin_usdt > 0 else 0.0
     gross = rr_ratio(entry_price, stop_loss, take_profit, direction)
-    risk_usdt = abs(gross_pnl(direction, entry_price, stop_loss, qty)) - entry_fee
-    reward_usdt = gross_pnl(direction, entry_price, take_profit, qty) - exit_fee_est
-    net_rr = reward_usdt / risk_usdt if risk_usdt > 0 else 0.0
+    # Include BOTH entry and exit commissions for the risk/reward scenarios.
+    # SL executes at taker; TP honors configured maker/taker behavior.
+    net_loss_at_sl = (
+        gross_pnl(direction, entry_price, stop_loss, qty)
+        - entry_fee
+        - fee_on_quantity(qty, stop_loss, fees.taker_rate)
+    )
+    net_reward_at_tp = (
+        gross_pnl(direction, entry_price, take_profit, qty)
+        - entry_fee
+        - fee_on_quantity(qty, take_profit, exit_rate)
+    )
+    risk_usdt = -net_loss_at_sl if net_loss_at_sl < 0 else 0.0
+    net_rr = net_reward_at_tp / risk_usdt if risk_usdt > 0 and net_reward_at_tp > 0 else 0.0
     liq, est = estimate_isolated_liquidation(direction, entry_price, leverage)
     return PositionMetrics(
         notional_usdt=round(notional, 4),

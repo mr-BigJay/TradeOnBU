@@ -52,11 +52,14 @@ class ExecutionModel:
             return price * (1 + bps) if side == "open" else price * (1 - bps)
         return price * (1 - bps) if side == "open" else price * (1 + bps)
 
-    def _slippage_price(self, price: float, direction: str, adverse: bool) -> float:
+    def _slippage_price(self, price: float, direction: str, adverse: bool, *, side: str = "open") -> float:
+        # Direction is the POSITION direction, not the side of every trade.
+        # A LONG exit sells and a SHORT exit buys (reverse the entry slippage).
         bps = self.settings.slippage_bps / 10000
+        factor = bps if adverse else -bps
         if direction == "LONG":
-            return price * (1 + bps) if adverse else price * (1 - bps)
-        return price * (1 - bps) if adverse else price * (1 + bps)
+            return price * (1 + factor) if side == "open" else price * (1 - factor)
+        return price * (1 - factor) if side == "open" else price * (1 + factor)
 
     def open_fill(self, raw_price: float, direction: str, entry_type: str) -> float:
         spread = self._spread_price(raw_price, direction, "open")
@@ -66,15 +69,20 @@ class ExecutionModel:
     def close_fill(self, raw_price: float, direction: str, outcome: ExitOutcome) -> float:
         spread = self._spread_price(raw_price, direction, "close")
         adverse = outcome in (ExitOutcome.SL, ExitOutcome.TIME)
-        return self._slippage_price(spread, direction, adverse=adverse)
+        return self._slippage_price(spread, direction, adverse=adverse, side="close")
 
-    def net_pnl(self, direction: str, entry_fill: float, exit_fill: float) -> float:
+    def net_pnl(
+        self, direction: str, entry_fill: float, exit_fill: float,
+        *, entry_fee_rate: float | None = None, exit_fee_rate: float | None = None,
+    ) -> float:
         qty = self.margin_notional() / entry_fill
         if direction == "LONG":
             gross = qty * (exit_fill - entry_fill)
         else:
             gross = qty * (entry_fill - exit_fill)
-        fees = (entry_fill + exit_fill) * qty * self.settings.taker_fee_rate
+        entry_rate = self.settings.taker_fee_rate if entry_fee_rate is None else entry_fee_rate
+        exit_rate = self.settings.taker_fee_rate if exit_fee_rate is None else exit_fee_rate
+        fees = (entry_fill * entry_rate + exit_fill * exit_rate) * qty
         return gross - fees
 
     def calc_rr(
@@ -85,6 +93,11 @@ class ExecutionModel:
         tp: float,
         entry_type: str = "LIMIT",
         min_net_rr: float | None = None,
+        *,
+        entry_fee_rate: float | None = None,
+        tp_fee_rate: float | None = None,
+        sl_fee_rate: float | None = None,
+        entry_fill_override: float | None = None,
     ) -> RRCalculation:
         min_net_rr = min_net_rr if min_net_rr is not None else self.settings.min_net_rr
         if direction == "LONG" and not (sl < entry < tp):
@@ -92,11 +105,22 @@ class ExecutionModel:
         if direction == "SHORT" and not (tp < entry < sl):
             return RRCalculation(0, 0, 0, 0, 0, 0, False, entry, tp, sl)
 
-        entry_fill = self.open_fill(entry, direction, entry_type)
+        entry_fill = (
+            float(entry_fill_override) if entry_fill_override is not None
+            else self.open_fill(entry, direction, entry_type)
+        )
+        if entry_fill <= 0:
+            return RRCalculation(0, 0, 0, 0, 0, 0, False, entry_fill, tp, sl)
         sl_fill = self.close_fill(sl, direction, ExitOutcome.SL)
         tp_fill = self.close_fill(tp, direction, ExitOutcome.TP)
-        net_sl = self.net_pnl(direction, entry_fill, sl_fill)
-        net_tp = self.net_pnl(direction, entry_fill, tp_fill)
+        net_sl = self.net_pnl(
+            direction, entry_fill, sl_fill,
+            entry_fee_rate=entry_fee_rate, exit_fee_rate=sl_fee_rate,
+        )
+        net_tp = self.net_pnl(
+            direction, entry_fill, tp_fill,
+            entry_fee_rate=entry_fee_rate, exit_fee_rate=tp_fee_rate,
+        )
 
         gross_rr = abs(tp - entry) / abs(entry - sl) if abs(entry - sl) > 0 else 0
         net_loss_usdt = net_sl if net_sl < 0 else -abs(net_sl)
