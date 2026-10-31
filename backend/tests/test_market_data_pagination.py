@@ -7,9 +7,14 @@ import pytest
 from app.domain.candles import Candle
 from app.services.market_data import MarketDataService
 
+# conftest's offline guard stubs the entire bundle method; retain the real
+# function at collection time and restore it explicitly, while mocking HTTP.
+_REAL_FETCH_KLINE_BUNDLE = MarketDataService.fetch_kline_bundle
+
 
 @pytest.mark.asyncio
 async def test_paginated_1m_history_never_exceeds_exchange_page_limit(monkeypatch):
+    monkeypatch.setattr(MarketDataService, "fetch_kline_bundle", _REAL_FETCH_KLINE_BUNDLE)
     svc = MarketDataService()
     step = 60_000
     start = 1_800_000_000_000
@@ -39,6 +44,7 @@ async def test_paginated_1m_history_never_exceeds_exchange_page_limit(monkeypatc
 
 @pytest.mark.asyncio
 async def test_single_page_retains_existing_behavior(monkeypatch):
+    monkeypatch.setattr(MarketDataService, "fetch_kline_bundle", _REAL_FETCH_KLINE_BUNDLE)
     svc = MarketDataService()
     calls = []
     async def fake_window(symbol, interval, limit=200, end_time_ms=None):
