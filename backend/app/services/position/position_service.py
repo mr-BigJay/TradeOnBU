@@ -616,7 +616,12 @@ class SimPositionService:
             take_profit=pos.take_profit,
             fees=fees,
             entry_is_maker=pos.entry_is_maker,
-            exit_is_maker=pos.exit_is_maker,
+            exit_is_maker=(
+                settings.default_tp_behavior == "limit"
+                if pos.status in ("pending_entry", "open")
+                else pos.exit_is_maker
+            ),
+            slippage_bps=settings.slippage_bps,
         )
         return {
             "public_id": pos.public_id,

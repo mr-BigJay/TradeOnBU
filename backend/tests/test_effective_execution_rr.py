@@ -63,3 +63,25 @@ def test_reported_risk_includes_fees_and_reward_deducts_entry_fee():
     loss = qty * (100 - 95) + qty * 100 * fees.maker_rate + qty * 95 * fees.taker_rate
     reward = qty * (110 - 100) - qty * 100 * fees.maker_rate - qty * 110 * fees.maker_rate
     assert m.net_rr == pytest.approx(round(reward / loss, 4))
+
+
+
+@pytest.mark.parametrize("direction,entry,sl,tp", [
+    ("LONG", 100.0, 99.0, 102.5),
+    ("SHORT", 100.0, 101.0, 97.5),
+])
+def test_open_position_displayed_rr_includes_adverse_stop_slippage(direction, entry, sl, tp):
+    fees = default_vip1_profile()
+    m = compute_metrics(
+        direction=direction, margin_usdt=50, leverage=10,
+        entry_price=entry, mark_price=entry, stop_loss=sl, take_profit=tp,
+        fees=fees, entry_is_maker=True, exit_is_maker=True, slippage_bps=5.0,
+    )
+    from app.services.position.calculations import apply_slippage
+    sl_fill = apply_slippage(sl, direction, side="exit", adverse=True, bps=5.0)
+    qty = 5.0
+    gross_loss = (sl_fill - entry) * qty if direction == "LONG" else (entry - sl_fill) * qty
+    expected_net_loss = gross_loss - entry * qty * fees.maker_rate - sl_fill * qty * fees.taker_rate
+    gross_profit = (tp - entry) * qty if direction == "LONG" else (entry - tp) * qty
+    expected_net_reward = gross_profit - entry * qty * fees.maker_rate - tp * qty * fees.maker_rate
+    assert m.net_rr == pytest.approx(round(expected_net_reward / -expected_net_loss, 4))

@@ -115,6 +115,7 @@ def compute_metrics(
     fees: FeeProfile,
     entry_is_maker: bool,
     exit_is_maker: bool,
+    slippage_bps: float = 0.0,
 ) -> PositionMetrics:
     notional = position_notional(margin_usdt, leverage)
     qty = quantity_from_notional(notional, entry_price)
@@ -129,10 +130,15 @@ def compute_metrics(
     gross = rr_ratio(entry_price, stop_loss, take_profit, direction)
     # Include BOTH entry and exit commissions for the risk/reward scenarios.
     # SL executes at taker; TP honors configured maker/taker behavior.
+    # SL triggers a market/taker exit and may slip against the position.
+    # Model that loss in displayed R:R just as the entry risk gate does.
+    sl_execution_price = apply_slippage(
+        stop_loss, direction, side="exit", adverse=True, bps=slippage_bps,
+    )
     net_loss_at_sl = (
-        gross_pnl(direction, entry_price, stop_loss, qty)
+        gross_pnl(direction, entry_price, sl_execution_price, qty)
         - entry_fee
-        - fee_on_quantity(qty, stop_loss, fees.taker_rate)
+        - fee_on_quantity(qty, sl_execution_price, fees.taker_rate)
     )
     net_reward_at_tp = (
         gross_pnl(direction, entry_price, take_profit, qty)
