@@ -183,6 +183,7 @@ class SimPositionService:
                 settings, direction=req.direction, entry=float(entry_for_tp_cap),
                 sl=req.stop_loss, tp=req.take_profit,
                 min_net_rr=HARD_MIN_AUTO_PAPER_NET_RR,
+                order_type=order_type,
             )
             if not rr.acceptable:
                 raise PositionServiceError(
@@ -319,6 +320,7 @@ class SimPositionService:
                 sl=pos.stop_loss, tp=cap_result.take_profit,
                 min_net_rr=HARD_MIN_AUTO_PAPER_NET_RR,
                 entry_fill_price=fill,
+                order_type=pos.order_type,
             )
             if not rr_after_fill.acceptable:
                 await self._reject_pending_fill_geometry(

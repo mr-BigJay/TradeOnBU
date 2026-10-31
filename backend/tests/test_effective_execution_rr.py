@@ -85,3 +85,13 @@ def test_open_position_displayed_rr_includes_adverse_stop_slippage(direction, en
     gross_profit = (tp - entry) * qty if direction == "LONG" else (entry - tp) * qty
     expected_net_reward = gross_profit - entry * qty * fees.maker_rate - tp * qty * fees.maker_rate
     assert m.net_rr == pytest.approx(round(expected_net_reward / -expected_net_loss, 4))
+
+
+
+def test_market_ai_entry_uses_taker_fee_and_adverse_entry_slippage():
+    sim = _sim()
+    levels = dict(direction="LONG", entry=100.0, sl=95.0, tp=112.0, min_net_rr=2.0)
+    resting_limit = auto_paper_rr_from_settings(sim, order_type="limit", **levels)
+    market = auto_paper_rr_from_settings(sim, order_type="market", **levels)
+    assert market.entry_fill > resting_limit.entry_fill
+    assert market.net_rr < resting_limit.net_rr

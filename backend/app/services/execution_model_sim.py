@@ -29,6 +29,7 @@ def auto_paper_rr_from_settings(
     tp: float,
     min_net_rr: float,
     entry_fill_price: float | None = None,
+    order_type: str = "limit",
 ) -> RRCalculation:
     """Evaluate the EXECUTABLE TP, not the AI's original larger target.
 
@@ -43,20 +44,24 @@ def auto_paper_rr_from_settings(
         take_profit_ai=tp,
     )
     model = execution_model_from_sim_settings(sim)
+    is_limit_entry = order_type.lower() == "limit"
+    entry_rate = float(sim.maker_fee_rate if is_limit_entry else sim.taker_fee_rate)
     tp_rate = (
         float(sim.maker_fee_rate) if sim.default_tp_behavior == "limit"
         else float(sim.taker_fee_rate)
     )
     return model.calc_rr(
         direction, ref_entry, sl, capped.execution_take_profit,
-        "LIMIT", min_net_rr=min_net_rr,
-        entry_fee_rate=float(sim.maker_fee_rate),
+        "LIMIT" if is_limit_entry else "STOP", min_net_rr=min_net_rr,
+        entry_fee_rate=entry_rate,
         tp_fee_rate=tp_rate,
         sl_fee_rate=float(sim.taker_fee_rate),
         # Never assume the maker LIMIT improves the requested entry or that
         # a TP LIMIT fills above/below its specified price. Execution may do
         # better, but the 2R acceptance gate must remain conservative.
-        entry_fill_override=ref_entry,
+        entry_fill_override=(
+            ref_entry if is_limit_entry or entry_fill_price is not None else None
+        ),
         tp_exit_fill_override=capped.execution_take_profit,
     )
 
@@ -70,6 +75,7 @@ async def net_rr_acceptable_for_auto_paper(
     tp: float,
     min_net_rr: float,
     entry_fill_price: float | None = None,
+    order_type: str = "limit",
 ) -> tuple[bool, float]:
     from app.services.position.settings_service import get_or_create_settings
 
@@ -77,5 +83,6 @@ async def net_rr_acceptable_for_auto_paper(
     rr = auto_paper_rr_from_settings(
         sim, direction=direction, entry=entry, sl=sl, tp=tp,
         min_net_rr=min_net_rr, entry_fill_price=entry_fill_price,
+        order_type=order_type,
     )
     return bool(rr.acceptable), float(rr.net_rr)
