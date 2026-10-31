@@ -59,7 +59,7 @@ def test_invalidation_cancel_suspended_when_interior_1m_gap():
     order_ms = ORDER_MS
     inv = Candle(time_ms=order_ms, open=95, high=96, low=91, close=92, volume=1)
     inv_close = candle_close_ms(inv, "5m")
-    dense_low_high = dict(open=98, high=99, low=97.5, close=98.5, volume=1)
+    dense_low_high = dict(open=101.5, high=102, low=100.5, close=101.5, volume=1)
     gapped_1m = [
         Candle(time_ms=order_ms, **dense_low_high),
         Candle(time_ms=order_ms + INTERVAL_1M, **dense_low_high),
@@ -87,7 +87,7 @@ def test_invalidation_cancel_suspended_when_gaps_remaining_in_window():
     order_ms = ORDER_MS
     inv = Candle(time_ms=order_ms, open=95, high=96, low=91, close=92, volume=1)
     inv_close = candle_close_ms(inv, "5m")
-    dense = dict(open=98, high=99, low=97.5, close=98.5, volume=1)
+    dense = dict(open=101.5, high=102, low=100.5, close=101.5, volume=1)
     closed_1m = [
         Candle(time_ms=order_ms + i * INTERVAL_1M, **dense)
         for i in range(0, 6)
