@@ -72,8 +72,11 @@ def test_history_already_used_or_invalidated(kind):
     result = seed_recent_structure(row, bars, data_complete=True)
     if kind == "invalidation":
         assert not row.confirmation_state["confirmation_timestamps"]
+    elif kind == "touch":
+        assert result is None and row.status == "open"
+        assert row.confirmation_state["completed"] == ["liquidity_sweep", "mss"]
     else:
-        assert result == ("entry_zone_used_before_registration" if kind == "touch" else "target_reached_before_registration")
+        assert result == "target_reached_before_registration"
         assert row.status == "expired" and not row.monitoring_enabled
     assert "entry_zone_touch" not in row.confirmation_state["confirmation_timestamps"]
 
@@ -93,12 +96,13 @@ def test_target_without_touch_retires(direction):
     assert row.last_validation_result["reason"] == row.last_rejection_reason
 
 @pytest.mark.parametrize("direction,close", [("LONG", 102), ("SHORT", 98)])
-def test_first_touch_then_departure_retires_across_ticks(direction, close):
+def test_first_touch_then_departure_stays_active_across_ticks(direction, close):
     row = setup(direction)
     assert consume_unordered_opportunity(row, [bar(END+STEP)], interval_ms=STEP) is None
     b = bar(END+2*STEP, o=100, h=103, l=97, c=close)
-    assert consume_unordered_opportunity(row, [b], interval_ms=STEP) == "first_touch_missed"
-    assert row.status == "expired"
+    assert consume_unordered_opportunity(row, [b], interval_ms=STEP) is None
+    assert row.status == "open"
+    assert row.objective_notes["unfilled_opportunity"]["first_zone_touch_ms"] == END+STEP
 
 def test_pre_boundary_touch_is_not_a_forward_fill_or_miss():
     row = setup()
@@ -124,7 +128,7 @@ def test_structural_revision_archives_old_touch_flags():
     assert row.last_tracked_candle_ms == 0 and row.last_validation_result == {}
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("outcome", ["pending", "missed", "target", "rr_blocked"])
+@pytest.mark.parametrize("outcome", ["pending", "missed", "unconfirmed", "target", "rr_blocked"])
 async def test_monitor_with_real_seed_and_forward_order_gates(session, outcome):
     from unittest.mock import AsyncMock, patch
     from sqlalchemy import select
@@ -155,11 +159,12 @@ async def test_monitor_with_real_seed_and_forward_order_gates(session, outcome):
     session.add(row)
     await session.flush()
     one = [bar(t, o=103, h=104, l=102, c=103) for t in range(END, END+STEP, 60_000)]
-    if outcome == "missed":
+    if outcome in ("missed", "unconfirmed"):
         one[-1] = bar(one[-1].time_ms, o=103, h=104, l=100, c=103)
     elif outcome == "target":
         one[-1] = bar(one[-1].time_ms, o=103, h=121, l=102, c=120)
-    five = history() + [bar(END, o=103, h=max(b.high for b in one), l=min(b.low for b in one), c=one[-1].close)]
+    prefix = [bar(t) for t in range(END-24*STEP, END, STEP)] if outcome == "unconfirmed" else history()
+    five = prefix + [bar(END, o=103, h=max(b.high for b in one), l=min(b.low for b in one), c=one[-1].close)]
     def bundle(bars, interval):
         return KlineBundle(closed=bars, forming=None, gaps_detected=[], gaps_remaining=[], data_complete=True, interval=interval)
     async def fetch(symbol, interval, limit):
@@ -169,18 +174,22 @@ async def test_monitor_with_real_seed_and_forward_order_gates(session, outcome):
     with patch.object(mon.market, "fetch_kline_bundle", AsyncMock(side_effect=fetch)), patch("app.services.opportunity_monitor._utc_now", return_value=now):
         await mon.monitor_setups(session, symbol="BTCUSDT")
     positions = list((await session.execute(select(SimPosition))).scalars())
-    if outcome == "pending":
+    if outcome in ("pending", "missed"):
         assert len(positions) == 1, row.last_validation_result
         assert positions[0].status == "pending_entry"
         assert positions[0].fill_price is None
-        assert row.confirmation_state["completed"] == ["liquidity_sweep", "mss"]
+        assert set(row.confirmation_state["completed"]) >= {"liquidity_sweep", "mss"}
+    elif outcome == "unconfirmed":
+        assert not positions
+        assert row.status == "open"
+        assert row.last_rejection_reason == "missing_confirmations"
     elif outcome == "rr_blocked":
         assert not positions
         assert row.last_rejection_reason == "ict_confirmed_blocked_by_net_rr"
     else:
         assert not positions
         assert row.status == "expired"
-        assert row.last_rejection_reason == ("first_touch_missed" if outcome == "missed" else "target_reached_without_order")
+        assert row.last_rejection_reason == "target_reached_without_order"
 
 @pytest.mark.asyncio
 async def test_identical_report_does_not_extend_expiry(session):
@@ -245,13 +254,35 @@ def test_price_revision_uses_new_tracking_boundary_and_archives_seed():
     assert _tracking_start_ms(row) == END+2*STEP
 
 @pytest.mark.parametrize("fills", [False, True])
-def test_pending_zone_reaction_does_not_wait_for_second_touch(fills):
+def test_pending_zone_reaction_waits_for_actual_limit_touch(fills):
     from app.domain.execution_order_policy import reconcile_pending_ai_limit_order
     candles = [bar(END, o=102, h=103, l=99.9 if fills else 100.4, c=102)]
     result = reconcile_pending_ai_limit_order(
         order_ms=END, direction="LONG", invalidation_level=95, monitor_cursor_ms=END-STEP,
         limit_price=100, closed_1m=candles, closed_5m=[], now_ms=END+STEP,
         five_m_data_verified=True, target_price=110, entry_zone=(99.5, 100.5))
-    assert result.action == ("fill" if fills else "cancel")
-    if not fills:
-        assert result.reason == "first_zone_reaction_before_fill"
+    assert result.action == ("fill" if fills else "hold")
+
+
+@pytest.mark.parametrize("direction,close", [("LONG", 100.6), ("SHORT", 99.4)])
+@pytest.mark.parametrize("sequence", [["liquidity_sweep", "mss", "entry_zone_touch"],
+                                     ["breakout_close", "breakout_retest", "entry_zone_touch"]])
+def test_same_bar_tiny_zone_departure_does_not_expire_unconfirmed_plan(direction, close, sequence):
+    row = setup(direction, seq=sequence)
+    candle = bar(END+STEP, o=100, h=101, l=99, c=close)
+    assert consume_unordered_opportunity(row, [candle], interval_ms=60_000) is None
+    assert row.status == "open" and row.monitoring_enabled
+    assert not row.confirmation_state["confirmation_timestamps"]
+
+@pytest.mark.parametrize("direction", ["LONG", "SHORT"])
+def test_pending_limit_can_fill_after_earlier_zone_reaction(direction):
+    from app.domain.execution_order_policy import reconcile_pending_ai_limit_order
+    first = bar(END, o=102, h=103, l=100.4, c=102) if direction == "LONG" else bar(END, o=98, h=99.6, l=97, c=98)
+    later = bar(END+60_000, o=100, h=101, l=99, c=100)
+    result = reconcile_pending_ai_limit_order(
+        order_ms=END, direction=direction, invalidation_level=95 if direction == "LONG" else 105,
+        monitor_cursor_ms=END-STEP, limit_price=100, closed_1m=[first, later], closed_5m=[],
+        now_ms=END+STEP, five_m_data_verified=True, target_price=110 if direction == "LONG" else 90,
+        entry_zone=(99.5, 100.5))
+    assert result.action == "fill"
+    assert result.fill_bar_1m.time_ms == later.time_ms

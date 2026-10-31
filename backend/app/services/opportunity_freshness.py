@@ -93,12 +93,6 @@ def seed_recent_structure(setup: Any, bars: list[Candle], *, data_complete: bool
                     reason = "target_reached_before_registration"
                     break
                 continue  # one token per candle; never infer intrabar order
-        if prefix and len(timestamps) == len(prefix):
-            # A later reaction has already used this structural opportunity.
-            touched = bar.low <= setup.entry_zone_high and bar.high >= setup.entry_zone_low
-            if touched:
-                reason = "entry_zone_used_before_registration"
-                break
     seed = {"sequence": seq, "required": conf.get("required", seq),
             "confirmation_timestamps": timestamps, "confirmation_evidence": evidence}
     notes["historical_confirmation_seed"] = {"checked": True, "from_ms": start, "cutoff_ms": cutoff,
@@ -117,8 +111,8 @@ def seed_recent_structure(setup: Any, bars: list[Candle], *, data_complete: bool
 def consume_unordered_opportunity(setup: Any, bars: list[Candle], *, interval_ms: int) -> str | None:
     """Only call after confirming no pending/open execution exists.
 
-    A first zone visit followed by a favorable departure cannot become a later
-    limit fill. Target before an order retires even a never-touched entry.
+    Zone visits are observations, not expiry or fill evidence.
+    Target before an order retires even a never-touched entry.
     """
     if not active(setup):
         return None
@@ -134,8 +128,7 @@ def consume_unordered_opportunity(setup: Any, bars: list[Candle], *, interval_ms
         else:
             if bar.low <= setup.entry_zone_high and bar.high >= setup.entry_zone_low:
                 progress.setdefault("first_zone_touch_ms", bar.time_ms)
-            departed = bar.close > setup.entry_zone_high if setup.direction == "LONG" else bar.close < setup.entry_zone_low
-            reason = "first_touch_missed" if "first_zone_touch_ms" in progress and departed else None
+            reason = None
         progress["cursor_ms"] = bar.time_ms
         if reason:
             notes["unfilled_opportunity"] = progress
