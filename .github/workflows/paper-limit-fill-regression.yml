@@ -1,0 +1,38 @@
+name: Paper Limit Fill Regression
+
+on:
+  pull_request:
+    paths:
+      - 'backend/app/services/position/position_monitor.py'
+      - 'backend/app/domain/execution_order_policy.py'
+      - 'backend/app/main.py'
+      - 'backend/tests/test_rejected_limit_fill_marker.py'
+      - '.github/workflows/paper-limit-fill-regression.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fills:
+    name: Rejected fill and LIMIT semantics
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - run: pip install -r requirements.txt
+      - run: mkdir -p data
+      - name: Test paper execution flow
+        run: |
+          python3 -m pytest -q \
+            tests/test_rejected_limit_fill_marker.py \
+            tests/test_execution_order_reconciliation.py \
+            tests/test_paper_execution.py
