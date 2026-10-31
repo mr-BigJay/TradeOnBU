@@ -173,6 +173,23 @@ class SimPositionService:
         if req.direction == "SHORT" and not (execution_tp < entry_for_tp_cap < req.stop_loss):
             raise PositionServiceError("TP اجرایی پس از محدودیت R:R اجرایی با سطوح SHORT ناسازگار است")
 
+        # Defense in depth: AI orders must satisfy the hard net R:R floor
+        # AFTER the execution TP cap and with actual paper fee settings.
+        if req.ai_setup_id:
+            from app.domain.paper_execution_policy import HARD_MIN_AUTO_PAPER_NET_RR
+            from app.services.execution_model_sim import auto_paper_rr_from_settings
+
+            rr = auto_paper_rr_from_settings(
+                settings, direction=req.direction, entry=float(entry_for_tp_cap),
+                sl=req.stop_loss, tp=req.take_profit,
+                min_net_rr=HARD_MIN_AUTO_PAPER_NET_RR,
+                order_type=order_type,
+            )
+            if not rr.acceptable:
+                raise PositionServiceError(
+                    f"execution_net_rr_below_min: {rr.net_rr:.3f} < {HARD_MIN_AUTO_PAPER_NET_RR:.2f}"
+                )
+
         public_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc)
         monitor_from_ms = int(now.timestamp() * 1000)
@@ -294,6 +311,29 @@ class SimPositionService:
             )
             return False
 
+        if (pos.extra or {}).get("auto_paper"):
+            from app.domain.paper_execution_policy import HARD_MIN_AUTO_PAPER_NET_RR
+            from app.services.execution_model_sim import auto_paper_rr_from_settings
+
+            rr_after_fill = auto_paper_rr_from_settings(
+                settings, direction=pos.direction, entry=fill,
+                sl=pos.stop_loss, tp=cap_result.take_profit,
+                min_net_rr=HARD_MIN_AUTO_PAPER_NET_RR,
+                entry_fill_price=fill,
+                order_type=pos.order_type,
+            )
+            if not rr_after_fill.acceptable:
+                await self._reject_pending_fill_geometry(
+                    session, pos, fill_price=fill,
+                    reason="post_fill_net_rr_below_min",
+                )
+                pos.extra = {
+                    **(pos.extra or {}),
+                    "post_fill_net_rr": rr_after_fill.net_rr,
+                    "required_min_net_rr": HARD_MIN_AUTO_PAPER_NET_RR,
+                }
+                return False
+
         notional = position_notional(pos.margin_usdt, pos.leverage)
         qty = quantity_from_notional(notional, fill)
         rate = fees.maker_rate if pos.entry_is_maker else fees.taker_rate
@@ -380,7 +420,7 @@ class SimPositionService:
             amount_usdt=pos.margin_usdt,
             reference_type="sim_position",
             reference_id=pos.public_id,
-            note="لغو — هندسه Fill نامعتبر",
+            note="لغو — اعتبارسنجی Fill ناموفق",
             affects_balance=False,
         )
         await _log_event(
@@ -578,7 +618,12 @@ class SimPositionService:
             take_profit=pos.take_profit,
             fees=fees,
             entry_is_maker=pos.entry_is_maker,
-            exit_is_maker=pos.exit_is_maker,
+            exit_is_maker=(
+                settings.default_tp_behavior == "limit"
+                if pos.status in ("pending_entry", "open")
+                else pos.exit_is_maker
+            ),
+            slippage_bps=settings.slippage_bps,
         )
         return {
             "public_id": pos.public_id,
