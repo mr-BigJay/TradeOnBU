@@ -98,6 +98,7 @@ class ExecutionModel:
         tp_fee_rate: float | None = None,
         sl_fee_rate: float | None = None,
         entry_fill_override: float | None = None,
+        tp_exit_fill_override: float | None = None,
     ) -> RRCalculation:
         min_net_rr = min_net_rr if min_net_rr is not None else self.settings.min_net_rr
         if direction == "LONG" and not (sl < entry < tp):
@@ -112,7 +113,10 @@ class ExecutionModel:
         if entry_fill <= 0:
             return RRCalculation(0, 0, 0, 0, 0, 0, False, entry_fill, tp, sl)
         sl_fill = self.close_fill(sl, direction, ExitOutcome.SL)
-        tp_fill = self.close_fill(tp, direction, ExitOutcome.TP)
+        tp_fill = (
+            float(tp_exit_fill_override) if tp_exit_fill_override is not None
+            else self.close_fill(tp, direction, ExitOutcome.TP)
+        )
         net_sl = self.net_pnl(
             direction, entry_fill, sl_fill,
             entry_fee_rate=entry_fee_rate, exit_fee_rate=sl_fee_rate,
