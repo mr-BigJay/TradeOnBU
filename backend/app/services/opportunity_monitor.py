@@ -922,19 +922,6 @@ class OpportunityMonitorService:
                 notes["monitor_1m_integrity"] = {"ok": False, "reason": "missing_1m_closed_bars"}
                 setup.objective_notes = notes
 
-            # Run before promotion/order creation; historical touches never become fills.
-            consumption_bars = new_1m if live_engine == ENTRY_MODE_BALANCED else new_bars
-            consumed_reason = consume_unordered_opportunity(
-                setup, consumption_bars,
-                interval_ms=60_000 if live_engine == ENTRY_MODE_BALANCED else 300_000,
-            )
-            if consumed_reason:
-                await log_setup_event(session, setup_id=setup.setup_id, event_type="opportunity_retired", reason_code=consumed_reason,
-                                      payload=(setup.objective_notes or {}).get("unfilled_opportunity"))
-                setup.last_monitor_at = now
-                summary["expired"] += 1
-                continue
-
             if shadow_simulation_enabled(paper_entry_mode, balanced_shadow) and new_1m:
                 run_balanced_shadow_tick(
                     setup,
@@ -1043,6 +1030,20 @@ class OpportunityMonitorService:
                     payload={"detail": inv_reason},
                 )
                 summary["invalidated"] += 1
+                continue
+
+            # Preserve confirmation evidence before terminal target checks.
+            # Still gate promotion/orders: historical touches never become fills.
+            consumption_bars = new_1m if live_engine == ENTRY_MODE_BALANCED else new_bars
+            consumed_reason = consume_unordered_opportunity(
+                setup, consumption_bars,
+                interval_ms=60_000 if live_engine == ENTRY_MODE_BALANCED else 300_000,
+            )
+            if consumed_reason:
+                await log_setup_event(session, setup_id=setup.setup_id, event_type="opportunity_retired", reason_code=consumed_reason,
+                                      payload=(setup.objective_notes or {}).get("unfilled_opportunity"))
+                setup.last_monitor_at = now
+                summary["expired"] += 1
                 continue
 
             missing_list = conf_state.get("missing") or []

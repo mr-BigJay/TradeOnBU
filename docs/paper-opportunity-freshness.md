@@ -15,18 +15,19 @@ and their actual `registered_at_ms`. At the first monitor pass:
   OHLC/time provenance is stored in `historical_confirmation_seed`.
 - Never seed retests, pullbacks, entry touches or fills. Strategy B still requires
   its forward pullback/resumption; strategy C still requires a later retest.
-- If the target or a later zone reaction already consumed the recovered structure,
+- If the target already consumed the recovered structure,
   retire the plan. Incomplete history cannot grant a confirmation; forward
   monitoring continues and seeding stops once a live sequence starts.
 - Existing BALANCED gates can place a pre-touch limit after all pre-entry
   requirements are met. STRICT remains STRICT. No retroactive fills are created.
-- Before an order exists, reaching target retires the opportunity. A zone visit
-  followed by a close outside the zone in the trade direction marks
-  `first_touch_missed`, even if it happens in the same closed candle. This is a
-  conservative missed-opportunity policy; it does not estimate profitability.
+- Before an order exists, reaching target retires the opportunity. Zone contact
+  is recorded but does not retire a plan, including same-candle departure and
+  contacts before registration. Structural confirmation is still required.
+  Confirmation evidence is processed before target retirement, and target
+  retirement still blocks creation of a new order. No historical fill is created.
 - For an already pending order, a proven target touch before any fill cancels it.
-  A zone visit and favorable departure without reaching the limit also cancels
-  the unfilled order. Earlier fills take precedence. Same-minute target/fill ambiguity or missing
+  A zone visit without reaching the limit keeps the order pending. Earlier fills
+  take precedence. Same-minute target/fill ambiguity or missing
   history suspends execution instead of inventing a fill or cancellation. This is
   a durable `pending_target_review_required` hold requiring operator review/cancel;
   it cannot silently resume after the target candle leaves the fetch window. Both
@@ -103,3 +104,12 @@ Start the service again and check `/api/health`, then inspect new opportunities:
 `last_rejection_reason`, and linked `sim_positions`. Rollback code does not undo
 retirements; new analyses must reassess opportunities. Never revive a historical
 plan just because price later reached its target.
+
+## Zone-reaction correction
+
+The old `first_touch_missed` / `first_zone_reaction_before_fill` rules retired
+plans on tiny departures, sometimes before evaluating the same candle's
+confirmations. These rules are removed rather than replaced with an untested
+price-distance threshold. Existing expiry, structural invalidation, target and
+order-risk gates remain. Expired/cancelled rows are not automatically revived;
+a new analysis is required. The four-hour lifetime still bounds waiting.

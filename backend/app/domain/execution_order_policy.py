@@ -207,18 +207,9 @@ def reconcile_pending_ai_limit_order(
         closed_5m=closed_5m,
         now_ms=now_ms,
     )
-    if entry_zone is not None:
-        touched = False
-        lo, hi = entry_zone
-        for candidate in sorted(closed_1m, key=lambda c: c.time_ms):
-            close_ms = candle_close_ms(candidate, INTERVAL_1M)
-            if candidate.time_ms < order_ms or close_ms > now_ms:
-                continue
-            touched = touched or candidate.low <= hi and candidate.high >= lo
-            departed = candidate.close > hi if direction == "LONG" else candidate.close < lo
-            if touched and departed and not bar_hits_limit(candidate, limit_price):
-                events.append((close_ms, "zone_consumed", candidate))
-                break
+    # Zone contact alone neither fills nor cancels a limit order.
+    # Keep entry_zone in the API for existing callers; only actual limit/target/
+    # invalidation events affect execution.
     if target_price is not None:
         for candidate in closed_1m:
             close_ms = candle_close_ms(candidate, INTERVAL_1M)
@@ -233,7 +224,7 @@ def reconcile_pending_ai_limit_order(
         return PendingLimitReconciliation(action="hold")
 
     first_time, kind, bar = events[0]
-    if kind.startswith("target") or kind == "zone_consumed":
+    if kind.startswith("target"):
         if kind == "target_ambiguous" or bar_hits_limit(bar, limit_price):
             return PendingLimitReconciliation(action="suspend", reason="target_fill_chronology_ambiguous", terminal_bar_1m=bar)
         if not one_m_history_rules_out_fill_before_invalidation(
@@ -244,7 +235,7 @@ def reconcile_pending_ai_limit_order(
         # An order-creation candle might contain an unprovable post-order touch.
         if any(c.time_ms < order_ms < candle_close_ms(c, INTERVAL_1M) and bar_hits_limit(c, limit_price) for c in closed_1m):
             return PendingLimitReconciliation(action="suspend", reason="target_fill_chronology_ambiguous", terminal_bar_1m=bar)
-        return PendingLimitReconciliation(action="cancel", reason="first_zone_reaction_before_fill" if kind == "zone_consumed" else "target_reached_before_fill", terminal_bar_1m=bar)
+        return PendingLimitReconciliation(action="cancel", reason="target_reached_before_fill", terminal_bar_1m=bar)
     if kind == "inv":
         if not one_m_history_rules_out_fill_before_invalidation(
             order_ms=order_ms,
