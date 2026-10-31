@@ -90,7 +90,11 @@ class MarketDataService:
             raise RuntimeError(f"Bitunix kline error: {body.get('msg')}")
         candles = []
         for row in body.get("data") or []:
-            vol_raw = row.get("volume") if row.get("volume") is not None else row.get("vol")
+            # Bitunix futures returns baseVol/quoteVol (legacy payloads use volume/vol).
+            vol_raw = next(
+                (row[key] for key in ("baseVol", "volume", "vol") if row.get(key) is not None),
+                None,
+            )
             volume = float(vol_raw) if vol_raw is not None else None
             candles.append(
                 Candle(
@@ -131,7 +135,7 @@ class MarketDataService:
             oldest = batch[0].time_ms
             if oldest <= from_ms or len(batch) < 200:
                 break
-            end_time = oldest - 1
+            end_time = oldest  # endTime is exclusive; use the aligned candle open
             if len(merged) >= max_bars:
                 break
 
@@ -175,8 +179,33 @@ class MarketDataService:
         )
 
     async def fetch_kline_bundle(self, symbol: str, interval: str, limit: int = 200) -> KlineBundle:
+        if interval not in VALID_INTERVALS or limit < 1:
+            raise ValueError(f"Unsupported candle request: {interval} limit={limit}")
         now_ms = self._now_ms()
-        candles = await self._fetch_klines_window(symbol, interval, limit)
+        # The futures kline endpoint accepts at most 200 candles per request.
+        # BALANCED confirmation and paper fill recovery often need >200.
+        # Page backwards rather than sending an invalid oversized limit.
+        merged_pages: dict[int, Candle] = {}
+        remaining = limit
+        end_time_ms: int | None = None
+        while remaining > 0:
+            page_size = min(remaining, 200)
+            page = await self._fetch_klines_window(
+                symbol, interval, limit=page_size, end_time_ms=end_time_ms
+            )
+            if not page:
+                break
+            previous_size = len(merged_pages)
+            merged_pages.update({bar.time_ms: bar for bar in page})
+            oldest = page[0].time_ms
+            if len(merged_pages) == previous_size:
+                # Protect against an endpoint that ignores endTime.
+                break
+            if len(page) < page_size:
+                break
+            end_time_ms = oldest  # endTime is exclusive; use the aligned candle open
+            remaining = max(0, limit - len(merged_pages))
+        candles = sorted(merged_pages.values(), key=lambda c: c.time_ms)[-limit:]
         gaps_detected = detect_gaps(candles, interval)
         merged: dict[int, Candle] = {c.time_ms: c for c in candles}
         for missing_start in gaps_detected[:8]:
@@ -188,7 +217,7 @@ class MarketDataService:
             )
             for c in older:
                 merged[c.time_ms] = c
-        candles = sorted(merged.values(), key=lambda c: c.time_ms)
+        candles = sorted(merged.values(), key=lambda c: c.time_ms)[-limit:]
         gaps_remaining = detect_gaps(candles, interval)
         closed, forming = split_closed_and_forming(candles, interval, now_ms)
         return KlineBundle(
