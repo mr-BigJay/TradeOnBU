@@ -150,6 +150,7 @@ async def test_continue_preserves_original_forecast(session):
         symbol="BTCUSDT",
         direction="LONG",
         status="open",
+        lifecycle_state="WAIT_LONG",
         thesis_fa="original thesis",
         entry_price=100.0,
         stop_loss=98.0,

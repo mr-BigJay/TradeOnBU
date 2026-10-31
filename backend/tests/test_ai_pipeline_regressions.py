@@ -83,7 +83,9 @@ async def test_no_open_write_during_delayed_openai(session):
 def test_record_run_outcome_sets_future_next_attempt():
     cfg = AiAnalysisSettings(interval_minutes=60)
     record_run_outcome(cfg, "completed", trigger="scheduled")
-    assert cfg.next_run_at > datetime.now(timezone.utc) + timedelta(minutes=59)
+    # A completed scheduled run snaps to the next hourly UTC slot (+60s).
+    assert cfg.next_run_at > datetime.now(timezone.utc)
+    assert (int(cfg.next_run_at.timestamp()) - 60) % 3600 == 0
     record_run_outcome(cfg, "failed", "openai_error", trigger="scheduled")
     assert cfg.next_run_at > datetime.now(timezone.utc) + timedelta(minutes=FAILURE_BACKOFF_MINUTES - 1)
 

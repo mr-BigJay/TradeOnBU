@@ -330,7 +330,12 @@ async def test_failure_retry_single_backoff_not_hourly_loop(session):
     assert await should_run_scheduled(session) is False
     record_run_outcome(cfg, "failed", "openai_error", trigger="scheduled")
     assert cfg.auto_retry_pending is False
-    assert cfg.next_run_at > first_next + timedelta(minutes=60)
+    # After the one allowed backoff retry, scheduling returns to UTC
+    # 120-minute slots at +60s, not a floating interval from completion.
+    now = datetime.now(timezone.utc)
+    assert cfg.next_run_at > now
+    assert cfg.next_run_at != first_next
+    assert (int(cfg.next_run_at.timestamp()) - 60) % (120 * 60) == 0
 
 
 @pytest.mark.asyncio

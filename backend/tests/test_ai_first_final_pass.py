@@ -248,6 +248,7 @@ async def test_continue_setup_rejects_cross_symbol(session):
         symbol="BTCUSDT",
         direction="LONG",
         status="open",
+        lifecycle_state="WAIT_LONG",
         entry_price=100,
         stop_loss=98,
         take_profit=105,
