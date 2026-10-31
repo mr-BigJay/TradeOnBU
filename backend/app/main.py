@@ -136,6 +136,37 @@ async def lifespan(app: FastAPI):
             coalesce=True,
         )
 
+        # Process paper LIMIT fills/TP/SL every minute, independently of the
+        # slower general worker scan. Share its DB lock so the two workers cannot
+        # settle the same candle concurrently; no real exchange orders.
+        async def _paper_position_monitor_tick() -> None:
+            import uuid
+
+            from app.services.position.position_monitor import SimPositionMonitorService
+            from app.services.system_state import release_worker_lock, try_acquire_worker_lock
+
+            owner = f"paper-monitor-{uuid.uuid4().hex[:8]}"
+            async with SessionLocal() as lock_session:
+                if not await try_acquire_worker_lock(lock_session, owner):
+                    return
+            try:
+                async with SessionLocal() as session:
+                    await SimPositionMonitorService().monitor_session(session)
+            except Exception:
+                logger.exception("Independent paper position monitor tick failed")
+            finally:
+                async with SessionLocal() as lock_session:
+                    await release_worker_lock(lock_session, owner)
+
+        scheduler.add_job(
+            _paper_position_monitor_tick,
+            "interval",
+            seconds=60,
+            id="paper_position_monitor_1m",
+            max_instances=1,
+            coalesce=True,
+        )
+
         # Public-only market data keeps flowing; no ChatGPT forecast job is scheduled.
         async def _public_market_snapshot_tick() -> None:
             from app.services.price_forecast.public_market_snapshots import persist_public_market_snapshot

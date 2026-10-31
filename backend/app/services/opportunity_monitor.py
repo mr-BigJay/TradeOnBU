@@ -551,8 +551,15 @@ async def _attempt_ready_paper_order(
                 session, setup_id=setup.setup_id, event_type="order_created", payload=auto
             )
     except Exception:
+        logger.exception("Paper order creation failed for setup %s", setup.setup_id)
         await session.refresh(setup)
         setup.lifecycle_state = ready_state_for_direction(direction)
+        setup.last_rejection_reason = "paper_order_creation_failed"
+        setup.last_validation_result = {
+            "ok": False,
+            "reason": "paper_order_creation_failed",
+            "ready_for_paper": True,
+        }
         return False
 
     summary["orders"] += 1
