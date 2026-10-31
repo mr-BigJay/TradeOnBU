@@ -204,7 +204,10 @@ def test_scheduled_failure_one_retry_then_regular_interval():
     assert retry_at <= datetime.now(timezone.utc) + timedelta(minutes=FAILURE_BACKOFF_MINUTES + 1)
     record_run_outcome(cfg, "failed", "err", trigger="scheduled")
     assert cfg.auto_retry_pending is False
-    assert cfg.next_run_at > retry_at + timedelta(minutes=30)
+    # Exhausting the retry returns to a fixed UTC 120-minute slot (+60s),
+    # not a floating interval after the failed retry.
+    assert cfg.next_run_at > datetime.now(timezone.utc)
+    assert (int(cfg.next_run_at.timestamp()) - 60) % (120 * 60) == 0
 
 
 def test_manual_failure_does_not_alter_schedule():
