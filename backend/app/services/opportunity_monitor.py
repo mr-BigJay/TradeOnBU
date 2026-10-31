@@ -320,7 +320,7 @@ async def _monitor_pending_structural_invalidation(
             five_m_data_verified=True,
             one_m_data_complete=bundle_1m.data_complete,
             gaps_remaining=list(bundle_1m.gaps_remaining or []),
-            target_price=setup.take_profit if fresh_plan(setup) else None,
+            target_price=pos.take_profit if fresh_plan(setup) else None,
             entry_zone=_zone_bounds(setup) if fresh_plan(setup) else None,
         )
         if outcome.action == "suspend":
