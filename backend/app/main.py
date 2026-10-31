@@ -167,10 +167,14 @@ async def lifespan(app: FastAPI):
             except Exception:
                 logger.exception("Independent paper position monitor tick failed")
             finally:
-                if opportunity_acquired:
-                    await release_opportunity_monitor_lock(opportunity_owner)
-                async with SessionLocal() as lock_session:
-                    await release_worker_lock(lock_session, owner)
+                # Even if releasing the opportunity lease fails, do not strand
+                # the general worker lock for its full TTL.
+                try:
+                    if opportunity_acquired:
+                        await release_opportunity_monitor_lock(opportunity_owner)
+                finally:
+                    async with SessionLocal() as lock_session:
+                        await release_worker_lock(lock_session, owner)
 
         scheduler.add_job(
             _paper_position_monitor_tick,
