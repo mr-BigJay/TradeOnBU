@@ -53,7 +53,11 @@ def auto_paper_rr_from_settings(
         entry_fee_rate=float(sim.maker_fee_rate),
         tp_fee_rate=tp_rate,
         sl_fee_rate=float(sim.taker_fee_rate),
-        entry_fill_override=entry_fill_price,
+        # Never assume the maker LIMIT improves the requested entry or that
+        # a TP LIMIT fills above/below its specified price. Execution may do
+        # better, but the 2R acceptance gate must remain conservative.
+        entry_fill_override=ref_entry,
+        tp_exit_fill_override=capped.execution_take_profit,
     )
 
 
