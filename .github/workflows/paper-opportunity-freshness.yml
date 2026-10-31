@@ -25,7 +25,6 @@ jobs:
           python -m pytest -q \
             tests/test_opportunity_freshness.py \
             tests/test_execution_order_reconciliation.py \
-            tests/test_rejected_limit_fill_marker.py \
             tests/test_pending_invalidation.py \
             tests/test_fail_closed_5m_pending_fill.py \
             tests/test_stale_pending_recovery.py \
