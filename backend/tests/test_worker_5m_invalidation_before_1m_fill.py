@@ -97,12 +97,23 @@ async def test_worker_invalidates_pending_on_5m_before_1m_limit_fill():
         data_complete=True,
         interval="5m",
     )
+    # This case must have NO limit fill before the 5m close at 14:05.
+    # For a LONG buy LIMIT=100, any 1m low <=100 would fill BEFORE
+    # that invalidation and make the claimed event order false.
     pre_inv_1m = [
-        _1m(order_ms + i * INTERVAL_1M, o=98.0, h=99.0, l=97.5, c=98.5)
+        _1m(order_ms + i * INTERVAL_1M, o=101.5, h=102.0, l=100.5, c=101.5)
         for i in range(0, 6)
     ]
+    assert all(bar.low > 100.0 for bar in pre_inv_1m)
+    # Include the intermediate slots so the supplied 1m history is
+    # continuous; omitted minutes must not be treated as verified candles.
+    after_inv_before_fill = [
+        _1m(five_m_open + INTERVAL_5M + i * INTERVAL_1M,
+            o=101.5, h=102.0, l=100.5, c=101.5)
+        for i in (0, 1)
+    ]
     bundle_1m = KlineBundle(
-        closed=[*pre_inv_1m, fill_1m],
+        closed=[*pre_inv_1m, *after_inv_before_fill, fill_1m],
         forming=None,
         gaps_detected=[],
         gaps_remaining=[],
