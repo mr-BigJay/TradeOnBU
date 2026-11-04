@@ -1,0 +1,31 @@
+name: Plan entry execution regression
+on:
+  pull_request:
+    paths:
+      - 'backend/app/services/ict_execution_plan.py'
+      - 'backend/app/services/ict_confirmation_engine.py'
+      - 'backend/app/services/balanced_confirmation_engine.py'
+      - 'backend/tests/test_timely_entry_confirmations.py'
+      - 'backend/tests/test_strict_a_execution_plan.py'
+      - '.github/workflows/plan-entry-execution.yml'
+permissions:
+  contents: read
+jobs:
+  backend:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      SKIP_CONFIG_GUARD: "1"
+      DISABLE_APP_BACKGROUND: "1"
+      DATABASE_URL: sqlite+aiosqlite:///./data/test_tradeonbu.db
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - run: mkdir -p data
+      - run: python -m pytest -q
