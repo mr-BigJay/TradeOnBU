@@ -661,3 +661,13 @@ class DailyOutlookRun(Base):
     report: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     usage: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+
+
+class StructureObservation(Base):
+    __tablename__ = "ict_structure_observations"
+
+    key: Mapped[str] = mapped_column(String(100), primary_key=True)
+    observed_ms: Mapped[int] = mapped_column(Integer, index=True)
+    state: Mapped[str] = mapped_column(String(32), index=True)
+    evidence: Mapped[dict] = mapped_column(JSON)
+    tracking: Mapped[dict] = mapped_column(JSON, default=dict)

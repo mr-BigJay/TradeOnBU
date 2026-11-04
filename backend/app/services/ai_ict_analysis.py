@@ -414,11 +414,17 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
 
         from app.services.strategy_features import strategy_features
 
+        from app.services import structure_shadow
+        shadow_candidates = []
+        if structure_shadow.enabled() and enabled_strategies.get("ict_reversal") and symbol == "BTCUSDT":
+            async with SessionLocal() as shadow_session:
+                shadow_candidates = await structure_shadow.reviewable(shadow_session)
         features = strategy_features(candles_by_interval)
         user_payload = json.dumps(
             {
                 "market": market_payload,
                 "strategy_features": features,
+                **({"shadow_candidates": shadow_candidates} if shadow_candidates else {}),
                 "memory": memory,
                 "market_intelligence": market_intelligence,
                 "requested_inference": {
@@ -432,12 +438,13 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
         analysis: AnalysisResponse = await stream_analysis_response(
             token,
             model=model,
-            instructions=shared_strategy_instructions(INSTRUCTIONS, enabled_strategies),
+            instructions=shared_strategy_instructions(INSTRUCTIONS, enabled_strategies) + (structure_shadow.REVIEW if shadow_candidates else ""),
             user_input=user_payload,
             reasoning_effort=reasoning_effort,
             timeout=settings.ai_response_timeout_seconds,
         )
         structured = _extract_json(analysis.text)
+        review = structure_shadow.validate_review(shadow_candidates, structured.pop("shadow_review", None))
         structured = prepare_structured_for_user_report(structured)
         structured["report_fa"] = finalize_user_report(structured, symbol=symbol, live=live)
         safety = _paper_safety_notes(structured, live)
@@ -472,6 +479,7 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
                 "market_intelligence_context": market_intelligence,
                 "strategy_features": features,
                 "strategy_timing_review": timing_review,
+                **({"structure_shadow": review} if shadow_candidates else {}),
             },
         )
 
