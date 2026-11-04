@@ -70,9 +70,16 @@ def _strict_evidence(setup):
     step = 300_000
     now = int(datetime.now(timezone.utc).timestamp()*1000)
     sweep = (now // step - 3) * step
-    setup.confirmation_state = {"confirmation_timestamps": {
-        "liquidity_sweep": sweep, "mss": sweep + step, "entry_zone_touch": sweep + 2*step}}
-    return {"verified_5m": _sweep_mss_poi_long_bars(sweep), "as_of_ms": now}
+    bars = _sweep_mss_poi_long_bars(sweep)
+    touch = next(b for b in bars if b.time_ms == sweep + 2*step)
+    setup.confirmation_state = {
+        "sequence": ["liquidity_sweep", "mss", "entry_zone_touch"],
+        "confirmation_evidence": {"entry_zone_touch": {
+            "bar_low": touch.low, "bar_high": touch.high,
+            "zone_lo": setup.entry_zone_low, "zone_hi": setup.entry_zone_high}},
+        "confirmation_timestamps": {
+            "liquidity_sweep": sweep, "mss": sweep + step, "entry_zone_touch": sweep + 2*step}}
+    return {"verified_5m": bars, "as_of_ms": now}
 
 
 @pytest.mark.asyncio
@@ -298,3 +305,4 @@ async def test_monitor_cancels_expired_auto_pending_before_fill():
                 await mon.monitor_session(session)
         pos = (await session.execute(select(SimPosition))).scalar_one()
         assert pos.status == "cancelled"
+
