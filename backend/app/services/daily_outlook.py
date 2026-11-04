@@ -17,6 +17,7 @@ from app.models import DailyOutlookSettings, DailyOutlookRun
 from app.services.ai_analysis_scheduler import acquire_analysis_lock, release_analysis_lock
 from app.services.ai_api_reasoning import effective_luna_api_effort
 from app.services.ai_market_intelligence import load_ai_market_intelligence
+from app.services.daily_execution_plan import snapshot_plan
 from app.services.daily_outlook_data import build_daily_context
 from app.services.daily_outlook_schema import INSTRUCTIONS, parse_outlook
 from app.services.settings_store import get_plain, get_secret
@@ -152,6 +153,7 @@ async def _work(run_id: int) -> None:
     # Data acquisition/validation precedes the only paid inference call.
     context = await build_daily_context(symbol)
     async with SessionLocal() as session:
+        execution_plan = await snapshot_plan(session, symbol, context)
         context["market_intelligence"] = await load_ai_market_intelligence(session, symbol=symbol)
         previous = (await session.execute(select(DailyOutlookRun).where(
             DailyOutlookRun.symbol == symbol, DailyOutlookRun.status == "completed",
@@ -176,7 +178,7 @@ async def _work(run_id: int) -> None:
         row = await session.get(DailyOutlookRun, run_id)
         row.usage = response.response_metadata.get("usage") or {}
         await session.commit()
-    report = parse_outlook(response.text, context)
+    report = parse_outlook(response.text, context, execution_plan=execution_plan)
     async with SessionLocal() as session:
         row = await session.get(DailyOutlookRun, run_id)
         row.report = report

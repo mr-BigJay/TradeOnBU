@@ -130,7 +130,7 @@ async def test_success_and_usage_without_trade_writes(isolated,monkeypatch,actio
     data=await service.dashboard()
     assert data['latest']['status']=='completed'
     assert data['latest']['usage']['input_tokens']==123
-    assert data['latest']['report']['trade_plan']['action'] == action
+    assert data['latest']['report']['trade_plan']['action'] == 'wait'
     assert data['attempted_today'] is True
     inference.assert_awaited_once()
     service.release_analysis_lock.assert_awaited_once_with(owner)
@@ -386,3 +386,21 @@ def test_wait_plan_has_no_prices_and_new_report_requires_plan():
     del result['trade_plan']
     with pytest.raises(ValueError):
         parse_outlook(json.dumps(result), context())
+
+
+@pytest.mark.parametrize("direction,stop,far,near", [
+    ("LONG", 990, 1050, 1020), ("SHORT", 1010, 950, 980),
+])
+def test_execution_card_first_net_two_r_tick(direction, stop, far, near):
+    from app.services.daily_execution_plan import target_at_two_r
+    from app.services.execution_model_sim import auto_paper_rr_from_settings
+    sim = SimpleNamespace(default_margin_usdt=50, default_leverage=10, maker_fee_rate=.0002,
+                          taker_fee_rate=.0005, slippage_bps=1, default_tp_behavior="market")
+    tp = target_at_two_r(sim, direction, 1000, stop, far)
+    assert tp is not None
+    def qualifies(price):
+        return auto_paper_rr_from_settings(sim, direction=direction, entry=1000,
+                                           sl=stop, tp=price, min_net_rr=2).acceptable
+    assert qualifies(tp)
+    assert not qualifies(tp - (.1 if direction == "LONG" else -.1))
+    assert target_at_two_r(sim, direction, 1000, stop, near) is None

@@ -97,6 +97,12 @@ def seed_recent_structure(setup: Any, bars: list[Candle], *, data_complete: bool
             "confirmation_timestamps": timestamps, "confirmation_evidence": evidence}
     notes["historical_confirmation_seed"] = {"checked": True, "from_ms": start, "cutoff_ms": cutoff,
                                               "reason": reason, "snapshot": seed}
+    breaks = [timestamps[t] for t in ("mss", "bos") if t in timestamps]
+    if breaks and (setup.structured_snapshot or {}).get("strategy_id", "ict_reversal") == "ict_reversal":
+        for bar in history:
+            if bar.time_ms >= max(breaks) + STEP and bar.low <= setup.entry_zone_high and bar.high >= setup.entry_zone_low:
+                notes["historical_confirmation_seed"]["pullback_bar_ms"] = bar.time_ms
+                break
     setup.objective_notes = notes
     if reason:
         retire(setup, reason, cutoff)
@@ -124,6 +130,10 @@ def consume_unordered_opportunity(setup: Any, bars: list[Candle], *, interval_ms
             continue
         target = bar.high >= setup.take_profit if setup.direction == "LONG" else bar.low <= setup.take_profit
         if target:
+            progress["zone_seen_by_target_bar"] = (
+                "first_zone_touch_ms" in progress
+                or bar.low <= setup.entry_zone_high and bar.high >= setup.entry_zone_low
+            )
             reason = "target_reached_without_order"
         else:
             if bar.low <= setup.entry_zone_high and bar.high >= setup.entry_zone_low:

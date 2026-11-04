@@ -76,6 +76,12 @@ def _age_minutes(created: datetime | None) -> int | None:
 
 def _serialize_setup(row: AiProposedSetup, live_price: float | None = None) -> dict:
     conf = row.confirmation_state or {}
+    notes = row.objective_notes or {}
+    pullback = (notes.get("historical_confirmation_seed") or {}).get("pullback_bar_ms")
+    label = _REJECTION_FA.get(row.last_rejection_reason or "", row.last_rejection_reason)
+    observed = notes.get("unfilled_opportunity") or {}
+    if row.last_rejection_reason == "target_reached_without_order" and observed.get("zone_seen_by_target_bar") is False:
+        label = "هدف لمس شد؛ در کندل‌های پایش‌شده برخوردی با محدوده ورود ثبت نشد."
     return {
         "setup_id": row.setup_id,
         "strategy_id": (row.structured_snapshot or {}).get("strategy_id", "ict_reversal"),
@@ -100,9 +106,11 @@ def _serialize_setup(row: AiProposedSetup, live_price: float | None = None) -> d
         "missing_confirmations": conf.get("missing") or [],
         "last_monitor_at_tehran": format_tehran(row.last_monitor_at),
         "rejection_reason": row.last_rejection_reason,
-        "rejection_label_fa": _REJECTION_FA.get(row.last_rejection_reason or "", row.last_rejection_reason),
+        "rejection_label_fa": label,
         "display_status": (row.last_validation_result or {}).get("display_status"),
         "ict_confirmed": (row.last_validation_result or {}).get("ict_confirmed"),
+        "pullback_bar_tehran": format_tehran(datetime.fromtimestamp(pullback / 1000, timezone.utc)) if pullback else None,
+        "order_detail": (row.last_validation_result or {}).get("order_detail"),
         "order_block_reason": (row.last_validation_result or {}).get("order_skipped_reason"),
         "revision_history": (row.objective_notes or {}).get("revision_history") or [],
         "lifecycle_history": (row.objective_notes or {}).get("lifecycle_history") or [],
@@ -136,6 +144,9 @@ def _serialize_position(row: SimPosition, setup: AiProposedSetup | None, live_pr
             row.status,
         ),
     }
+    labels = {"tp_hit": "بسته با حد سود", "sl_hit": "بسته با حد ضرر", "cancelled": "سفارش لغوشده"}
+    if row.status in labels:
+        base["status_label_fa"] = labels[row.status]
     if setup:
         base["setup"] = _serialize_setup(setup, live_price)
     return base
