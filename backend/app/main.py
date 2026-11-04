@@ -109,6 +109,11 @@ async def lifespan(app: FastAPI):
             coalesce=True,
         )
 
+        from app.services import structure_shadow
+        if structure_shadow.enabled():
+            scheduler.add_job(structure_shadow.tick, "interval", seconds=60, id="ict_structure_shadow",
+                              max_instances=1, coalesce=True)
+
         from app.services.daily_outlook import daily_outlook_tick
 
         scheduler.add_job(

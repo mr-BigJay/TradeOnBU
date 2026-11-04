@@ -76,6 +76,13 @@ def strict_a_target(row, sim, bars, now_ms):
             or sign * (entry - inv) <= 0 or sign * (inv - stop) < 0
             or sign * ((candle.low if long else candle.high) - stop) <= 0):
         return None, "ict_stop_inside_structure"
+    return structural_target(sim, row.direction, entry, stop, target, closed)
+
+
+def structural_target(sim, direction, entry, stop, target, closed):
+    long = direction == "LONG"
+    sign = 1 if long else -1
+    by_time = {b.time_ms: b for b in closed}
     # Aggregate only complete exchange-aligned triples. Both lists contain closed bars.
     fifteen = []
     for bar in closed:
@@ -92,5 +99,5 @@ def strict_a_target(row, sim, bars, now_ms):
             if not any(sign * (b.close - pivot.price) > 0 for b in series[pivot.index + 1:]):
                 levels.append(pivot.price)
     obstacle = min(levels) if long else max(levels)
-    tp = target_at_two_r(sim, row.direction, entry, stop, obstacle)
+    tp = target_at_two_r(sim, direction, entry, stop, obstacle)
     return (tp, None) if tp is not None else (None, "ict_obstacle_before_two_r")

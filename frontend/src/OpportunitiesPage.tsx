@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { StructureShadow } from "./StructureShadow";
 import { apiFetch } from "./api";
 
 type OppTab = "wait" | "ready" | "blocked" | "invalidated" | "expired" | "paper" | "no_trade" | "other";
@@ -238,6 +239,8 @@ export function OpportunitiesPage() {
           </p>
         )}
       </header>
+
+      <details><summary>آزمایش موازی ساختار و شواهد کندلی</summary><StructureShadow /></details>
 
       {summary && (
         <div className="opp-summary-grid">
