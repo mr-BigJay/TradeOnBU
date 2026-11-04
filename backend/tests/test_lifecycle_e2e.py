@@ -411,7 +411,7 @@ async def test_e2e_wait_ict_confirmed_ready_pending():
         assert (await session.execute(select(func.count()).select_from(SimPosition))).scalar_one() == 0
 
         bundle2 = _strict_long_bundle(boundary)
-        bundle2.closed.append(_5m_bar(last_open + 300_000, low=99.0, high=100.5, close=100.0))
+        bundle2.closed.append(_5m_bar(last_open + 300_000, low=99.0, high=101.5, close=101.0))
         with patch.object(mon.market, "fetch_kline_bundle", AsyncMock(return_value=bundle2)):
             with patch("app.services.opportunity_monitor._utc_now") as mock_now2:
                 mock_now2.return_value = datetime.fromtimestamp(now_ms_2 / 1000, tz=timezone.utc)

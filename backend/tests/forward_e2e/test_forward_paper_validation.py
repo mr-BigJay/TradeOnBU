@@ -111,8 +111,8 @@ async def test_success_long_full_pipeline(forward_session):
         session,
         direction=setup.direction,
         entry=float(pos.fill_price or pos.entry_price),
-        sl=float(setup.stop_loss),
-        tp=float(setup.take_profit),
+        sl=float(pos.stop_loss),
+        tp=float(pos.take_profit),
     )
     finalize_success_pipeline_timeline(
         timeline,
@@ -169,8 +169,8 @@ async def test_success_short_full_pipeline(forward_session):
         session,
         direction=setup.direction,
         entry=float(pos.fill_price or pos.entry_price),
-        sl=float(setup.stop_loss),
-        tp=float(setup.take_profit),
+        sl=float(pos.stop_loss),
+        tp=float(pos.take_profit),
     )
     finalize_success_pipeline_timeline(
         timeline,
