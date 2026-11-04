@@ -506,6 +506,22 @@ class SimPositionMonitorService:
                 if pos.status == "open":
                     entry = pos.fill_price or pos.entry_price or pos.limit_entry_price or 0.0
                     if entry_filled_this_bar or pos.extra.get("entry_fill_bar_ms") == bar.time_ms:
+                        # A resting limit crossed from the entry side must fill before
+                        # a farther stop on the same path. TP must be untouched.
+                        limit = pos.limit_entry_price
+                        if limit is not None and (
+                            (pos.direction == "LONG" and bar.open >= limit > pos.stop_loss >= bar.low
+                             and bar.high < pos.take_profit)
+                            or (pos.direction == "SHORT" and bar.open <= limit < pos.stop_loss <= bar.high
+                                and bar.low > pos.take_profit)
+                        ):
+                            await self.positions._close_position(
+                                session, pos, settings, raw_exit=pos.stop_loss, reason="sl_hit",
+                                exit_adverse=True, bar_ms=bar.time_ms,
+                            )
+                            pos.last_processed_candle_ms = bar.time_ms
+                            processed += 1
+                            break
                         if same_bar_exit_ambiguous_after_entry(
                             pos.direction, bar, entry, pos.stop_loss, pos.take_profit
                         ):
