@@ -78,7 +78,7 @@ it('keeps legacy reports readable without fabricating a trade plan',async()=>{
 for (const action of ['long', 'short', 'wait'] as const) {
  it(`renders the final ${action} plan from stored validated prices`,async()=>{
   window.location.hash='#/outlook/reports/1';
-  const plan = {action, rationale_fa:'دلیل انتخاب پلن', trigger_fa:'تأیید بسته شدن و بازآزمایی',
+  const plan = {source:'ict_engine', action, rationale_fa:'دلیل انتخاب پلن', trigger_fa:'تأیید بسته شدن و بازآزمایی',
     entry_price:80000, stop_loss:action === 'long' ? 79000 : 81000,
     take_profits:action === 'long' ? [82000,83000] : [78000,77000], risk_reward:[2,3]};
   const planned={...run,report:{...run.report,trade_plan:plan}};
@@ -98,3 +98,13 @@ for (const action of ['long', 'short', 'wait'] as const) {
   expect(card.nextElementSibling).toBeNull();
  });
 }
+
+it('does not offer an archived AI-only short as an engine plan', async () => {
+ window.location.hash='#/outlook/reports/1';
+ const legacy={...run,report:{...run.report,trade_plan:{action:'short',entry_price:76270.1,risk_reward:[7.05]}}};
+ apiFetch.mockImplementation((url:string)=>Promise.resolve(url.endsWith('/runs/1')?legacy:url.endsWith('/chart-image')?{data_url:'data:image/png;base64,abc',filename:'report.png'}:empty()));
+ render(<DailyOutlookPage/>);
+ const card=await screen.findByRole('article',{name:'پلن معاملاتی'});
+ expect(card).toHaveTextContent('پلن آرشیوی');
+ expect(card).not.toHaveTextContent('76,270.1');
+});

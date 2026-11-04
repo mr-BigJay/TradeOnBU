@@ -32,6 +32,8 @@ type SetupRow = {
   lifecycle_history?: unknown[];
   revision_history?: unknown[];
   order_block_reason?: string;
+  order_detail?: string;
+  pullback_bar_tehran?: string;
   live_price?: number;
 };
 
@@ -100,7 +102,7 @@ const TABS: { id: OppTab; label: string }[] = [
 const PAPER_SEGMENTS: { id: PaperSegment; label: string }[] = [
   { id: "pending", label: "Pending" },
   { id: "open", label: "Open" },
-  { id: "closed", label: "Closed" },
+  { id: "closed", label: "بسته و لغوشده" },
 ];
 
 function pageKey(tab: OppTab, paper: PaperSegment) {
@@ -198,11 +200,10 @@ export function OpportunitiesPage() {
 
   useEffect(() => {
     const t = setInterval(() => {
-      loadSummary().catch(() => {});
-      loadList().catch(() => {});
+      void refresh();
     }, 60_000);
     return () => clearInterval(t);
-  }, [loadSummary, loadList]);
+  }, [refresh]);
 
   function selectTab(next: OppTab) {
     listRequestRef.current += 1;
@@ -400,6 +401,8 @@ function OppTableRow({ row, onOpen }: { row: OppItem; onOpen: () => void }) {
       </td>
       <td>
         <span className={`opp-state-pill ${lifecycleTone(row.lifecycle_state)}`}>{row.lifecycle_state}</span>
+        {row.pullback_bar_tehran && <small>پولبک پیش از ثبت پلن · {row.pullback_bar_tehran}</small>}
+        {row.order_block_reason && <small>سفارش ثبت نشد · {row.order_block_reason}</small>}
       </td>
       <td className="num-ltr">
         {row.entry_price != null
@@ -452,6 +455,8 @@ function OppCard({ row, onOpen }: { row: OppItem; onOpen: () => void }) {
       <div className="opp-card-top">
         <DirectionBadge direction={row.direction} />
         <span className={`opp-state-pill ${lifecycleTone(row.lifecycle_state)}`}>{row.lifecycle_state}</span>
+        {row.pullback_bar_tehran && <small>پولبک پیش از ثبت پلن · {row.pullback_bar_tehran}</small>}
+        {row.order_block_reason && <small>سفارش ثبت نشد · {row.order_block_reason}</small>}
       </div>
       <p className="opp-card-title">{row.symbol} · {strategyLabel(row.strategy_id)}</p>
       <p className="hint">{row.status_label_fa}</p>
@@ -519,11 +524,13 @@ function DetailSheet({ item, onClose }: { item: OppItem; onClose: () => void }) 
                 <p className="hint">تکمیل: {(setup.completed_confirmations || []).join(", ") || "—"}</p>
                 <p className="hint">باقی‌مانده: {(setup.missing_confirmations || []).join(", ") || "—"}</p>
               </section>
+              {setup.order_block_reason && <p className="toast">سفارش ثبت نشد · {setup.order_block_reason} {setup.order_detail}</p>}
+              {setup.pullback_bar_tehran && <p>پولبک پیش از ثبت پلن · کندل ۵ دقیقه‌ای {setup.pullback_bar_tehran}</p>}
               {(setup.rejection_label_fa || setup.rejection_reason) && (
                 <section>
                   <h3 className="section-title">علت رد / توقف</h3>
                   <p className="toast">{setup.rejection_label_fa || setup.rejection_reason}</p>
-                  {setup.order_block_reason && <p className="hint">{setup.order_block_reason}</p>}
+
                 </section>
               )}
               <section>

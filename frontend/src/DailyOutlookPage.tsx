@@ -11,6 +11,7 @@ type Scenario = {
   path_fa: string[]; path_level_ids?: string[];
 };
 type TradePlan = {
+  source?: string; setup_id?: string;
   action: "long" | "short" | "wait"; rationale_fa: string; trigger_fa: string;
   entry_price?: number; stop_loss?: number; take_profits?: number[]; risk_reward?: number[];
 };
@@ -60,7 +61,7 @@ function ScenarioCard({ scenario: s, levels, primary }: { scenario: Scenario; le
 function TradePlanCard({ plan, date }: { plan?: TradePlan; date: string }) {
   return <article className="card outlook-bottom-summary" aria-label="پلن معاملاتی">
     <h3>پلن معاملاتی</h3>
-    {!plan ? <p>این گزارش قدیمی پلن معاملاتی ساختاریافته ندارد؛ پلن در گزارش‌های جدید نمایش داده می‌شود.</p> : <>
+    {plan && plan.source !== "ict_engine" ? <p>پلن آرشیوی این گزارش توسط موتور ورود A تأیید نشده است. برای بررسی وضعیت فعلی، تب فرصت‌ها را ببینید.</p> : !plan ? <p>این گزارش قدیمی پلن معاملاتی ساختاریافته ندارد؛ پلن در گزارش‌های جدید نمایش داده می‌شود.</p> : <>
       <p><strong>{plan.action === "long" ? "لانگ مشروط" : plan.action === "short" ? "شورت مشروط" : "انتظار؛ فعلاً بدون معامله"}</strong> — {plan.rationale_fa}</p>
       <p><strong>{plan.action === "wait" ? "شرط بررسی مجدد:" : "شرط ورود:"}</strong> {plan.trigger_fa}</p>
       {plan.action !== "wait" && <div className="outlook-level-chips">
@@ -69,7 +70,7 @@ function TradePlanCard({ plan, date }: { plan?: TradePlan; date: string }) {
         {plan.take_profits?.map((target, i) => <span key={i}>حد سود <bdi>TP{i + 1}: {price(target)}</bdi> · سود به زیان <bdi>1:{plan.risk_reward?.[i]?.toFixed(2) ?? "—"}</bdi></span>)}
       </div>}
     </>}
-    <p className="hint">مبنای پلن: داده‌های {date}؛ تحقق شرط ورود با قیمت زنده بررسی نشده است. نسبت‌ها پیش از کارمزد و لغزش قیمت‌اند؛ این بخش سفارش ایجاد نمی‌کند.</p>
+    <p className="hint">تصویر زمان گزارش {date} · هدف بر مبنای ریسک خالص و هزینه‌های مدل اجرای Paper است. وضعیت فعلی در تب فرصت‌ها نمایش داده می‌شود.</p>
   </article>;
 }
 

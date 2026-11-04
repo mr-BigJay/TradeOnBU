@@ -59,11 +59,17 @@ class Outlook(StrictModel):
         return self
 
 
-def parse_outlook(text: str, context: dict) -> dict:
+def parse_outlook(text: str, context: dict, *, execution_plan: dict | None = None) -> dict:
     raw = text.strip()
     if raw.startswith("```json") and raw.endswith("```"):
         raw = raw[7:-3].strip()
-    result = Outlook.model_validate(json.loads(raw))
+    data = json.loads(raw)
+    if execution_plan is not None and isinstance(data, dict):
+        # Execution prices come exclusively from the frozen engine snapshot.
+        data["trade_plan"] = dict(action="wait", rationale_fa="تأیید ستاپ در موتور ورود بررسی می‌شود.",
+                                  trigger_fa="منتظر تأیید ساختار قیمت بمانید.",
+                                  entry_level_id=None, stop_level_id=None, target_level_ids=[])
+    result = Outlook.model_validate(data)
     allowed = {level["id"] for level in context["levels"]}
     for scenario in (result.dominant, result.alternative):
         ids = scenario.activation_level_ids + scenario.invalidation_level_ids + scenario.target_level_ids + scenario.path_level_ids
@@ -74,6 +80,9 @@ def parse_outlook(text: str, context: dict) -> dict:
         if any(not stage.strip() or len(stage) > 180 for stage in scenario.path_fa):
             raise ValueError("invalid_scenario_stage")
     output = result.model_dump()
+    if execution_plan is not None:
+        output["trade_plan"] = execution_plan
+        return output
     plan = result.trade_plan
     if plan.action != "wait":
         prices = {level["id"]: float(level["price"]) for level in context["levels"]}
@@ -143,14 +152,9 @@ one sentence of thesis, one activation and one invalidation condition, two short
 stages (at most 180 characters each). Watch list: at most two short items. Changes and
 uncertainty: one sentence each; preserve material data-quality warnings. Do not repeat
 the same explanation across fields or add educational introductions.
-Finish with trade_plan: one conditional long/short idea with a precise confirmation
-(timeframe, close/retest) and an entry, stop and one or two ordered targets using ONLY
-supplied level IDs. Explain why these levels fit the structure; never move a stop or
-choose an arbitrary distant target just to achieve a ratio. Every target must offer
-reward/risk >= 2 from the stated entry; long requires stop < entry < targets, short
-requires targets < entry < stop. This is price-only R:R before fees/slippage. Do not
-claim the trigger is currently met. If no defensible plan exists, use action=wait,
-null entry/stop and empty targets, explain why and what confirmation to wait for.
+Describe support reactions and distinguish a confirmed break from a possible bounce.
+Keep multi-day scenarios separate from execution. Use action=wait with null entry/stop
+and empty targets in trade_plan. The server supplies the intraday execution card.
 All narrative strings must be Persian. Return ONLY one JSON object matching this
 schema (no extra fields):
 """ + json.dumps(Outlook.model_json_schema(), ensure_ascii=False)

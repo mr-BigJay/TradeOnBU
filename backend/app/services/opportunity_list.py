@@ -131,7 +131,7 @@ def _paper_db_statuses(paper_status: str) -> tuple[str, ...]:
         return ("pending_entry",)
     if paper_status == PAPER_OPEN:
         return ("open",)
-    return ("closed", "cancelled")
+    return ("closed", "tp_hit", "sl_hit", "cancelled")
 
 
 def _no_trade_clause():

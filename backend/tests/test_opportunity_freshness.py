@@ -286,3 +286,11 @@ def test_pending_limit_can_fill_after_earlier_zone_reaction(direction):
         entry_zone=(99.5, 100.5))
     assert result.action == "fill"
     assert result.fill_bar_1m.time_ms == later.time_ms
+
+
+def test_pre_registration_pullback_is_observation_only():
+    row, bars = setup(), history()
+    bars[-1] = bar(END-STEP, o=103, h=104, l=100, c=103)
+    seed_recent_structure(row, bars, data_complete=True)
+    assert row.objective_notes["historical_confirmation_seed"]["pullback_bar_ms"] == END-STEP
+    assert "entry_zone_touch" in row.confirmation_state["missing"]

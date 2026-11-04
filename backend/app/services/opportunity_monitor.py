@@ -435,6 +435,10 @@ async def _attempt_ready_paper_order(
         dry_run=bool(getattr(runtime, "paper_entry_dry_run", False)),
         paper_trading_paused=runtime.paper_trading_paused,
     ):
+        setup.last_validation_result = {
+            "ok": False, "ready_for_paper": True,
+            "order_skipped_reason": "paper_trading_paused" if runtime.paper_trading_paused else "paper_entry_dry_run",
+        }
         append_timeline_event(
             setup,
             "paper_order_skipped_dry_run_or_pause",
@@ -534,9 +538,10 @@ async def _attempt_ready_paper_order(
                 if reason in ("auto_open_disabled", "auto_paper_disabled"):
                     setup.last_rejection_reason = REASON_AUTO_PAPER_DISABLED
                 setup.last_validation_result = {
-                    "ok": True,
+                    "ok": False,
                     "ready_for_paper": True,
                     "order_skipped_reason": reason,
+                    "order_detail": auto.get("detail"),
                     "net_rr": net_rr,
                 }
                 return False
