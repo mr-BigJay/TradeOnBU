@@ -27,6 +27,7 @@ from app.models import AiAnalysisRun, AiProposedSetup, SimPosition
 from app.routes.auth import require_dashboard_access
 from app.services.opportunity_audit import aggregate_opportunity_stats
 from app.services import opportunity_list as opp_list
+from app.services.ict_execution_plan import REASONS as ICT_PLAN_REASONS
 from app.domain.tehran_time import format_tehran
 
 router = APIRouter(prefix="/api/gui/opportunities", tags=["opportunities"])
@@ -110,7 +111,7 @@ def _serialize_setup(row: AiProposedSetup, live_price: float | None = None) -> d
         "display_status": (row.last_validation_result or {}).get("display_status"),
         "ict_confirmed": (row.last_validation_result or {}).get("ict_confirmed"),
         "pullback_bar_tehran": format_tehran(datetime.fromtimestamp(pullback / 1000, timezone.utc)) if pullback else None,
-        "order_detail": (row.last_validation_result or {}).get("order_detail"),
+        "order_detail": (row.last_validation_result or {}).get("order_detail") or ICT_PLAN_REASONS.get((row.last_validation_result or {}).get("order_skipped_reason")),
         "order_block_reason": (row.last_validation_result or {}).get("order_skipped_reason"),
         "revision_history": (row.objective_notes or {}).get("revision_history") or [],
         "lifecycle_history": (row.objective_notes or {}).get("lifecycle_history") or [],

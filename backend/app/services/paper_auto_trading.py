@@ -145,6 +145,8 @@ async def maybe_auto_open_paper_position(
     require_ai_flags: bool = True,
     allow_pre_entry_without_touch: bool = False,
     entry_mode: str | None = None,
+    verified_5m: list[Candle] | None = None,
+    as_of_ms: int | None = None,
 ) -> dict[str, Any]:
     """
     Create a pending limit paper order from a validated AI setup when auto mode is enabled.
@@ -257,6 +259,16 @@ async def maybe_auto_open_paper_position(
 
     tp2 = ai_take_profit_2_from_payload(structured, setup.structured_snapshot or {})
 
+    strict_a = mode == "STRICT" and (setup.structured_snapshot or {}).get("strategy_id", "ict_reversal") == "ict_reversal"
+    if strict_a:
+        from app.services.ict_execution_plan import strict_a_target, REASONS
+        if not verified_5m or as_of_ms is None:
+            reason = "ict_structure_data_gap"
+            return {**meta, "skipped": True, "reason": reason, "detail": REASONS[reason]}
+        tp, reason = strict_a_target(setup, settings, verified_5m, as_of_ms)
+        if reason:
+            return {**meta, "skipped": True, "reason": reason, "detail": REASONS[reason]}
+
     svc = SimPositionService()
     req = OrderRequest(
         symbol=symbol,
@@ -291,6 +303,7 @@ async def maybe_auto_open_paper_position(
         pos.extra = {
             **(pos.extra or {}),
             "auto_paper": True,
+            "strict_a_plan": strict_a,
             "ai_run_id": run_id,
             "source": "gpt_auto_paper",
             "ict_entry_snapshot": ict_snapshot,
