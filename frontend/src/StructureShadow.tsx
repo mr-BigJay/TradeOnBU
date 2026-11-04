@@ -7,8 +7,8 @@ type Evidence = {key:string;variant:string;direction:string;reference:number;ref
 type Item = {evidence:Evidence;state:string;observed_ms:number;
   tracking:{entry:number;stop:number;tp?:number;net_usdt?:number;fill_ms?:number;touch_ms?:number;ready_ms?:number};
   review?:{verdict:string;reason:string;at_ms:number}};
-type Data = {enabled:boolean;items:Item[];counts:{variant:string;state:string;count:number;net_usdt:number|null}[]};
-const labels:Record<string,string> = {await_touch:"منتظر بازگشت",limit:"سفارش فرضی در انتظار",filled:"ورود فرضی",
+type Data = {enabled:boolean;collector_status?:string;checked_ms?:string;items:Item[];counts:{variant:string;state:string;count:number;net_usdt:number|null}[]};
+const labels:Record<string,string> = {ok:"داده آماده",not_run:"هنوز اجرا نشده",inactive_settings:"نیاز به تنظیمات Paper، استراتژی A و STRICT",invalid_or_incomplete_candles:"کندل نامعتبر یا تاریخچه ناقص",stale_candles:"کندل تازه دریافت نشده",collection_failed:"خطای جمع‌آوری داده",await_touch:"منتظر بازگشت",limit:"سفارش فرضی در انتظار",filled:"ورود فرضی",
   registration_ambiguous:"برخورد در دقیقهٔ ثبت؛ ترتیب نامشخص",late_touch:"برخورد پیش از شناسایی",invalidated:"ابطال ساختار",expired:"انقضا",cost_cap:"هزینه‌ها و سقف خام",
   obstacle:"مانع پیش از ۲R",data_gap:"شکاف یا کندل نامعتبر",target_before_fill:"هدف پیش از ورود",
   tp:"حد سود",sl:"حد ضرر",ambiguous:"ترتیب مبهم؛ خارج از سود قطعی"};
@@ -48,7 +48,7 @@ export function StructureShadow(){
   <p>دفتر مشاهدهٔ موازی · ساعت تهران · فرضیهٔ مستقل برای هر ستاپ؛ سود تجمیعی معادل بازده حساب نیست.</p>
   {error&&<p role="alert">{error}</p>}
   {data&&!data.enabled&&<p>ثبت آزمایشی غیرفعال است. برای فعال‌سازی ICT_STRUCTURE_SHADOW=1 تنظیم شود.</p>}
-  {data&&<><p>شواهد با کندل‌های بسته ثبت می‌شوند. «برخورد پیش از شناسایی» ورود محسوب نمی‌شود. ابهام و شکاف داده سود قطعی ندارند.</p>
+  {data&&<><p>وضعیت داده · {labels[data.collector_status||"not_run"]||data.collector_status} {data.checked_ms?time(Number(data.checked_ms)):""}</p><p>شواهد با کندل‌های بسته ثبت می‌شوند. «برخورد پیش از شناسایی» ورود محسوب نمی‌شود. ابهام و شکاف داده سود قطعی ندارند.</p>
    <table><thead><tr><th>تعریف</th><th>نتیجه</th><th>تعداد</th><th>خالص USDT</th></tr></thead>
     <tbody>{data.counts?.map(c=><tr key={c.variant+c.state}><td>{variant(c.variant)}</td><td>{labels[c.state]||c.state}</td>
      <td>{c.count}</td><td>{c.net_usdt?.toFixed(3)??"—"}</td></tr>)}</tbody></table>

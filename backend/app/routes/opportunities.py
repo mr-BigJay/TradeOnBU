@@ -356,6 +356,7 @@ async def structure_shadow_report(session: AsyncSession = Depends(get_db), _=Dep
     from sqlalchemy import func
     from app.models import StructureObservation as Observation
     from app.services.structure_shadow import enabled
+    from app.services.settings_store import get_plain
 
     rows = (await session.scalars(select(Observation).order_by(
         Observation.observed_ms.desc(), Observation.key).limit(60))).all()
@@ -374,6 +375,9 @@ async def structure_shadow_report(session: AsyncSession = Depends(get_db), _=Dep
         Observation.evidence["variant"].as_string(),Observation.state,func.count(),
         func.sum(Observation.tracking["net_usdt"].as_float())
     ).group_by(Observation.evidence["variant"].as_string(),Observation.state))).all()
-    return {"enabled":enabled(),"counts":[dict(variant=v,state=s,count=n,net_usdt=p) for v,s,n,p in summary],
+    return {"enabled":enabled(),
+            "collector_status":await get_plain(session,"structure_shadow","status","not_run"),
+            "checked_ms":await get_plain(session,"structure_shadow","checked_ms",""),
+            "counts":[dict(variant=v,state=s,count=n,net_usdt=p) for v,s,n,p in summary],
             "items":[dict(evidence=row.evidence,state=row.state,observed_ms=row.observed_ms,
                           tracking=row.tracking,review=reviews.get(row.key)) for row in rows]}

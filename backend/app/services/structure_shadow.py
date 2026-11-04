@@ -210,7 +210,7 @@ def advance(row, five, minutes, now):
     row.state,row.tracking=state,t
 
 
-async def tick():
+async def _tick():
     from app.db import SessionLocal
     from app.services.market_data import MarketDataService
     from app.services.entry_strategies import A, strategy_settings
@@ -218,7 +218,7 @@ async def tick():
     async with SessionLocal() as s:
         sim=await s.get(SimPositionSettings,1)
         if not sim or not (await strategy_settings(s))[A] or (await get_paper_entry_execution_config(s))[0]!="STRICT":
-            return
+            return "inactive_settings"
         market=MarketDataService()
         five=(await market.fetch_kline_bundle("BTCUSDT","5m",160)).closed
         minutes=(await market.fetch_kline_bundle("BTCUSDT","1m",200)).closed
@@ -235,6 +235,26 @@ async def tick():
                         await s.execute(insert(StructureObservation).values(key=e["key"],observed_ms=now,
                             state=state,evidence=e,tracking=tracking).on_conflict_do_nothing(index_elements=["key"]))
         await s.commit()
+        if not five or not minutes or not valid_series(five,STEP) or not valid_series(minutes,MIN):
+            return "invalid_or_incomplete_candles"
+        if five[-1].time_ms != now//STEP*STEP-STEP or minutes[-1].time_ms != now//MIN*MIN-MIN:
+            return "stale_candles"
+        return "ok"
+
+
+async def tick():
+    from app.db import SessionLocal
+    from app.services.settings_store import set_plain
+    import logging
+    try:
+        status = await _tick()
+    except Exception:
+        logging.getLogger(__name__).exception("Structural shadow observation failed")
+        status = "collection_failed"
+    async with SessionLocal() as session:
+        await set_plain(session, "structure_shadow", "status", status)
+        await set_plain(session, "structure_shadow", "checked_ms", str(int(time.time()*1000)))
+        await session.commit()
 
 
 REVIEW = """
