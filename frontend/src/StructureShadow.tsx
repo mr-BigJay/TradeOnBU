@@ -39,6 +39,7 @@ export function StructureShadow(){
  useEffect(()=>{
   let alive=true;
   async function refresh(){try{const d=await apiFetch("/api/gui/opportunities/structure-shadow") as Data;
+    if (!Array.isArray(d.items) || !Array.isArray(d.counts)) throw new Error("پاسخ آزمایش ساختار معتبر نیست");
     if(alive){setData(d);setError("");}}catch(e){if(alive)setError(String(e));}}
   void refresh();const id=setInterval(()=>void refresh(),60000);
   return ()=>{alive=false;clearInterval(id);};

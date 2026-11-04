@@ -135,6 +135,7 @@ function isPaper(row: OppItem): row is PaperRow {
 }
 
 export function OpportunitiesPage() {
+  const [showShadow, setShowShadow] = useState(false);
   const [tab, setTab] = useState<OppTab>("wait");
   const [paperSegment, setPaperSegment] = useState<PaperSegment>("pending");
   const pageByKey = useRef<Record<string, number>>({});
@@ -240,7 +241,7 @@ export function OpportunitiesPage() {
         )}
       </header>
 
-      <details><summary>آزمایش موازی ساختار و شواهد کندلی</summary><StructureShadow /></details>
+      <details onToggle={event => setShowShadow(event.currentTarget.open)}><summary>آزمایش موازی ساختار و شواهد کندلی</summary>{showShadow && <StructureShadow />}</details>
 
       {summary && (
         <div className="opp-summary-grid">
