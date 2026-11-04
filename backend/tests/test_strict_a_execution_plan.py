@@ -74,7 +74,7 @@ def test_recorded_sweep_survives_rolling_history():
     row.confirmation_state['confirmation_evidence']['liquidity_sweep'] = {
         'bar_low':995, 'bar_high':1000}
     # Complete current data, but the original sweep is no longer in this window.
-    recent = [Candle(1002, 1005, 999, 1003, i*STEP) for i in range(24, 48)]
+    recent = [Candle(1002, 1005+i, 999, 1003, i*STEP) for i in range(24, 48)]
     assert strict_a_target(row, sim, recent, 48*STEP)[1] is None
     row.stop_loss = 996
     assert strict_a_target(row, sim, recent, 48*STEP)[1] == 'ict_stop_inside_structure'

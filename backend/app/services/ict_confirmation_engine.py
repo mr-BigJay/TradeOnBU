@@ -272,7 +272,7 @@ def process_bar_sequential(
         if touch_with_retest:
             timestamps["entry_zone_touch"] = bar.time_ms
         if nxt == "entry_zone_touch" or touch_with_retest:
-            evidence[nxt] = {
+            evidence["entry_zone_touch"] = {
                 "bar_low": float(bar.low),
                 "bar_high": float(bar.high),
                 "zone_lo": float(zone_lo),
