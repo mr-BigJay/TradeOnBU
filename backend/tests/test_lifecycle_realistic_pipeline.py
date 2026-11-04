@@ -33,9 +33,9 @@ def _1m(open_ms: int, *, o: float, h: float, l: float, c: float) -> Candle:
 
 def _sweep_mss_poi_long_bars(boundary_ms: int) -> list[Candle]:
     bars: list[Candle] = []
-    for i in range(14, 0, -1):
+    for i in range(18, 0, -1):
         open_ms = boundary_ms - i * INTERVAL_5M
-        bars.append(_5m(open_ms, o=100.0, h=100.3, l=99.0, c=100.1))
+        bars.append(_5m(open_ms, o=100.0, h=100.0, l=99.0, c=100.0))
     bars.append(_5m(boundary_ms, o=100.0, h=100.2, l=98.6, c=99.4))
     bars.append(_5m(boundary_ms + INTERVAL_5M, o=99.4, h=100.8, l=99.2, c=100.7))
     bars.append(_5m(boundary_ms + 2 * INTERVAL_5M, o=100.5, h=100.6, l=99.8, c=100.2))
@@ -66,7 +66,7 @@ async def test_realistic_conditional_pipeline_monitor_and_sim_fill():
 
         from app.services.ai_setup_memory import create_setup_from_structured
 
-        structured = _production_conditional_wait_long()
+        structured = {**_production_conditional_wait_long(), "structural_invalidation_level": 95.0}
         row, meta = await create_setup_from_structured(
             session, run_id=100, symbol="BTCUSDT", structured=structured
         )

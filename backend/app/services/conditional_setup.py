@@ -30,8 +30,8 @@ CONFIRMATION_PROFILES: dict[str, list[str]] = {
     **SEQUENCES,
     "sweep_mss_poi": ["liquidity_sweep", "mss", "entry_zone_touch"],
     "sweep_bos_poi": ["liquidity_sweep", "bos", "entry_zone_touch"],
-    "bos_fvg_retest": ["bos", "fvg_retest", "entry_zone_touch"],
-    "mss_fvg_retest": ["mss", "fvg_retest", "entry_zone_touch"],
+    "bos_fvg_retest": ["liquidity_sweep", "bos", "fvg_retest", "entry_zone_touch"],
+    "mss_fvg_retest": ["liquidity_sweep", "mss", "fvg_retest", "entry_zone_touch"],
 }
 
 
@@ -61,6 +61,8 @@ def _parse_float(val: Any) -> float | None:
 
 
 def _sequence_matches_known_profile(tokens: list[str]) -> tuple[list[str] | None, str | None]:
+    if tokens in (["bos", "fvg_retest", "entry_zone_touch"], ["mss", "fvg_retest", "entry_zone_touch"]):
+        tokens = ["liquidity_sweep", *tokens]
     for profile_seq in CONFIRMATION_PROFILES.values():
         if tokens == profile_seq:
             return list(profile_seq), None

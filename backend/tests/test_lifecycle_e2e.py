@@ -46,6 +46,12 @@ def _build_bundle_from_boundary(boundary_ms: int, steps: list[tuple[float, float
     )
 
 
+def _strict_long_bundle(boundary):
+    from tests.test_lifecycle_realistic_pipeline import _sweep_mss_poi_long_bars
+    return KlineBundle(closed=_sweep_mss_poi_long_bars(boundary), forming=None,
+                       gaps_detected=[], gaps_remaining=[], data_complete=True, interval="5m")
+
+
 @pytest.mark.asyncio
 async def test_full_wait_ready_pending_open_e2e():
     await init_db()
@@ -84,19 +90,19 @@ async def test_full_wait_ready_pending_open_e2e():
             invalidation_level=94.0,
             expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
             confirmation_state={
-                "sequence": ["entry_zone_touch"],
-                "required": ["entry_zone_touch"],
+                "sequence": ["liquidity_sweep", "mss", "entry_zone_touch"],
+                "required": ["liquidity_sweep", "mss", "entry_zone_touch"],
                 "completed": [],
-                "missing": ["entry_zone_touch"],
+                "missing": ["liquidity_sweep", "mss", "entry_zone_touch"],
                 "confirmation_timestamps": {},
             },
-            conditional_plan={"confirmation_sequence": ["entry_zone_touch"]},
+            conditional_plan={"confirmation_sequence": ["liquidity_sweep", "mss", "entry_zone_touch"]},
             structured_snapshot={"confirmation_type": "sweep_mss_poi"},
         )
         session.add(setup)
         await session.commit()
 
-    bundle = _build_bundle_from_boundary(boundary, [(98, 102, 100), (99.5, 100.5, 100.2)])
+    bundle = _strict_long_bundle(boundary)
     last_open = bundle.closed[-1].time_ms
     now_ms = last_open + 300_000 + 10_000
 
@@ -201,7 +207,7 @@ async def test_parallel_monitor_ticks_single_order():
 
     created = datetime.now(timezone.utc) - timedelta(minutes=30)
     boundary = first_eligible_bar_open_ms(created, "5m")
-    bundle = _build_bundle_from_boundary(boundary, [(98, 102, 100), (99.5, 100.5, 100.2)])
+    bundle = _strict_long_bundle(boundary)
     last_open = bundle.closed[-1].time_ms
     now_ms = last_open + 300_000 + 10_000
     now_dt = datetime.fromtimestamp(now_ms / 1000, tz=timezone.utc)
@@ -235,14 +241,14 @@ async def test_parallel_monitor_ticks_single_order():
             invalidation_level=94.0,
             expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
             confirmation_state={
-                "sequence": ["entry_zone_touch"],
-                "required": ["entry_zone_touch"],
+                "sequence": ["liquidity_sweep", "mss", "entry_zone_touch"],
+                "required": ["liquidity_sweep", "mss", "entry_zone_touch"],
                 "completed": [],
-                "missing": ["entry_zone_touch"],
+                "missing": ["liquidity_sweep", "mss", "entry_zone_touch"],
                 "confirmation_timestamps": {},
             },
-            conditional_plan={"confirmation_sequence": ["entry_zone_touch"], "confirmation_type": "sweep_mss_poi"},
-            structured_snapshot={"confirmation_type": "entry_zone_touch"},
+            conditional_plan={"confirmation_sequence": ["liquidity_sweep", "mss", "entry_zone_touch"], "confirmation_type": "sweep_mss_poi"},
+            structured_snapshot={"confirmation_type": "sweep_mss_poi"},
         )
         session.add(setup)
         await session.commit()
@@ -340,7 +346,7 @@ async def test_e2e_wait_ict_confirmed_ready_pending():
     await init_db()
     created = datetime.now(timezone.utc) - timedelta(minutes=30)
     boundary = first_eligible_bar_open_ms(created, "5m")
-    bundle = _build_bundle_from_boundary(boundary, [(98, 102, 100), (99.5, 100.5, 100.2), (99.2, 100.8, 100.1)])
+    bundle = _strict_long_bundle(boundary)
     last_open = bundle.closed[-1].time_ms
     now_ms_1 = last_open + 300_000 + 10_000
     now_ms_2 = last_open + 600_000 + 10_000
@@ -374,16 +380,16 @@ async def test_e2e_wait_ict_confirmed_ready_pending():
             entry_zone_high=101.0,
             stop_loss=94.0,
             take_profit=115.0,
-            invalidation_level=93.0,
+            invalidation_level=95.0,
             expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
             confirmation_state={
-                "sequence": ["entry_zone_touch"],
-                "required": ["entry_zone_touch"],
+                "sequence": ["liquidity_sweep", "mss", "entry_zone_touch"],
+                "required": ["liquidity_sweep", "mss", "entry_zone_touch"],
                 "completed": [],
-                "missing": ["entry_zone_touch"],
+                "missing": ["liquidity_sweep", "mss", "entry_zone_touch"],
                 "confirmation_timestamps": {},
             },
-            conditional_plan={"confirmation_sequence": ["entry_zone_touch"]},
+            conditional_plan={"confirmation_sequence": ["liquidity_sweep", "mss", "entry_zone_touch"]},
             structured_snapshot={"confirmation_type": "sweep_mss_poi"},
         )
         session.add(setup)
@@ -404,10 +410,8 @@ async def test_e2e_wait_ict_confirmed_ready_pending():
         assert row.lifecycle_state == ICT_CONFIRMED_LONG
         assert (await session.execute(select(func.count()).select_from(SimPosition))).scalar_one() == 0
 
-        bundle2 = _build_bundle_from_boundary(
-            boundary,
-            [(98, 102, 100), (99.5, 100.5, 100.2), (99.2, 100.8, 100.1), (99.0, 100.5, 100.0)],
-        )
+        bundle2 = _strict_long_bundle(boundary)
+        bundle2.closed.append(_5m_bar(last_open + 300_000, low=99.0, high=101.5, close=101.0))
         with patch.object(mon.market, "fetch_kline_bundle", AsyncMock(return_value=bundle2)):
             with patch("app.services.opportunity_monitor._utc_now") as mock_now2:
                 mock_now2.return_value = datetime.fromtimestamp(now_ms_2 / 1000, tz=timezone.utc)

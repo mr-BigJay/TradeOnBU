@@ -401,6 +401,7 @@ async def _attempt_ready_paper_order(
     paper_entry_mode: str | None = None,
     latest_closed_5m: Candle | None = None,
     market_data_verified: bool = False,
+    closed_5m: list[Candle] | None = None,
 ) -> bool:
     """Create paper order while READY; transition to PENDING_ENTRY only on success (atomic savepoint)."""
     from app.services.conditional_revision import objective_confirmations_satisfied_for_order
@@ -531,6 +532,8 @@ async def _attempt_ready_paper_order(
                 require_ai_flags=False,
                 allow_pre_entry_without_touch=allow_pre_entry,
                 entry_mode=order_engine,
+                verified_5m=closed_5m if market_data_verified else None,
+                as_of_ms=int(now.timestamp() * 1000),
             )
             if not auto.get("created"):
                 setup.lifecycle_state = ready_state_for_direction(direction)
@@ -545,6 +548,7 @@ async def _attempt_ready_paper_order(
                     "net_rr": net_rr,
                 }
                 return False
+            net_rr = auto.get("net_rr", net_rr)
             setup.lifecycle_state = PENDING_ENTRY
             setup.last_validation_result = {
                 "ok": True,
@@ -1222,6 +1226,7 @@ class OpportunityMonitorService:
                     paper_entry_mode=paper_entry_mode,
                     latest_closed_5m=pick_latest_closed_5m(list(bundle.closed or []), now_ms=now_ms),
                     market_data_verified=bool(bundle.data_complete and fresh),
+                    closed_5m=bundle.closed,
                 )
 
         await session.flush()

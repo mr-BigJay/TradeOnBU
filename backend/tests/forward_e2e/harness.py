@@ -58,9 +58,9 @@ def closed_only_before(now_ms: int, candles: list[Candle], interval: str) -> lis
 
 def sweep_mss_poi_long_bars(boundary_ms: int) -> list[Candle]:
     bars: list[Candle] = []
-    for i in range(14, 0, -1):
+    for i in range(18, 0, -1):
         open_ms = boundary_ms - i * INTERVAL_5M
-        bars.append(bar_5m(open_ms, o=100.0, h=100.3, l=99.0, c=100.1))
+        bars.append(bar_5m(open_ms, o=100.0, h=100.0, l=99.0, c=100.0))
     bars.append(bar_5m(boundary_ms, o=100.0, h=100.2, l=98.6, c=99.4))
     bars.append(bar_5m(boundary_ms + INTERVAL_5M, o=99.4, h=100.8, l=99.2, c=100.7))
     bars.append(bar_5m(boundary_ms + 2 * INTERVAL_5M, o=100.5, h=100.6, l=99.8, c=100.2))
@@ -69,9 +69,9 @@ def sweep_mss_poi_long_bars(boundary_ms: int) -> list[Candle]:
 
 def sweep_mss_poi_short_bars(boundary_ms: int) -> list[Candle]:
     bars: list[Candle] = []
-    for i in range(14, 0, -1):
+    for i in range(18, 0, -1):
         open_ms = boundary_ms - i * INTERVAL_5M
-        bars.append(bar_5m(open_ms, o=100.0, h=100.5, l=99.5, c=100.2))
+        bars.append(bar_5m(open_ms, o=100.0, h=100.5, l=100.0, c=100.2))
     bars.append(bar_5m(boundary_ms, o=100.0, h=101.4, l=99.8, c=100.3))
     bars.append(bar_5m(boundary_ms + INTERVAL_5M, o=100.3, h=100.4, l=98.9, c=99.1))
     bars.append(bar_5m(boundary_ms + 2 * INTERVAL_5M, o=99.5, h=100.2, l=99.4, c=100.0))
@@ -100,7 +100,7 @@ def production_conditional_wait_short() -> dict[str, Any]:
         "confirmation_required": "BSL sweep then 5m bearish MSS into POI",
         "confirmation_type": "sweep_mss_poi",
         "conditional_invalidation": "5m close above structural invalidation",
-        "structural_invalidation_level": 108.0,
+        "structural_invalidation_level": 105.0,
         "stop_loss": 106.0,
         "take_profit": 85.0,
         "risk_reward": 2.2,
@@ -384,7 +384,7 @@ def build_lagged_backfill_catalog(boundary_ms: int, *, pad_bars_before_ict: int 
     bars: list[Candle] = []
     t = catalog_start
     while t < ict_start:
-        bars.append(bar_5m(t, o=100.0, h=100.2, l=99.8, c=100.1))
+        bars.append(bar_5m(t, o=100.0, h=100.0, l=99.8, c=100.0))
         t += INTERVAL_5M
     bars.extend(ict_block)
     return bars

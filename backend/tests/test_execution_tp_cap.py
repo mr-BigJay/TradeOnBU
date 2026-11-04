@@ -164,6 +164,7 @@ async def test_auto_paper_to_sim_position_caps_34_rr_integration():
         )
         setup.structured_snapshot = {
             **_ict_clear_structured(),
+            "strategy_id": "trend_continuation",  # Non-A orders retain their execution cap.
             "take_profit_2": 120.0,
         }
         session.add(setup)

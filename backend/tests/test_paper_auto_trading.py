@@ -56,12 +56,23 @@ def _sample_setup(**kwargs) -> AiProposedSetup:
         entry_price=100.0,
         stop_loss=94.0,
         take_profit=115.0,
+        invalidation_level=95.0, entry_zone_low=99.0, entry_zone_high=101.0,
         expires_at=now + timedelta(hours=24),
         paper_fill_recorded=False,
         structured_snapshot=_ict_clear_structured(),
     )
     defaults.update(kwargs)
     return AiProposedSetup(**defaults)
+
+
+def _strict_evidence(setup):
+    from tests.test_lifecycle_realistic_pipeline import _sweep_mss_poi_long_bars
+    step = 300_000
+    now = int(datetime.now(timezone.utc).timestamp()*1000)
+    sweep = (now // step - 3) * step
+    setup.confirmation_state = {"confirmation_timestamps": {
+        "liquidity_sweep": sweep, "mss": sweep + step, "entry_zone_touch": sweep + 2*step}}
+    return {"verified_5m": _sweep_mss_poi_long_bars(sweep), "as_of_ms": now}
 
 
 @pytest.mark.asyncio
@@ -83,6 +94,7 @@ async def test_auto_open_creates_pending_limit_order():
             structured=structured,
             symbol="BTCUSDT",
             commit=True,
+            **_strict_evidence(setup),
         )
         assert meta["created"] is True
         pos = (
@@ -92,7 +104,7 @@ async def test_auto_open_creates_pending_limit_order():
         assert pos.order_type == "limit"
         assert pos.limit_entry_price == 100.0
         assert pos.stop_loss == 94.0
-        assert pos.take_profit == 115.0
+        assert 112.0 < pos.take_profit < 115.0
         assert pos.extra.get("auto_paper") is True
 
 
@@ -119,13 +131,15 @@ async def test_auto_open_stores_ict_entry_audit_snapshot():
             structured=structured,
             symbol="BTCUSDT",
             commit=True,
+            **_strict_evidence(setup),
         )
         assert meta["created"] is True
         snap = meta["ict_entry_snapshot"]
         assert snap["decision"] == "LONG"
         assert snap["entry"] == 100.0
         assert snap["stop_loss"] == 94.0
-        assert snap["take_profit"] == 115.0
+        assert snap["proposed_take_profit"] == 115.0
+        assert 112.0 < snap["take_profit"] < 115.0
         assert snap["liquidity_event_clear"] is True
         assert snap["poi_reaction_clear"] is True
         assert snap["structural_confirmation_clear"] is True

@@ -118,6 +118,10 @@ async def test_shadow_does_not_block_strict_paper_order():
         from tests.test_opportunity_monitor import _wallet_and_settings
 
         await _wallet_and_settings(session, auto=True)
+        from tests.test_lifecycle_realistic_pipeline import _sweep_mss_poi_long_bars
+        boundary = 30 * 300_000
+        closed = _sweep_mss_poi_long_bars(boundary)
+        sequence = ["liquidity_sweep", "mss", "entry_zone_touch"]
         setup = AiProposedSetup(
             setup_id="shadow-order-1",
             run_id=1,
@@ -126,21 +130,21 @@ async def test_shadow_does_not_block_strict_paper_order():
             status="open",
             lifecycle_state=READY_LONG,
             monitoring_enabled=True,
-            monitor_from_ms=0,
-            monitor_cursor_ms=300_000,
+            monitor_from_ms=boundary,
+            monitor_cursor_ms=closed[-1].time_ms,
             entry_price=100.0,
             entry_zone_low=99.0,
             entry_zone_high=101.0,
             stop_loss=90.0,
             take_profit=130.0,
-            invalidation_level=89.0,
+            invalidation_level=95.0,
             expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
             confirmation_state={
-                "sequence": ["entry_zone_touch"],
-                "required": ["entry_zone_touch"],
-                "completed": ["entry_zone_touch"],
+                "sequence": sequence,
+                "required": sequence,
+                "completed": sequence,
                 "missing": [],
-                "confirmation_timestamps": {"entry_zone_touch": 300_000},
+                "confirmation_timestamps": {key: boundary + i * 300_000 for i, key in enumerate(sequence)},
                 "confirmation_evidence": {
                     "entry_zone_touch": {
                         "bar_low": 99.5,
@@ -158,9 +162,8 @@ async def test_shadow_does_not_block_strict_paper_order():
         session.add(setup)
         await session.commit()
 
-        bar = Candle(time_ms=300_000, open=100, high=101, low=99.5, close=100.2, volume=1)
         bundle = KlineBundle(
-            closed=[bar],
+            closed=closed,
             forming=None,
             gaps_detected=[],
             gaps_remaining=[],
@@ -175,7 +178,7 @@ async def test_shadow_does_not_block_strict_paper_order():
 
         with patch.object(mon.market, "fetch_kline_bundle", AsyncMock(side_effect=_fetch)):
             with patch("app.services.opportunity_monitor._utc_now") as mock_now:
-                mock_now.return_value = datetime.fromtimestamp(600_000 / 1000, tz=timezone.utc)
+                mock_now.return_value = datetime.fromtimestamp((closed[-1].time_ms + 300_000) / 1000, tz=timezone.utc)
                 with patch("app.services.opportunity_monitor.is_market_data_fresh", return_value=(True, 30, 330)):
                     with patch(
                         "app.services.opportunity_monitor.setup_history_covers_cursor",

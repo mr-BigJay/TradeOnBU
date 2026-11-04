@@ -50,6 +50,7 @@ async def test_limit_fill_only_after_order_creation_time():
             session, run_id=1, symbol="BTCUSDT", structured=_production_conditional_wait_long()
         )
         assert meta["created"]
+        row.invalidation_level = 95.0
         row.created_at = created
         row.monitor_from_ms = boundary
         row.monitor_cursor_ms = boundary - 1
@@ -96,10 +97,8 @@ async def test_limit_fill_only_after_order_creation_time():
                 pos_dt.now = lambda tz=None: T_ORDER
                 pos_dt.side_effect = lambda *args, **kwargs: real_datetime.datetime(*args, **kwargs)
                 mon = OpportunityMonitorService()
-                closed_5m = [
-                    Candle(time_ms=boundary + i * 300_000, open=100, high=101, low=99, close=100.2, volume=1)
-                    for i in range(3)
-                ]
+                from tests.test_lifecycle_realistic_pipeline import _sweep_mss_poi_long_bars
+                closed_5m = _sweep_mss_poi_long_bars(boundary)
                 bundle5 = KlineBundle(
                     closed=closed_5m,
                     forming=None,
