@@ -76,7 +76,7 @@ async def test_success_long_full_pipeline(forward_session):
 
     await enable_auto_paper(session)
     row, meta = await create_setup_from_structured(
-        session, run_id=100, symbol="BTCUSDT", structured=_production_conditional_wait_long()
+        session, run_id=100, symbol="BTCUSDT", structured={**_production_conditional_wait_long(), "structural_invalidation_level": 95.0}
     )
     assert meta["created"]
     row.created_at = CREATED
@@ -194,7 +194,7 @@ async def test_open_5m_candle_does_not_promote(forward_session):
 
     await enable_auto_paper(session)
     row, _ = await create_setup_from_structured(
-        session, run_id=102, symbol="BTCUSDT", structured=_production_conditional_wait_long()
+        session, run_id=102, symbol="BTCUSDT", structured={**_production_conditional_wait_long(), "structural_invalidation_level": 95.0}
     )
     row.created_at = CREATED
     row.monitor_from_ms = boundary
@@ -226,7 +226,7 @@ async def test_incomplete_confirmation_stays_wait(forward_session):
 
     await enable_auto_paper(session)
     row, _ = await create_setup_from_structured(
-        session, run_id=103, symbol="BTCUSDT", structured=_production_conditional_wait_long()
+        session, run_id=103, symbol="BTCUSDT", structured={**_production_conditional_wait_long(), "structural_invalidation_level": 95.0}
     )
     row.created_at = CREATED
     row.monitor_from_ms = boundary
@@ -254,7 +254,7 @@ async def test_net_rr_below_min_blocks_promotion(forward_session):
 
     await enable_auto_paper(session)
     row, _ = await create_setup_from_structured(
-        session, run_id=104, symbol="BTCUSDT", structured=_production_conditional_wait_long()
+        session, run_id=104, symbol="BTCUSDT", structured={**_production_conditional_wait_long(), "structural_invalidation_level": 95.0}
     )
     row.created_at = CREATED
     row.monitor_from_ms = boundary
@@ -286,7 +286,7 @@ async def test_stale_market_data_blocks_promotion(forward_session):
 
     await enable_auto_paper(session)
     row, _ = await create_setup_from_structured(
-        session, run_id=105, symbol="BTCUSDT", structured=_production_conditional_wait_long()
+        session, run_id=105, symbol="BTCUSDT", structured={**_production_conditional_wait_long(), "structural_invalidation_level": 95.0}
     )
     row.created_at = CREATED
     row.monitor_from_ms = boundary
@@ -319,7 +319,7 @@ async def test_incomplete_5m_bundle_blocks_promotion(forward_session):
 
     await enable_auto_paper(session)
     row, _ = await create_setup_from_structured(
-        session, run_id=106, symbol="BTCUSDT", structured=_production_conditional_wait_long()
+        session, run_id=106, symbol="BTCUSDT", structured={**_production_conditional_wait_long(), "structural_invalidation_level": 95.0}
     )
     row.created_at = CREATED
     row.monitor_from_ms = boundary
@@ -351,7 +351,7 @@ async def test_structural_invalidation(forward_session):
 
     await enable_auto_paper(session)
     row, _ = await create_setup_from_structured(
-        session, run_id=107, symbol="BTCUSDT", structured=_production_conditional_wait_long()
+        session, run_id=107, symbol="BTCUSDT", structured={**_production_conditional_wait_long(), "structural_invalidation_level": 95.0}
     )
     row.created_at = CREATED
     row.monitor_from_ms = boundary
@@ -379,7 +379,7 @@ async def test_limit_order_never_fills(forward_session):
 
     await enable_auto_paper(session)
     row, _ = await create_setup_from_structured(
-        session, run_id=108, symbol="BTCUSDT", structured=_production_conditional_wait_long()
+        session, run_id=108, symbol="BTCUSDT", structured={**_production_conditional_wait_long(), "structural_invalidation_level": 95.0}
     )
     row.created_at = CREATED
     row.monitor_from_ms = boundary
@@ -421,7 +421,7 @@ async def test_monitor_restart_preserves_cursor_no_duplicate_orders(forward_sess
 
     await enable_auto_paper(session)
     row, _ = await create_setup_from_structured(
-        session, run_id=109, symbol="BTCUSDT", structured=_production_conditional_wait_long()
+        session, run_id=109, symbol="BTCUSDT", structured={**_production_conditional_wait_long(), "structural_invalidation_level": 95.0}
     )
     row.created_at = CREATED
     row.monitor_from_ms = boundary
@@ -459,7 +459,7 @@ async def test_backfill_recovery_full_context_promotes(forward_session):
 
     await enable_auto_paper(session)
     row, _ = await create_setup_from_structured(
-        session, run_id=110, symbol="BTCUSDT", structured=_production_conditional_wait_long()
+        session, run_id=110, symbol="BTCUSDT", structured={**_production_conditional_wait_long(), "structural_invalidation_level": 95.0}
     )
     row.created_at = CREATED
     row.monitor_from_ms = boundary
@@ -518,7 +518,7 @@ async def test_backfill_incomplete_history_fail_closed(forward_session):
 
     await enable_auto_paper(session)
     row, _ = await create_setup_from_structured(
-        session, run_id=111, symbol="BTCUSDT", structured=_production_conditional_wait_long()
+        session, run_id=111, symbol="BTCUSDT", structured={**_production_conditional_wait_long(), "structural_invalidation_level": 95.0}
     )
     row.created_at = CREATED
     row.monitor_from_ms = boundary
