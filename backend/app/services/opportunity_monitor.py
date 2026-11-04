@@ -548,6 +548,7 @@ async def _attempt_ready_paper_order(
                     "net_rr": net_rr,
                 }
                 return False
+            net_rr = auto.get("net_rr", net_rr)
             setup.lifecycle_state = PENDING_ENTRY
             setup.last_validation_result = {
                 "ok": True,

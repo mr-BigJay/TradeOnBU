@@ -61,7 +61,7 @@ function ScenarioCard({ scenario: s, levels, primary }: { scenario: Scenario; le
 function TradePlanCard({ plan, date }: { plan?: TradePlan; date: string }) {
   return <article className="card outlook-bottom-summary" aria-label="پلن معاملاتی">
     <h3>پلن معاملاتی</h3>
-    {plan && plan.source !== "ict_engine" ? <p>پلن آرشیوی این گزارش توسط موتور ورود A تأیید نشده است. برای بررسی وضعیت فعلی، تب فرصت‌ها را ببینید.</p> : !plan ? <p>این گزارش قدیمی پلن معاملاتی ساختاریافته ندارد؛ پلن در گزارش‌های جدید نمایش داده می‌شود.</p> : <>
+    {plan && plan.source !== "ict_engine" ? <p>انتظار (WAIT) · پلن آرشیوی این گزارش تأیید ستاپ برگشتی و نقطهٔ ابطال معتبر از موتور A ندارد. برای بررسی وضعیت فعلی، تب فرصت‌ها را ببینید.</p> : !plan ? <p>این گزارش قدیمی پلن معاملاتی ساختاریافته ندارد؛ پلن در گزارش‌های جدید نمایش داده می‌شود.</p> : <>
       <p><strong>{plan.action === "long" ? "لانگ مشروط" : plan.action === "short" ? "شورت مشروط" : "انتظار؛ فعلاً بدون معامله"}</strong> — {plan.rationale_fa}</p>
       <p><strong>{plan.action === "wait" ? "شرط بررسی مجدد:" : "شرط ورود:"}</strong> {plan.trigger_fa}</p>
       {plan.action !== "wait" && <div className="outlook-level-chips">

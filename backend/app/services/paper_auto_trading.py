@@ -299,6 +299,15 @@ async def maybe_auto_open_paper_position(
     ict_snapshot = build_ict_entry_audit_snapshot(structured=structured, setup=setup, validation=validation)
     pos = await svc.get_position_by_public_id(session, result.position_id)
     if pos:
+        if strict_a:
+            from app.services.execution_model_sim import auto_paper_rr_from_settings
+            actual_tp = float(pos.take_profit)
+            meta["net_rr"] = auto_paper_rr_from_settings(
+                settings, direction=direction, entry=entry, sl=sl, tp=actual_tp,
+                min_net_rr=HARD_MIN_AUTO_PAPER_NET_RR,
+            ).net_rr
+            ict_snapshot["proposed_take_profit"] = setup.take_profit
+            ict_snapshot["take_profit"] = actual_tp
         pipe = (setup.objective_notes or {}).get("execution_pipeline") or {}
         pos.extra = {
             **(pos.extra or {}),

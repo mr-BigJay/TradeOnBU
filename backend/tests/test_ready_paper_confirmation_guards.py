@@ -156,6 +156,7 @@ async def test_valid_ready_still_creates_paper_order():
         row, _ = await create_setup_from_structured(
             session, run_id=10, symbol="BTCUSDT", structured=_production_conditional_wait_long()
         )
+        row.invalidation_level = 95.0
         row.created_at = created
         row.monitor_from_ms = boundary
         row.monitor_cursor_ms = boundary - 1
