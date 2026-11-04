@@ -21,9 +21,10 @@ INTERVAL_1M = 60_000
 async def test_pending_cancelled_on_structural_invalidation_with_margin_release():
     await init_db()
     now = datetime.now(timezone.utc)
-    monitor_now = now + timedelta(minutes=6)
-    now_ms = int(monitor_now.timestamp() * 1000)
-    bar_open = ((now_ms - 400_000) // 300_000) * 300_000
+    # Inspect the first closed bar after order placement. Align the fake clock
+    # with the fixture so freshness never depends on the wall-clock minute.
+    bar_open = (int(now.timestamp() * 1000) // 300_000 + 1) * 300_000
+    monitor_now = datetime.fromtimestamp((bar_open + 301_000) / 1000, timezone.utc)
     order_ms = bar_open - 60_000
 
     async with SessionLocal() as session:
@@ -47,7 +48,7 @@ async def test_pending_cancelled_on_structural_invalidation_with_margin_release(
             entry_price=100.0,
             stop_loss=94.0,
             take_profit=115.0,
-            invalidation_level=93.0,
+            invalidation_level=101.8,
             expires_at=monitor_now + timedelta(hours=12),
             last_validation_result={"ok": True},
         )
@@ -70,7 +71,7 @@ async def test_pending_cancelled_on_structural_invalidation_with_margin_release(
             )
         )
         await session.commit()
-    inv_bar = Candle(time_ms=bar_open, open=92.5, high=93.5, low=91.0, close=92.0, volume=1.0)
+    inv_bar = Candle(time_ms=bar_open, open=101.5, high=102.0, low=100.5, close=101.5, volume=1.0)
     bundle_5m = KlineBundle(
         closed=[inv_bar],
         forming=None,
