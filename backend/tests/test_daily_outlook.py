@@ -64,6 +64,8 @@ async def test_full_context_closed_only_and_stale_quote():
         fetch_live_price=AsyncMock(return_value=SimpleNamespace(price=105)),is_quote_stale=lambda q:False)
     ctx=await build_daily_context('BTCUSDT',market)
     assert len(ctx['candles']['1d'])==80 and len(ctx['candles']['1w'])>=10
+    assert ctx['channel_context']['standalone_entry_signal'] is False
+    assert ctx['channel_context']['available'] == ctx['chart_channel']['available']
     assert ctx['candles']['1d'][-1][0] == now//DAY*DAY-DAY
     assert len(ctx['levels'])==10
     market.is_quote_stale=lambda q:True

@@ -1,0 +1,19 @@
+name: Daily channel context
+on:
+  pull_request:
+  push:
+    branches: [main]
+jobs:
+  daily-context:
+    runs-on: ubuntu-latest
+    env:
+      TZ: UTC
+      PYTHONPATH: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r backend/requirements.txt
+      - run: mkdir -p data
+      - run: pytest -q backend/tests/test_daily_channel_context.py backend/tests/test_daily_outlook.py backend/tests/test_daily_outlook_geometry.py backend/tests/test_daily_outlook_artifact.py
