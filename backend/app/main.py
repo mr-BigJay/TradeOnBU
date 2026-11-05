@@ -114,9 +114,9 @@ async def lifespan(app: FastAPI):
             scheduler.add_job(structure_shadow.tick, "interval", seconds=60, id="ict_structure_shadow",
                               max_instances=1, coalesce=True)
 
-        from app.services.daily_outlook import daily_outlook_tick
+        from app.services.daily_outlook import daily_outlook_tick, four_hour_enabled
 
-        if not verified_trade_plan.enabled():
+        if four_hour_enabled() or not verified_trade_plan.enabled():
             scheduler.add_job(
                 daily_outlook_tick, "interval", minutes=1,
                 id="daily_market_outlook", max_instances=1, coalesce=True,
@@ -278,10 +278,12 @@ frontend_dist = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 @app.get("/api/health")
 async def health():
     from app.services.verified_trade_plan import enabled, VERSION
+    from app.services.daily_outlook import four_hour_enabled
     return {
         "status": "ok",
         "paper_only": True,
         "verified_plan_version": VERSION if enabled() else None,
+        "outlook_cadence_hours": 4 if four_hour_enabled() else 24,
         "live_trading": False,
         "time": datetime.now(timezone.utc).isoformat(),
     }

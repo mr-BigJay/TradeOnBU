@@ -49,7 +49,9 @@ async def generate(background: BackgroundTasks):
     if status == "analysis_busy":
         raise HTTPException(409, "تحلیل دیگری در حال اجراست؛ پس از پایان آن دوباره تلاش کنید.")
     if status == "already_attempted_today":
-        raise HTTPException(409, "برای امروز یک تلاش ثبت شده؛ گزارش روز بعد دوباره قابل تولید است.")
+        raise HTTPException(409, "برای این نوبت یک تلاش ثبت شده؛ گزارش در نوبت بعد دوباره قابل تولید است.")
+    if status == "waiting_for_closed_4h":
+        raise HTTPException(409, "شروع تحلیل پنج دقیقه بعد از بسته‌شدن کندل چهار‌ساعته است.")
     if not run_id or not owner:
         raise HTTPException(409, "شروع تحلیل ممکن نشد")
     background.add_task(execute_reserved, run_id, owner)

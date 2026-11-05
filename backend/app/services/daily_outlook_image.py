@@ -151,7 +151,7 @@ def render_report_image(snapshot_json: str) -> bytes:
             for text in legend.get_texts():
                 text.set_color("#d7e3f4")
         symbol = str(payload.get("symbol") or "BTCUSDT")
-        fig.text(.055, .94, f"{symbol}  /  DAILY MARKET OUTLOOK", color="white", fontsize=20, weight="bold")
+        fig.text(.055, .94, f"{symbol}  /  {'4H' if payload['context'].get('report_cadence') == '4h' else 'DAILY'} MARKET OUTLOOK", color="white", fontsize=20, weight="bold")
         fig.text(.055, .892, f"Report #{payload['id']}  |  {payload['date']}  |  Bitunix {'4H' if data['step']==14400 else '1D'} closed candles", color="#b4c5df", fontsize=11)
         fig.text(.055, .855, f"Snapshot: {anchor.strftime('%Y-%m-%d %H:%M UTC')}  |  Price: {data['quote']:,.2f}  |  Horizon: 7 days", color="#b4c5df", fontsize=10)
         fig.text(.055, .10, "S: candidate support | R: candidate resistance | Blue: pivot channel; future extension is conditional", color="#c8d7ee", fontsize=10)
