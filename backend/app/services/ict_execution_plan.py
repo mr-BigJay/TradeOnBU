@@ -4,7 +4,7 @@ import math
 from app.domain.candles import Candle
 from app.services.execution_model_sim import auto_paper_rr_from_settings
 from app.services.ict_structure import find_swings
-from app.services.ict_confirmation_engine import _token_on_bar
+from app.services.conditional_revision import objective_confirmations_satisfied_for_order
 
 STEP = 300_000
 REASONS = {
@@ -40,17 +40,19 @@ def strict_a_target(row, sim, bars, now_ms):
     """Return the executable target or a stable reason to wait."""
     conf = row.confirmation_state or {}
     times = conf.get("confirmation_timestamps") or {}
-    sweep = times.get("liquidity_sweep")
-    touch = times.get("entry_zone_touch")
-    if not isinstance(sweep, int) or not isinstance(touch, int) or not any(
-        isinstance(times.get(key), int) and sweep < times[key] < touch for key in ("bos", "mss")
-    ):
+    # The monitor owns confirmation detection. Reuse its ordered, zone-bound
+    # evidence instead of reinterpreting the same events in a shorter window.
+    ok, _ = objective_confirmations_satisfied_for_order(row)
+    if not ok or conf.get("invalidated"):
         return None, "ict_structure_unconfirmed"
+    if any(not isinstance(t, int) or isinstance(t, bool) or t < 0 or t % STEP
+           or t + STEP > now_ms for t in times.values()):
+        return None, "ict_structure_unconfirmed"
+    sweep = times.get("liquidity_sweep")
     closed = sorted((b for b in bars if b.time_ms + STEP <= now_ms), key=lambda b: b.time_ms)
     expected_last = now_ms // STEP * STEP - STEP
     by_time = {b.time_ms: b for b in closed}
-    if (len(closed) < 18 or closed[-1].time_ms != expected_last or sweep not in by_time
-            or touch not in by_time or any(b.time_ms - a.time_ms != STEP for a, b in zip(closed, closed[1:]))):
+    if (len(closed) < 18 or closed[-1].time_ms != expected_last or any(b.time_ms - a.time_ms != STEP for a, b in zip(closed, closed[1:]))):
         return None, "ict_structure_data_gap"
     long = row.direction == "LONG"
     sign = 1 if long else -1
@@ -58,23 +60,20 @@ def strict_a_target(row, sim, bars, now_ms):
     if lo is None or hi is None or lo > hi:
         return None, "ict_structure_unconfirmed"
 
-    def proven(token, timestamp):
-        window = [b for b in closed if b.time_ms <= timestamp][-48:]
-        return bool(window and window[-1].time_ms == timestamp and _token_on_bar(
-            token, direction=row.direction, window=window, zone_lo=lo, zone_hi=hi,
-            structured=row.structured_snapshot or {},
-        ))
-
-    if not proven("liquidity_sweep", sweep) or not proven("entry_zone_touch", touch):
-        return None, "ict_structure_unconfirmed"
-    if not any(isinstance(times.get(k), int) and sweep < times[k] < touch and proven(k, times[k])
-               for k in ("mss", "bos")):
-        return None, "ict_structure_unconfirmed"
-    candle = by_time[sweep]
+    # New observations carry the sweep extreme even after its candle leaves
+    # the rolling feed. Older observations use the candle when still available.
+    sweep_evidence = (conf.get("confirmation_evidence") or {}).get("liquidity_sweep") or {}
+    candle = by_time.get(sweep)
+    extreme = sweep_evidence.get("bar_low" if long else "bar_high")
+    if extreme is None and candle is not None:
+        extreme = candle.low if long else candle.high
+    if sweep is not None and (not isinstance(extreme, (int, float))
+            or not math.isfinite(extreme) or extreme <= 0):
+        return None, "ict_structure_data_gap"
     entry, stop, inv, target = row.entry_price, row.stop_loss, row.invalidation_level, row.take_profit
     if (not all(v and math.isfinite(v) and v > 0 for v in (entry, stop, inv, target))
             or sign * (entry - inv) <= 0 or sign * (inv - stop) < 0
-            or sign * ((candle.low if long else candle.high) - stop) <= 0):
+            or (extreme is not None and sign * (extreme - stop) <= 0)):
         return None, "ict_stop_inside_structure"
     return structural_target(sim, row.direction, entry, stop, target, closed)
 
@@ -101,3 +100,4 @@ def structural_target(sim, direction, entry, stop, target, closed):
     obstacle = min(levels) if long else max(levels)
     tp = target_at_two_r(sim, direction, entry, stop, obstacle)
     return (tp, None) if tp is not None else (None, "ict_obstacle_before_two_r")
+

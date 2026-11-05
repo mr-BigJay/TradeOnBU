@@ -608,5 +608,13 @@ def strict_apply_5m_bar(
     for tok, tms in ts.items():
         if tok not in ev:
             ev[tok] = {"granularity": "5m", "engine": "STRICT", "bar_5m_ms": tms}
+    # Persist newly detected sweep geometry for the order gate. Never attach
+    # the current candle to an older confirmation timestamp.
+    if ts.get("liquidity_sweep") == bar.time_ms:
+        ev["liquidity_sweep"] = {
+            **(ev.get("liquidity_sweep") or {}),
+            "bar_low": float(bar.low), "bar_high": float(bar.high),
+        }
     progress.confirmation_evidence = ev
     return progress
+

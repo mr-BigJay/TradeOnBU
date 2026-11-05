@@ -18,7 +18,11 @@ def setup_and_bars():
         bars[i] = Candle(1003, 1005+i, 999, 1003+i/5, i * STEP)
     row = SimpleNamespace(direction="LONG", entry_price=1000, stop_loss=994,
         invalidation_level=995, take_profit=1030, entry_zone_low=999, entry_zone_high=1001,
-        structured_snapshot={}, confirmation_state={"confirmation_timestamps":{
+        structured_snapshot={}, conditional_plan={}, confirmation_state={
+            "sequence":["liquidity_sweep", "mss", "entry_zone_touch"],
+            "confirmation_evidence":{"entry_zone_touch":{
+                "bar_low":999, "bar_high":1025, "zone_lo":999, "zone_hi":1001}},
+            "confirmation_timestamps":{
             "liquidity_sweep":18*STEP, "mss":19*STEP, "entry_zone_touch":20*STEP}})
     sim = SimpleNamespace(default_margin_usdt=50, default_leverage=10, maker_fee_rate=.0002,
                           taker_fee_rate=.0005, slippage_bps=1, default_tp_behavior="market")
@@ -62,3 +66,37 @@ async def test_card_reads_order_and_blocks_on_data_gap(monkeypatch):
     row.lifecycle_state = "READY_LONG"
     row.objective_notes["market_data_health"]["ok"] = False
     assert (await daily.snapshot_plan(session, "BTCUSDT", ctx))["action"] == "wait"
+
+
+
+def test_recorded_sweep_survives_rolling_history():
+    row, bars, sim = setup_and_bars()
+    row.confirmation_state['confirmation_evidence']['liquidity_sweep'] = {
+        'bar_low':995, 'bar_high':1000}
+    # Complete current data, but the original sweep is no longer in this window.
+    recent = [Candle(1002, 1005+i, 999, 1003, i*STEP) for i in range(24, 48)]
+    assert strict_a_target(row, sim, recent, 48*STEP)[1] is None
+    row.stop_loss = 996
+    assert strict_a_target(row, sim, recent, 48*STEP)[1] == 'ict_stop_inside_structure'
+
+
+def test_profile_does_not_gain_an_extra_sweep_requirement():
+    row, bars, sim = setup_and_bars()
+    row.confirmation_state['sequence'] = ['mss', 'fvg_retest', 'entry_zone_touch']
+    row.confirmation_state['confirmation_timestamps'] = {
+        'mss':19*STEP, 'fvg_retest':20*STEP, 'entry_zone_touch':20*STEP}
+    assert strict_a_target(row, sim, bars, 24*STEP)[1] is None
+    del row.confirmation_state['confirmation_timestamps']['fvg_retest']
+    assert strict_a_target(row, sim, bars, 24*STEP)[1] == 'ict_structure_unconfirmed'
+
+
+@pytest.mark.parametrize('invalid', ['future', 'wrong_zone', 'invalidated'])
+def test_reuse_still_rejects_invalid_confirmation(invalid):
+    row, bars, sim = setup_and_bars()
+    if invalid == 'future':
+        row.confirmation_state['confirmation_timestamps']['entry_zone_touch'] = 24*STEP
+    elif invalid == 'wrong_zone':
+        row.confirmation_state['confirmation_evidence']['entry_zone_touch']['bar_low'] = 2000
+    else:
+        row.confirmation_state['invalidated'] = True
+    assert strict_a_target(row, sim, bars, 24*STEP)[1] == 'ict_structure_unconfirmed'

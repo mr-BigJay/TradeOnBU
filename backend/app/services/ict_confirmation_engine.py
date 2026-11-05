@@ -259,8 +259,20 @@ def process_bar_sequential(
         structured=structured,
     ):
         timestamps[nxt] = bar.time_ms
-        if nxt == "entry_zone_touch":
-            evidence[nxt] = {
+        # A POI retest and a touch of that same entry zone are concurrent
+        # price facts. Do not require a second retest on the following bar.
+        index = sequence.index(nxt)
+        touch_with_retest = (
+            nxt in ("fvg_retest", "order_block_retest")
+            and index + 1 < len(sequence)
+            and sequence[index + 1] == "entry_zone_touch"
+            and _token_on_bar("entry_zone_touch", direction=direction,
+                window=window, zone_lo=zone_lo, zone_hi=zone_hi, structured=structured)
+        )
+        if touch_with_retest:
+            timestamps["entry_zone_touch"] = bar.time_ms
+        if nxt == "entry_zone_touch" or touch_with_retest:
+            evidence["entry_zone_touch"] = {
                 "bar_low": float(bar.low),
                 "bar_high": float(bar.high),
                 "zone_lo": float(zone_lo),
@@ -283,3 +295,4 @@ def all_required_met(progress: ConfirmationProgress) -> bool:
     if not progress.sequence:
         return False
     return sequence_order_valid(progress.sequence, progress.confirmation_timestamps)
+
