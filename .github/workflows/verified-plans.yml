@@ -4,6 +4,12 @@ on:
   push:
     branches: [main]
 jobs:
+  container-import:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t tradeonbu-import-check .
+      - run: docker run --rm --network none -e DISABLE_APP_BACKGROUND=1 -e VERIFIED_PLANS_ENABLED=1 tradeonbu-import-check python -c 'from app.main import app; from app.services.verified_trade_plan import enabled; assert enabled(); print("VERIFIED_IMPORT_OK")'
   contracts:
     runs-on: ubuntu-latest
     steps:
