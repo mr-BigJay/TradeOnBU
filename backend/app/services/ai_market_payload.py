@@ -66,13 +66,15 @@ def _apply_token_budget(payload: dict[str, Any], max_chars: int) -> dict[str, An
         tf = timeframes.get(interval)
         if not tf or not tf.get("candles"):
             continue
-        while tf["candles"] and _estimate_json_chars(payload) > max_chars:
+        while len(tf["candles"]) > MIN_CANDLES and _estimate_json_chars(payload) > max_chars:
             tf["candles"].pop(0)
             tf["closed_count"] = len(tf["candles"])
             budget_meta["trimmed"].append(interval)
         if _estimate_json_chars(payload) <= max_chars:
             break
 
+    if _estimate_json_chars(payload) > max_chars:
+        raise MarketContextError('prompt_budget_too_small', 'Budget cannot retain minimum closed history in every timeframe')
     budget_meta["estimated_chars_after"] = _estimate_json_chars(payload)
     budget_meta["approx_tokens"] = budget_meta["estimated_chars_after"] // 4
     budget_meta["note"] = (

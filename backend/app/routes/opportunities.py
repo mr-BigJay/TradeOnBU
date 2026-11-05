@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.services.verified_trade_plan import enabled as verified_plans_enabled, REASONS_FA as VERIFIED_REASONS
+
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -85,6 +87,7 @@ def _serialize_setup(row: AiProposedSetup, live_price: float | None = None) -> d
         label = "هدف لمس شد؛ در کندل‌های پایش‌شده برخوردی با محدوده ورود ثبت نشد."
     return {
         "setup_id": row.setup_id,
+        "verified_trade_plan": (row.structured_snapshot or {}).get("verified_trade_plan"),
         "strategy_id": (row.structured_snapshot or {}).get("strategy_id", "ict_reversal"),
         "symbol": row.symbol,
         "direction": row.direction,
@@ -111,7 +114,7 @@ def _serialize_setup(row: AiProposedSetup, live_price: float | None = None) -> d
         "display_status": (row.last_validation_result or {}).get("display_status"),
         "ict_confirmed": (row.last_validation_result or {}).get("ict_confirmed"),
         "pullback_bar_tehran": format_tehran(datetime.fromtimestamp(pullback / 1000, timezone.utc)) if pullback else None,
-        "order_detail": (row.last_validation_result or {}).get("order_detail") or ICT_PLAN_REASONS.get((row.last_validation_result or {}).get("order_skipped_reason")),
+        "order_detail": (row.last_validation_result or {}).get("order_detail") or VERIFIED_REASONS.get((row.last_validation_result or {}).get("order_skipped_reason")) or ICT_PLAN_REASONS.get((row.last_validation_result or {}).get("order_skipped_reason")),
         "order_block_reason": (row.last_validation_result or {}).get("order_skipped_reason"),
         "revision_history": (row.objective_notes or {}).get("revision_history") or [],
         "lifecycle_history": (row.objective_notes or {}).get("lifecycle_history") or [],
@@ -225,6 +228,7 @@ async def opportunities_items(
         items = [{**_serialize_setup(s, live), "entity_type": "setup"} for s in rows]
 
     return {
+        "verified_plans_enabled": verified_plans_enabled(),
         "tab": tab_norm,
         "paper_status": paper_status if tab_norm == opp_list.TAB_PAPER else None,
         "items": items,
