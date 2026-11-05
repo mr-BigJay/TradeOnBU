@@ -12,6 +12,7 @@ import os
 from copy import deepcopy
 from datetime import timezone
 
+from app.domain.candle_quality import acceptable_prices, displacement_body
 from app.services.ict_structure import find_swings
 from app.services.ict_execution_plan import target_at_two_r
 
@@ -51,11 +52,11 @@ def enabled():
 def valid_bars(bars, step, as_of_ms, minimum=20):
     if len(bars) < minimum:
         return False
-    for b in bars:
+    for i, b in enumerate(bars):
         vals = (b.open, b.high, b.low, b.close)
         if not all(isinstance(x, (int, float)) and math.isfinite(x) and x > 0 for x in vals):
             return False
-        if not b.low <= min(b.open, b.close) <= max(b.open, b.close) <= b.high:
+        if not acceptable_prices(b, bars[i-1] if i else None, step):
             return False
         if not isinstance(b.time_ms, int) or b.time_ms % step or b.time_ms + step > as_of_ms:
             return False
@@ -129,7 +130,7 @@ def build_candidates(series, costs, as_of_ms, live):
                 if sign*(b.close-pivot.price)<=0:
                     continue
                 local_atr = atr(bars[:bi])
-                body = sign*(b.close-b.open)
+                body = displacement_body(b, sign)
                 if local_atr<=0 or body < local_atr or body < .6*(b.high-b.low):
                     reject('weak_break'); break
                 # The displacement candle is the middle of this FVG.

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 
 import httpx
@@ -10,6 +10,7 @@ import httpx
 from app.config import Settings, get_settings
 from app.domain.candle_utils import detect_gaps, interval_ms, split_closed_and_forming
 from app.domain.candles import Candle
+from app.domain.candle_quality import carried_open
 
 VALID_INTERVALS = {"1m", "5m", "15m", "1h", "4h"}
 
@@ -107,7 +108,8 @@ class MarketDataService:
                 )
             )
         candles.sort(key=lambda c: c.time_ms)
-        return candles
+        return [replace(b, carried_open_verified=carried_open(b, candles[i-1] if i else None, interval_ms(interval)))
+                for i,b in enumerate(candles)]
 
     async def fetch_historical_closed(
         self,
@@ -186,7 +188,7 @@ class MarketDataService:
         # BALANCED confirmation and paper fill recovery often need >200.
         # Page backwards rather than sending an invalid oversized limit.
         merged_pages: dict[int, Candle] = {}
-        remaining = limit
+        remaining = limit + 1  # predecessor evidence for the first returned bar
         end_time_ms: int | None = None
         while remaining > 0:
             page_size = min(remaining, 200)
@@ -204,8 +206,10 @@ class MarketDataService:
             if len(page) < page_size:
                 break
             end_time_ms = oldest  # endTime is exclusive; use the aligned candle open
-            remaining = max(0, limit - len(merged_pages))
-        candles = sorted(merged_pages.values(), key=lambda c: c.time_ms)[-limit:]
+            remaining = max(0, limit + 1 - len(merged_pages))
+        history = sorted(merged_pages.values(), key=lambda c: c.time_ms)
+        candles = [replace(b, carried_open_verified=carried_open(b, history[i-1] if i else None, interval_ms(interval)))
+                   for i,b in enumerate(history)][-limit:]
         gaps_detected = detect_gaps(candles, interval)
         merged: dict[int, Candle] = {c.time_ms: c for c in candles}
         for missing_start in gaps_detected[:8]:

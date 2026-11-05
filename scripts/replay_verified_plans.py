@@ -9,22 +9,30 @@ import gzip
 import json
 import math
 from collections import Counter
+from dataclasses import replace
 from types import SimpleNamespace
 
 from app.domain.candles import Candle
+from app.domain.candle_quality import acceptable_prices, carried_open
 from app.services.verified_trade_plan import build_candidates, STEP
 
 
 def audit(rows):
-    bad=[];gaps=[]
+    bad=[];gaps=[];carried=[];previous=None
     for i,row in enumerate(rows):
         try:
             t,o,h,l,c,*_=row
-            good=isinstance(t,int) and t%60000==0 and all(math.isfinite(x) and x>0 for x in (o,h,l,c)) and l<=min(o,c)<=max(o,c)<=h
-        except (TypeError,ValueError):good=False
+            bar=Candle(o,h,l,c,t)
+            aligned=isinstance(t,int) and t%60000==0
+            good=aligned and acceptable_prices(bar,previous,60000)
+            if aligned and carried_open(bar,previous,60000):carried.append(i)
+            if previous is not None and t-previous.time_ms!=60000:gaps.append(i)
+            previous=bar
+        except (TypeError,ValueError):
+            good=False;previous=None;gaps.append(i)
         if not good:bad.append(i)
-        if i and row[0]-rows[i-1][0]!=60000:gaps.append(i)
     return {'candles':len(rows),'invalid_ohlc_count':len(bad),'invalid_sample_indices':bad[:10],
+            'carried_open_count':len(carried),'carried_open_sample_indices':carried[:10],
             'discontinuities':len(gaps),'valid':bool(rows) and not bad and not gaps}
 
 
@@ -34,7 +42,8 @@ def aggregate(rows,step):
     out=[]
     for t,b in groups.items():
         if len(b)!=step//60000 or b[0][0]!=t or b[-1][0]!=t+step-60000:continue
-        out.append(Candle(b[0][1],max(x[2] for x in b),min(x[3] for x in b),b[-1][4],t))
+        bar=Candle(b[0][1],max(x[2] for x in b),min(x[3] for x in b),b[-1][4],t)
+        out.append(replace(bar,carried_open_verified=carried_open(bar,out[-1] if out else None,step)))
     return out
 
 
@@ -49,7 +58,8 @@ def replay(rows):
     seen=set();pending=None;outcomes=[];rejects=Counter();entry_ms=None
     minute_history=[]
     for t,o,h,l,c,*_ in rows:
-        minute_history.append(Candle(o,h,l,c,t))
+        bar=Candle(o,h,l,c,t)
+        minute_history.append(replace(bar,carried_open_verified=carried_open(bar,minute_history[-1] if minute_history else None,60000)))
         now=t+60000
         if pending:
             sign=1 if pending['direction']=='LONG' else -1

@@ -39,7 +39,7 @@ async def test_paginated_1m_history_never_exceeds_exchange_page_limit(monkeypatc
     assert len(result.closed) == 600
     assert result.closed[0].time_ms == candles[-600].time_ms
     assert result.closed[-1].time_ms == candles[-1].time_ms
-    assert [size for size, _ in calls] == [200, 200, 200]
+    assert [size for size, _ in calls] == [200, 200, 200, 1]
     assert calls[1][1] == candles[-200].time_ms
     assert calls[2][1] == candles[-400].time_ms
     assert all(bound is None or bound % step == 0 for _, bound in calls)
@@ -57,7 +57,7 @@ async def test_single_page_retains_existing_behavior(monkeypatch):
     monkeypatch.setattr(svc, "_now_ms", lambda: 1_800_000_120_000)
     result = await svc.fetch_kline_bundle("BTCUSDT", "5m", 120)
     assert len(result.closed) == 0  # This 5m bar is still forming.
-    assert calls == [(120, None)]
+    assert calls == [(121, None)]  # one predecessor for carried-open evidence
 
 
 @pytest.mark.asyncio
@@ -88,3 +88,21 @@ async def test_exchange_base_volume_key_is_parsed(monkeypatch):
     result = await MarketDataService()._fetch_klines_window("BTCUSDT", "1m", limit=1)
     assert len(result) == 1
     assert result[0].volume == pytest.approx(3.25)
+
+@pytest.mark.asyncio
+async def test_first_returned_carried_open_has_predecessor_evidence(monkeypatch):
+    from app.services.verified_trade_plan import valid_bars
+    monkeypatch.setattr(MarketDataService, 'fetch_kline_bundle', _REAL_FETCH_KLINE_BUNDLE)
+    svc=MarketDataService()
+    prev=Candle(100,101,99,100,1_800_000_000_000)
+    bar=Candle(100,103,101,102,prev.time_ms+60000)
+    async def window(symbol,interval,limit=200,end_time_ms=None):
+        assert limit==2  # requested one usable bar, plus one witness
+        return [prev,bar]
+    monkeypatch.setattr(svc,'_fetch_klines_window',window)
+    monkeypatch.setattr(svc,'_now_ms',lambda:bar.time_ms+60000)
+    result=await svc.fetch_kline_bundle('BTCUSDT','1m',1)
+    assert len(result.closed)==1
+    assert result.closed[0].carried_open_verified
+    assert result.closed[0].low==101
+    assert valid_bars(result.closed,60000,bar.time_ms+60000,1)

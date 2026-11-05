@@ -10,6 +10,7 @@ class Candle:
     close: float
     time_ms: int
     volume: float | None = None
+    carried_open_verified: bool = False
 
     @property
     def open_time(self) -> datetime:

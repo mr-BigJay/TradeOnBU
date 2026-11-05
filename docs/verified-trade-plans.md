@@ -71,14 +71,26 @@ Offline replay:
 PYTHONPATH=backend python scripts/replay_verified_plans.py /path/replay.json.gz --output /tmp/verified-replay.json
 ```
 
-The supplied Oct–Nov archive has 26,668 one-minute candles, 1,219 invalid OHLC rows,
-and no missing minutes. The tool exits 2 (`blocked_untrusted_source`) and refuses a
-performance number. It never widens high/low to make the source look valid. On clean
-input it replays only the mechanical candidate component, with one position at a
-time and same-minute ambiguity explicit. It does NOT invent historical API approval,
-portfolio returns, or claim an out-of-sample profit test. Native source verification
-and subsequent forward Paper results remain the acceptance evidence needed before
-any live implementation. This does not promise two winning trades a week.
+The supplied archive has 26,668 one-minute rows and 1,219 out-of-range opens.
+Follow-up inspection found **all 1,219 exactly match the adjacent previous close**;
+none has an out-of-range close. Four cases were also re-fetched from public Bitunix.
+The earlier blanket description “invalid candles” was too broad. This is observed
+feed behavior, not an exchange-documented guarantee or evidence of profitability.
+
+Compatibility accepts an out-of-range open only with an immediately preceding,
+finite, positive, range-valid close that equals that open exactly. No tolerance is
+used. The fetcher requests one extra predecessor and keeps evidence when trimming
+windows. An unproven first-row anomaly still fails closed. Raw open/high/low/close
+are unchanged; fills, stops and targets continue to use actual reported high/low.
+Displacement body uses the open clipped to the reported range for that calculation
+only, so an external carried price cannot inflate candle-body strength. ATR retains
+its normal previous-close gap calculation. The probe separately reports carried
+opens and invalid data, now including 4h. This compatibility is a Paper engineering
+policy; it does not certify the feed against actual trade history.
+
+Replay uses the same evidence rule and reports carried opens separately. On clean
+input it evaluates only mechanical candidates; it does not invent historical API
+approval, portfolio returns, or an out-of-sample profit claim.
 
 ## Deployment check (no trades, API calls or writes)
 
@@ -111,6 +123,7 @@ Local Python 3.12 / isolated test SQLite, UTC, no inherited proxy configuration:
   into the actual Paper position service, not a mocked successful order.
 - Frontend production build succeeded; 60 frontend tests passed.
 - Python compile, shell syntax and `git diff --check` succeeded.
-- Historical replay intentionally blocked: 1,219 invalid OHLC rows / 26,668.
+- Initial strict replay blocked 1,219 out-of-range opens / 26,668; follow-up evidence
+  and the compatibility policy above supersede that classification.
 No production deployment, real-money execution, live market performance result,
 or API-review trading win rate is represented by these software checks.
