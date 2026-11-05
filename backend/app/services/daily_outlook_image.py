@@ -59,7 +59,7 @@ def chart_snapshot(context: dict, report: dict) -> dict:
         referenced.update(ids)
     nearby = nearby_levels(list(levels.values()), quote)
     referenced.update(l["id"] for side in nearby.values() for l in side)
-    return {"nearby": nearby, "channel": pivot_channel(rows, anchor, step, quote), "anchor": anchor, "quote": quote, "bars": rows, "step": step,
+    return {"nearby": nearby, "channel": (context["chart_channel"] if "chart_channel" in context else pivot_channel(rows, anchor, step, quote)), "anchor": anchor, "quote": quote, "bars": rows, "step": step,
             "paths": paths, "levels": [l for key, l in levels.items() if key in referenced]}
 
 

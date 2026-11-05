@@ -120,3 +120,24 @@ def pivot_channel(rows, anchor, step, quote):
                 position="above" if quote>best["upper"] else "below" if quote<best["lower"] else "inside",
                 candidates_evaluated=count, score=round(best["score"],3))
     return best
+
+
+def channel_context(channel, quote, as_of):
+    """Describe the saved chart geometry at its snapshot, never an entry signal."""
+    base = {"role": "secondary_market_context", "standalone_entry_signal": False,
+            "as_of": as_of, "available": bool(channel.get("available"))}
+    if not base["available"]:
+        return {**base, "reason": channel.get("reason", "unavailable")}
+    upper, lower = channel["upper"], channel["lower"]
+    width = upper - lower
+    return {**base, "timeframe": channel["timeframe"], "method": channel["method"],
+            "direction": channel["direction"], "historical": channel["historical"],
+            "upper_at_snapshot": upper, "lower_at_snapshot": lower,
+            "mid_at_snapshot": channel["mid"], "slope_per_day": channel["slope_per_day"],
+            "position": channel["position"],
+            "position_in_width": (quote-lower)/width if width > 0 else None,
+            "distance_to_upper_pct": 100*(upper-quote)/quote,
+            "distance_from_lower_pct": 100*(quote-lower)/quote,
+            "upper_touches": channel["upper_touches"], "lower_touches": channel["lower_touches"],
+            "fit_end_time_ms": channel["end_time_ms"],
+            "interpretation": "Bounds are projected to snapshot time. Outside does not prove a confirmed breakout. Historical fit may no longer describe the active structure."}

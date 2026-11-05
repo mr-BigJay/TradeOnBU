@@ -122,6 +122,15 @@ No external news/calendar feed is connected: do not invent news, Fed probabiliti
 events or catalysts. Historical liquidations are not future heatmap levels. Binance
 OI is not Bitunix positioning; provisional trade delta is not verified CVD. Optional
 microdata is secondary context for this multi-day horizon, not a direction gate.
+Optional channel_context describes the SAME major-swing channel drawn on the chart.
+Use it only as secondary context alongside candles and horizontal levels. Mention its
+position/boundaries briefly when material to a scenario. A quote near an edge is not
+an entry signal, an automatic veto, or proof of reversal. Outside the channel is not
+a confirmed breakout; retain close/retest requirements. historical=true means an
+older fitted structure, whose projection may no longer be active. If unavailable,
+do not infer a channel. Channel bounds move with time: supplied bounds apply only
+at as_of, are not executable Entry/SL/TP levels, and must not be added to level IDs.
+Channel direction must not override stronger contradictory price evidence.
 If data_quality_warnings is nonempty, disclose the historical source anomaly in uncertainty_fa; do not treat the source as fully clean.
 Previous report is for comparison only: explicitly say what changed or stayed stable.
 Keep the ENTIRE narrative concise: aim for 250–350 Persian words including the plan.

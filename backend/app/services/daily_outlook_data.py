@@ -104,7 +104,7 @@ async def build_daily_context(symbol: str, market: MarketDataService | None = No
 
     trs = [max(b.high - b.low, abs(b.high - a.close), abs(b.low - a.close))
            for a, b in zip(daily[-15:-1], daily[-14:])]
-    return {
+    context = {
         "symbol": symbol, "as_of": datetime.now(timezone.utc).isoformat(),
         "source": "Bitunix futures; 1D/1W aggregated from complete 4h candles, UTC Monday weeks",
         "data_quality_warnings": warnings, "horizon_days": [3, 7], "live_price": quote.price,
@@ -114,3 +114,10 @@ async def build_daily_context(symbol: str, market: MarketDataService | None = No
         "daily_atr14": sum(trs) / len(trs),
         "news_and_calendar": "unavailable_no_external_news_feed",
     }
+
+    # Compute exactly the same geometry used by the report image, before inference.
+    from app.services.daily_outlook_image import chart_snapshot
+    from app.services.daily_outlook_geometry import channel_context
+    context["chart_channel"] = chart_snapshot(context, {})["channel"]
+    context["channel_context"] = channel_context(context["chart_channel"], quote.price, context["as_of"])
+    return context
