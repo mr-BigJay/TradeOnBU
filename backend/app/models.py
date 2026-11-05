@@ -2,7 +2,7 @@ import enum
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import JSON, DateTime, Float, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import BigInteger, Boolean, JSON, DateTime, Float, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
@@ -645,13 +645,16 @@ class DailyOutlookSettings(Base):
     hour: Mapped[int] = mapped_column(Integer, default=8)
     minute: Mapped[int] = mapped_column(Integer, default=5)
 
+    four_hour_initialized: Mapped[bool] = mapped_column(Boolean, default=False)
+
 
 class DailyOutlookRun(Base):
     __tablename__ = "daily_outlook_runs"
-    __table_args__ = (UniqueConstraint("symbol", "report_date", name="uq_daily_outlook_symbol_date"),)
+    __table_args__ = (UniqueConstraint("symbol", "report_date", "slot_close_ms", name="uq_daily_outlook_symbol_slot"),)
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     symbol: Mapped[str] = mapped_column(String(32))
     report_date: Mapped[str] = mapped_column(String(10))
+    slot_close_ms: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")
     trigger: Mapped[str] = mapped_column(String(16))
     status: Mapped[str] = mapped_column(String(16), default="running")
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

@@ -1,0 +1,21 @@
+name: Four-hour outlook
+on:
+  pull_request:
+  push:
+    branches: [main]
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r backend/requirements.txt
+      - run: mkdir -p data
+      - run: PYTHONPATH=backend pytest -q backend/tests/test_outlook_four_hour.py backend/tests/test_daily_outlook.py backend/tests/test_daily_channel_context.py
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: npm ci && npm test -- src/DailyOutlookPage.test.tsx && npm run build
+        working-directory: frontend

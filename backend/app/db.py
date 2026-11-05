@@ -41,6 +41,7 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 
 
 SIGNAL_MIGRATIONS = [
+    "ALTER TABLE daily_outlook_settings ADD COLUMN four_hour_initialized BOOLEAN DEFAULT 0",
     "ALTER TABLE signals ADD COLUMN telegram_approved_at DATETIME",
     "ALTER TABLE signals ADD COLUMN telegram_approved_by VARCHAR(32)",
     "ALTER TABLE signals ADD COLUMN telegram_message_id INTEGER",
@@ -142,3 +143,30 @@ async def init_db() -> None:
         await _configure_sqlite_connection(conn)
         await conn.run_sync(Base.metadata.create_all)
     await migrate_db()
+    async with engine.begin() as conn:
+        await conn.run_sync(_migrate_outlook_slots)
+
+
+def _migrate_outlook_slots(conn):
+    """Preserve report IDs/history while replacing the old one-per-day key."""
+    from sqlalchemy import inspect, MetaData
+    from app.models import DailyOutlookRun
+    inspector = inspect(conn)
+    cols = {c['name'] for c in inspector.get_columns('daily_outlook_runs')}
+    if 'slot_close_ms' in cols:
+        return
+    if conn.dialect.name != 'sqlite':
+        conn.execute(text('ALTER TABLE daily_outlook_runs ADD COLUMN slot_close_ms BIGINT NOT NULL DEFAULT 0'))
+        conn.execute(text('ALTER TABLE daily_outlook_runs DROP CONSTRAINT uq_daily_outlook_symbol_date'))
+        conn.execute(text('ALTER TABLE daily_outlook_runs ADD CONSTRAINT uq_daily_outlook_symbol_slot UNIQUE (symbol, report_date, slot_close_ms)'))
+        return
+    # SQLite legacy transaction mode does not BEGIN for DDL; make the rebuild atomic.
+    if not conn.connection.driver_connection.in_transaction:
+        conn.exec_driver_sql("BEGIN IMMEDIATE")
+    # No tables reference this table. Preserve report IDs and JSON snapshots.
+    new = DailyOutlookRun.__table__.to_metadata(MetaData(), name='daily_outlook_runs_slots_new')
+    new.create(conn)
+    names = ', '.join('"'+c.name+'"' for c in DailyOutlookRun.__table__.columns if c.name in cols)
+    conn.execute(text(f'INSERT INTO daily_outlook_runs_slots_new ({names}) SELECT {names} FROM daily_outlook_runs'))
+    conn.execute(text('DROP TABLE daily_outlook_runs'))
+    conn.execute(text('ALTER TABLE daily_outlook_runs_slots_new RENAME TO daily_outlook_runs'))

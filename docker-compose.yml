@@ -9,6 +9,7 @@ services:
     environment:
       DATABASE_URL: sqlite+aiosqlite:////app/data/tradeonbu.db
       DATA_DIR: /app/data
+      OUTLOOK_FOUR_HOUR_ENABLED: ${OUTLOOK_FOUR_HOUR_ENABLED:-1}
       VERIFIED_PLANS_ENABLED: ${VERIFIED_PLANS_ENABLED:-1}
       SESSION_AUTH_ENABLED: "1"
       SESSION_COOKIE_SECURE: "1"

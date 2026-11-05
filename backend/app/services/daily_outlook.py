@@ -1,9 +1,10 @@
-"""Independent daily inference per symbol/Tehran date; pre-AI manual retries only."""
+"""Independent outlook per closed 4h slot (or legacy day); pre-AI manual retries only."""
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
+import os
 import uuid
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -55,6 +56,16 @@ def due(now: datetime, hour: int, minute: int) -> bool:
     return utc(now) >= scheduled_time(now, hour, minute)
 
 
+def four_hour_enabled() -> bool:
+    return os.getenv("OUTLOOK_FOUR_HOUR_ENABLED", "0") == "1"
+
+
+def four_hour_slot(now):
+    now = utc(now).astimezone(timezone.utc)
+    close = now.replace(hour=(now.hour//4)*4, minute=0, second=0, microsecond=0)
+    return close, close + timedelta(minutes=5)
+
+
 async def settings_row(session) -> DailyOutlookSettings:
     row = await session.get(DailyOutlookSettings, 1)
     if row is None:
@@ -65,6 +76,9 @@ async def settings_row(session) -> DailyOutlookSettings:
         except IntegrityError:
             await session.rollback()
         row = await session.get(DailyOutlookSettings, 1)
+    if four_hour_enabled() and not row.four_hour_initialized:
+        row.enabled, row.four_hour_initialized = True, True
+        await session.commit()
     return row
 
 
@@ -105,10 +119,19 @@ async def reserve_run(trigger: str) -> tuple[int | None, str | None, str]:
     async with SessionLocal() as session:
         await recover_interrupted(session, now)
         cfg = await settings_row(session)
-        if trigger == "scheduled" and (not cfg.enabled or not due(now, cfg.hour, cfg.minute)):
+        slot, ready = four_hour_slot(now)
+        slot_ms = int(slot.timestamp()*1000) if four_hour_enabled() else 0
+        if slot_ms:
+            date = slot.astimezone(TEHRAN).date().isoformat()
+        if four_hour_enabled() and now < ready:
+            return None, None, "waiting_for_closed_4h"
+        if trigger == "scheduled" and (not cfg.enabled or
+                (four_hour_enabled() and now >= ready + timedelta(minutes=15)) or
+                (not four_hour_enabled() and not due(now, cfg.hour, cfg.minute))):
             return None, None, "not_due"
         existing = (await session.execute(select(DailyOutlookRun).where(
             DailyOutlookRun.symbol == symbol, DailyOutlookRun.report_date == date,
+            DailyOutlookRun.slot_close_ms == slot_ms,
         ))).scalar_one_or_none()
         if existing and not (trigger == "manual" and retryable(existing)):
             return existing.id, None, "already_attempted_today"
@@ -121,6 +144,7 @@ async def reserve_run(trigger: str) -> tuple[int | None, str | None, str]:
             # Recheck after acquiring the shared lock: two clicks must not retry twice.
             row = (await session.execute(select(DailyOutlookRun).where(
                 DailyOutlookRun.symbol == symbol, DailyOutlookRun.report_date == date,
+                DailyOutlookRun.slot_close_ms == slot_ms,
             ))).scalar_one_or_none()
             if row:
                 if trigger != "manual" or not retryable(row):
@@ -133,7 +157,7 @@ async def reserve_run(trigger: str) -> tuple[int | None, str | None, str]:
                 row.completed_at, row.error_code = None, None
                 row.report, row.usage, row.model_slug = {}, {}, None
             else:
-                row = DailyOutlookRun(symbol=symbol, report_date=date, trigger=trigger,
+                row = DailyOutlookRun(symbol=symbol, report_date=date, slot_close_ms=slot_ms, trigger=trigger,
                                       started_at=now, status="running")
                 session.add(row)
             await session.commit()
@@ -150,8 +174,15 @@ async def _work(run_id: int) -> None:
     async with SessionLocal() as session:
         row = await session.get(DailyOutlookRun, run_id)
         symbol = row.symbol
+        slot_ms = row.slot_close_ms
     # Data acquisition/validation precedes the only paid inference call.
     context = await build_daily_context(symbol)
+    if slot_ms:
+        bars = (context.get("candles") or {}).get("4h") or []
+        if not bars or bars[-1][0] + 14_400_000 != slot_ms:
+            raise ValueError("latest_closed_candle_missing")
+        context["report_cadence"] = "4h"
+        context["slot_close_ms"] = slot_ms
     async with SessionLocal() as session:
         execution_plan = await snapshot_plan(session, symbol, context)
         context["market_intelligence"] = await load_ai_market_intelligence(session, symbol=symbol)
@@ -169,7 +200,7 @@ async def _work(run_id: int) -> None:
         row.model_slug = model
         await session.commit()
     response = await stream_analysis_response(
-        token, model=model, instructions=INSTRUCTIONS,
+        token, model=model, instructions=INSTRUCTIONS + ("\nThis is the four-hour refresh after a closed 4h candle. Keep the multi-day context but clearly explain changes since the previous report." if slot_ms else ""),
         user_input=json.dumps({"market": context, "previous_report": prior}, ensure_ascii=False),
         reasoning_effort=effort, timeout=600, max_output_tokens=12000,
     )
@@ -184,6 +215,49 @@ async def _work(run_id: int) -> None:
         row.report = report
         row.status = "completed"
         row.completed_at = datetime.now(timezone.utc)
+        await session.commit()
+    if slot_ms:
+        try:
+            await deliver_outlook(run_id)
+        except Exception:
+            logger.exception("Outlook %s completed but Telegram delivery failed", run_id)
+
+
+async def deliver_outlook(run_id):
+    from app.services.telegram_notifier import TelegramNotifier
+    async with SessionLocal() as session:
+        row = await session.get(DailyOutlookRun, run_id)
+        if row is None or row.status != "completed" or (row.context or {}).get("telegram_delivery"):
+            return
+        notifier = TelegramNotifier()
+        if not notifier.enabled:
+            row.context = {**row.context, "telegram_delivery": {"status": "disabled"}}
+            await session.commit()
+            return
+        # Record intent before sending; ambiguous network outcomes must not resend AI/reports.
+        row.context = {**row.context, "telegram_delivery": {"status": "sending"}}
+        await session.commit()
+        report = row.report or {}
+        close = datetime.fromtimestamp(row.slot_close_ms/1000, timezone.utc).astimezone(TEHRAN)
+        lines = [f"تحلیل چهار‌ساعته {row.symbol} | {close:%Y-%m-%d %H:%M} تهران",
+                 report.get("summary_fa", "")]
+        for key, title in (("dominant", "سناریوی اصلی"), ("alternative", "سناریوی جایگزین")):
+            sc = report.get(key) or {}
+            lines += [title + ": " + sc.get("title_fa", ""),
+                      "شرط فعال‌شدن: " + sc.get("activation_fa", ""),
+                      "شرط ابطال: " + sc.get("invalidation_fa", ""),
+                      *sc.get("path_fa", [])]
+        lines += ["ابهام‌ها: " + report.get("uncertainty_fa", ""),
+                  "این گزارش به‌تنهایی سفارش ایجاد نمی‌کند؛ اجرا در حالت Paper است."]
+        public = (notifier.settings.dashboard_public_url or "").strip()
+        if public.startswith("https://"):
+            lines.append(public.rstrip('/') + f"/#/outlook/reports/{row.id}")
+        try:
+            message_id = await notifier.send_message("\n\n".join(lines)[:4000], parse_mode=None)
+            delivery = {"status": "sent" if message_id else "failed_or_unknown", "message_id": message_id}
+        except Exception:
+            delivery = {"status": "failed_or_unknown"}
+        row.context = {**row.context, "telegram_delivery": delivery}
         await session.commit()
 
 
@@ -210,6 +284,9 @@ async def execute_reserved(run_id: int, owner: str) -> None:
         logger.warning("Daily outlook %s failed: %s (%s)", run_id, code, type(exc).__name__)
         async with SessionLocal() as session:
             row = await session.get(DailyOutlookRun, run_id)
+            if row.status == "completed":
+                # Delivery timeout must not turn a successfully saved analysis into failure.
+                return
             row.status = "failed"
             row.error_code = code
             row.completed_at = datetime.now(timezone.utc)
@@ -228,11 +305,11 @@ async def daily_outlook_tick() -> None:
 
 def serialize_run(row: DailyOutlookRun, *, detail: bool = True) -> dict:
     out = {"id": row.id, "symbol": row.symbol, "report_date": row.report_date,
-           "status": row.status, "trigger": row.trigger,
+           "status": row.status, "trigger": row.trigger, "slot_close_ms": row.slot_close_ms,
            "started_at": utc(row.started_at).isoformat(),
            "completed_at": utc(row.completed_at).isoformat() if row.completed_at else None,
            "model": row.model_slug, "error_code": row.error_code,
-           "stale": row.report_date != datetime.now(TEHRAN).date().isoformat()}
+           "stale": (row.slot_close_ms != int(four_hour_slot(datetime.now(timezone.utc))[0].timestamp()*1000) if row.slot_close_ms else row.report_date != datetime.now(TEHRAN).date().isoformat())}
     report = row.report or {}
     dominant = report.get("dominant") or {}
     out.update(title=dominant.get("title_fa") or "چشم‌انداز روزانه بیت‌کوین",
@@ -246,6 +323,7 @@ def serialize_run(row: DailyOutlookRun, *, detail: bool = True) -> dict:
             "live_price": ctx.get("live_price"), "levels": ctx.get("levels", []),
             "daily_atr14": ctx.get("daily_atr14"),
             "channel_context": ctx.get("channel_context"),
+            "telegram_delivery": ctx.get("telegram_delivery"),
             "data_quality_warnings": ctx.get("data_quality_warnings", []),
             "daily_candles": (ctx.get("candles") or {}).get("1d", [])[-30:],
             "four_hour_candles": (ctx.get("candles") or {}).get("4h", [])[-120:],
@@ -262,20 +340,26 @@ async def dashboard() -> dict:
         rows = (await session.execute(select(DailyOutlookRun).where(
             DailyOutlookRun.symbol == symbol,
         ).order_by(DailyOutlookRun.id.desc()).limit(31))).scalars().all()
-        today = next((r for r in rows if r.report_date == now.astimezone(TEHRAN).date().isoformat()), None)
+        slot, ready = four_hour_slot(now)
+        slot_ms = int(slot.timestamp()*1000) if four_hour_enabled() else 0
+        today = next((r for r in rows if r.report_date == (slot if slot_ms else now).astimezone(TEHRAN).date().isoformat() and r.slot_close_ms == slot_ms), None)
         nxt = scheduled_time(now, cfg.hour, cfg.minute)
         if today:
             nxt += timedelta(days=1)
         elif nxt < now:
             nxt = now.astimezone(TEHRAN)
+        if four_hour_enabled():
+            nxt = ready if now < ready or (not today and now < ready + timedelta(minutes=15)) else ready + timedelta(hours=4)
         return {
             "settings": {"enabled": cfg.enabled, "hour": cfg.hour, "minute": cfg.minute,
+                         "cadence_hours": 4 if four_hour_enabled() else 24,
                          "timezone": "Asia/Tehran", "next_run_at": nxt.isoformat() if cfg.enabled else None},
             "latest": serialize_run(rows[0]) if rows else None,
             "latest_completed": serialize_run(next(r for r in rows if r.status == "completed"))
                 if any(r.status == "completed" for r in rows) else None,
             "history": [serialize_run(r, detail=False) for r in rows[:30]],
             "next_cursor": rows[29].id if len(rows) > 30 else None,
+            "can_generate": (not four_hour_enabled() or now >= ready) and (today is None or retryable(today)),
             "attempted_today": today is not None,
             "can_retry_today": retryable(today),
         }

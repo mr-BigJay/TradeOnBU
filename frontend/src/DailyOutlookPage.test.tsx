@@ -23,7 +23,7 @@ it('opens a deep linked report with its static chart and both scenarios',async()
  expect(screen.getByText('سناریوی جایگزین')).toBeInTheDocument();
  expect(await screen.findByRole('img')).toHaveAttribute('src','data:image/png;base64,abc');
  expect(screen.getByRole('link',{name:'دانلود تصویر چارت'})).toHaveAttribute('download','report.png');
- expect(screen.getByText(/این گزارش مربوط به روز گذشته/)).toBeInTheDocument();
+ expect(screen.getByText(/این گزارش مربوط به نوبت قبلی/)).toBeInTheDocument();
  window.location.hash='#/outlook'; window.dispatchEvent(new HashChangeEvent('hashchange'));
  await waitFor(()=>expect(screen.queryByRole('img')).not.toBeInTheDocument());
 });
@@ -107,4 +107,16 @@ it('does not offer an archived AI-only short as an engine plan', async () => {
  const card=await screen.findByRole('article',{name:'پلن معاملاتی'});
  expect(card).toHaveTextContent('پلن آرشیوی');
  expect(card).not.toHaveTextContent('76,270.1');
+});
+
+it('shows fixed post-close slots and blocks early manual calls in four-hour mode',async()=>{
+ apiFetch.mockResolvedValue({...empty(),can_generate:false,settings:{...empty().settings,enabled:true,cadence_hours:4,next_run_at:'2026-11-05T04:05:00Z'}});
+ render(<DailyOutlookPage/>);
+ expect(await screen.findByText('چشم‌انداز چهار‌ساعته')).toBeInTheDocument();
+ expect(screen.queryByLabelText('ساعت تهران')).not.toBeInTheDocument();
+ expect(screen.getByText(/۰۳:۳۵، ۰۷:۳۵، ۱۱:۳۵/)).toBeInTheDocument();
+ expect(screen.getByRole('button',{name:'تولید گزارش این نوبت'})).toBeDisabled();
+ fireEvent.click(screen.getByRole('checkbox'));
+ fireEvent.click(screen.getByRole('button',{name:'ذخیره زمان‌بندی'}));
+ await waitFor(()=>expect(apiFetch).toHaveBeenCalledWith('/api/gui/daily-outlook/settings',{method:'PUT',body:JSON.stringify({enabled:false,hour:8,minute:5})}));
 });
