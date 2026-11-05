@@ -128,3 +128,12 @@ describe("OpportunitiesPage", () => {
     });
   });
 });
+
+
+it("shows the verified policy and removes obsolete shadow controls", async () => {
+  cleanup();
+  apiFetch.mockImplementation((path: string) => Promise.resolve(path.includes("/summary") ? {counts:{}} : {...listPayload("wait", "WAIT_LONG"), verified_plans_enabled:true}));
+  render(<OpportunitiesPage />);
+  expect(await screen.findByText("ورود مبتنی بر شواهد کندلی · آزمایشی")).toBeInTheDocument();
+  expect(screen.queryByText("آزمایش موازی ساختار و شواهد کندلی")).not.toBeInTheDocument();
+});

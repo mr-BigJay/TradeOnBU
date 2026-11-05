@@ -15,6 +15,11 @@ async def get_paper_entry_execution_config(
     mode = normalize_entry_mode(getattr(row, "paper_entry_mode", None))
     shadow = bool(getattr(row, "balanced_entry_shadow_mode", False))
     dry_run = bool(getattr(row, "paper_entry_dry_run", False))
+    from app.services.verified_trade_plan import enabled
+    if enabled():
+        # Structural proof is already server-derived; place a resting limit
+        # before the first return, while retaining 1m integrity/fill guards.
+        mode, shadow = ENTRY_MODE_BALANCED, False
     return mode, shadow, dry_run
 
 

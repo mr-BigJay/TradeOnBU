@@ -159,6 +159,33 @@ async def maybe_auto_open_paper_position(
     if strategy_err:
         return {**meta, "skipped": True, "reason": strategy_err}
 
+    from app.services import verified_trade_plan as verified
+    vplan = (setup.structured_snapshot or {}).get('verified_trade_plan')
+    if verified.enabled() or vplan:
+        error = verified.plan_error(setup.structured_snapshot or {}, int(_utc_now().timestamp()*1000))
+        if error:
+            return {**meta, 'skipped': True, 'reason': error}
+        if ((setup.entry_price, setup.stop_loss, setup.take_profit, setup.direction, setup.invalidation_level)
+                != (vplan['entry'], vplan['stop'], vplan['target'], vplan['direction'], vplan['invalidation'])
+                or [setup.entry_zone_low, setup.entry_zone_high] != vplan['zone']):
+            return {**meta, 'skipped': True, 'reason': 'verified_plan_levels_changed'}
+        if not verified_5m or as_of_ms is None or not verified.valid_bars(verified_5m, verified.STEP, as_of_ms, 20):
+            return {**meta, 'skipped': True, 'reason': 'verified_market_data_invalid'}
+        # API latency and scheduler delay must not turn a used zone into a fresh order.
+        from app.services.market_data import MarketDataService
+        try:
+            minute_bundle = await MarketDataService().fetch_kline_bundle(symbol, '1m', 120)
+        except Exception:
+            return {**meta, 'skipped': True, 'reason': 'verified_freshness_unavailable'}
+        if not minute_bundle.data_complete or not verified.valid_bars(minute_bundle.closed, 60_000, as_of_ms, 20):
+            return {**meta, 'skipped': True, 'reason': 'verified_freshness_unavailable'}
+        since = vplan['as_of_ms']//60_000*60_000
+        minutes = [b for b in minute_bundle.closed if b.time_ms >= since]
+        if not minutes or minutes[0].time_ms != since:
+            return {**meta, 'skipped': True, 'reason': 'verified_freshness_unavailable'}
+        if any(b.low <= vplan['zone'][1] and b.high >= vplan['zone'][0] for b in minutes):
+            return {**meta, 'skipped': True, 'reason': 'verified_pullback_already_used'}
+
     settings: SimPositionSettings = await get_or_create_settings(session)
     if not settings.auto_open_paper_positions:
         meta["skipped"] = True
@@ -259,7 +286,7 @@ async def maybe_auto_open_paper_position(
 
     tp2 = ai_take_profit_2_from_payload(structured, setup.structured_snapshot or {})
 
-    strict_a = mode == "STRICT" and (setup.structured_snapshot or {}).get("strategy_id", "ict_reversal") == "ict_reversal"
+    strict_a = not vplan and mode == "STRICT" and (setup.structured_snapshot or {}).get("strategy_id", "ict_reversal") == "ict_reversal"
     if strict_a:
         from app.services.ict_execution_plan import strict_a_target, REASONS
         if not verified_5m or as_of_ms is None:
@@ -269,12 +296,19 @@ async def maybe_auto_open_paper_position(
         if reason:
             return {**meta, "skipped": True, "reason": reason, "detail": REASONS[reason]}
 
+    risk_budget = None
+    if vplan:
+        from app.services.verified_plan_risk import budget
+        risk_budget, error = await budget(session, settings, setup, _utc_now())
+        if error:
+            return {**meta, 'skipped': True, 'reason': error}
+        tp2 = None
     svc = SimPositionService()
     req = OrderRequest(
         symbol=symbol,
         direction=direction,
-        margin_usdt=settings.default_margin_usdt,
-        leverage=settings.default_leverage,
+        margin_usdt=risk_budget["margin"] if risk_budget else settings.default_margin_usdt,
+        leverage=risk_budget["leverage"] if risk_budget else settings.default_leverage,
         order_type="limit",
         entry_price=entry,
         stop_loss=sl,
@@ -312,6 +346,8 @@ async def maybe_auto_open_paper_position(
         pos.extra = {
             **(pos.extra or {}),
             "auto_paper": True,
+            "verified_trade_plan": vplan,
+            "verified_risk_budget": risk_budget,
             "strict_a_plan": strict_a,
             "ai_run_id": run_id,
             "source": "gpt_auto_paper",

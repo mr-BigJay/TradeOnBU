@@ -296,6 +296,7 @@ async def _persist_run_draft(run_id: int, draft: _RunDraft, *, symbol: str) -> A
         run.setup_mode = str(structured.get("setup_mode") or "flat").lower()
         run.report_fa = draft.report_fa
         run.structured = draft.structured
+        run.is_ai = not bool(draft.validation.get("api_skipped"))
         run.validation = draft.validation
         run.telegram_sent = draft.telegram_sent
         run.error_code = draft.error_code
@@ -400,6 +401,39 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
         market_payload, live, candles_by_interval = await build_raw_market_payload(
             symbol, settings, market=market_svc
         )
+        from app.services import verified_trade_plan as verified
+        verified_candidates, verified_diagnostics = [], {}
+        if verified.enabled():
+            from app.services.position.settings_service import get_or_create_settings as paper_settings
+            async with SessionLocal() as candidate_session:
+                costs = await paper_settings(candidate_session)
+                verified_candidates, verified_diagnostics = verified.build_candidates(
+                    candles_by_interval, costs, int(datetime.now(timezone.utc).timestamp()*1000), live)
+                if not (await strategy_settings(candidate_session)).get('ict_reversal'):
+                    verified_candidates, verified_diagnostics = [], {'strategy_disabled': 1}
+                if symbol != 'BTCUSDT':
+                    verified_candidates, verified_diagnostics = [], {'unsupported_symbol': 1}
+                for tf, step in (('1m', 60000), ('4h', 14400000)):
+                    if not verified.valid_bars(candles_by_interval.get(tf, []), step,
+                            int(datetime.now(timezone.utc).timestamp()*1000), 20):
+                        verified_candidates = []
+                        verified_diagnostics['invalid_or_stale_'+tf] = 1
+                if verified_candidates:
+                    verified_candidates, skip_reason = await verified.unreviewed_candidates(
+                        candidate_session, verified_candidates, datetime.now(timezone.utc))
+                    if skip_reason:
+                        verified_diagnostics[skip_reason] = 1
+                await candidate_session.commit()
+            if not verified_candidates:
+                draft.structured = verified.flat('ستاپ کندلی معتبر برای بررسی API وجود ندارد.', verified_diagnostics)
+                draft.report_fa = finalize_user_report(draft.structured, symbol=symbol, live=live)
+                draft.structured['report_fa'] = draft.report_fa
+                draft.decision = 'NO_TRADE'
+                draft.status = 'completed'
+                draft.validation = {'ok': True, 'api_skipped': True, 'reason': 'no_verified_candidate',
+                                    'diagnostics': verified_diagnostics}
+                draft.completed_at = datetime.now(timezone.utc)
+                return draft
         async with SessionLocal() as session:
             enabled_strategies = await strategy_settings(session)
             memory = await build_ai_memory_context(
@@ -416,7 +450,7 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
 
         from app.services import structure_shadow
         shadow_candidates = []
-        if structure_shadow.enabled() and enabled_strategies.get("ict_reversal") and symbol == "BTCUSDT":
+        if not verified.enabled() and structure_shadow.enabled() and enabled_strategies.get("ict_reversal") and symbol == "BTCUSDT":
             async with SessionLocal() as shadow_session:
                 shadow_candidates = await structure_shadow.reviewable(shadow_session)
         features = strategy_features(candles_by_interval)
@@ -424,6 +458,7 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
             {
                 "market": market_payload,
                 "strategy_features": features,
+                "verified_candidates": verified_candidates,
                 **({"shadow_candidates": shadow_candidates} if shadow_candidates else {}),
                 "memory": memory,
                 "market_intelligence": market_intelligence,
@@ -435,15 +470,37 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
             },
             ensure_ascii=False,
         )
+        if verified.enabled():
+            # No old narratives or competing discretionary plans in the reviewer input.
+            user_payload = json.dumps({'market': market_payload, 'verified_candidates': verified_candidates}, ensure_ascii=False)
+        verified_review_meta = {}
+        if verified.enabled():
+            verified_review_meta = {'version': verified.VERSION, 'api_attempted': True,
+                'opportunity_ids': [c['opportunity_id'] for c in verified_candidates],
+                'diagnostics': verified_diagnostics}
+            draft.structured = verified.flat('بررسی API آغاز شد')
+            draft.structured['verified_plan_review'] = verified_review_meta
+            # Journal the attempt BEFORE network I/O, so a worker crash cannot
+            # bypass deduplication or reset the daily paid-call budget.
+            async with SessionLocal() as review_session:
+                review_run = await review_session.get(AiAnalysisRun, run_id)
+                if review_run is None:
+                    raise RuntimeError('analysis_run_missing_before_review')
+                review_run.structured = draft.structured
+                await review_session.commit()
         analysis: AnalysisResponse = await stream_analysis_response(
             token,
             model=model,
-            instructions=shared_strategy_instructions(INSTRUCTIONS, enabled_strategies) + (structure_shadow.REVIEW if shadow_candidates else ""),
+            instructions=(verified.REVIEW_INSTRUCTIONS if verified.enabled() else shared_strategy_instructions(INSTRUCTIONS, enabled_strategies) + (structure_shadow.REVIEW if shadow_candidates else "")),
             user_input=user_payload,
             reasoning_effort=reasoning_effort,
             timeout=settings.ai_response_timeout_seconds,
         )
         structured = _extract_json(analysis.text)
+        if verified.enabled():
+            structured = verified.apply_review(structured, verified_candidates,
+                int(datetime.now(timezone.utc).timestamp()*1000))
+            structured['verified_plan_review'] = verified_review_meta
         review = structure_shadow.validate_review(shadow_candidates, structured.pop("shadow_review", None))
         structured = prepare_structured_for_user_report(structured)
         structured["report_fa"] = finalize_user_report(structured, symbol=symbol, live=live)

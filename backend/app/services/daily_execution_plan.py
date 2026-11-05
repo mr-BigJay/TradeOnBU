@@ -46,7 +46,7 @@ async def snapshot_plan(session, symbol, context):
             SimPosition.ai_setup_id == row.setup_id, SimPosition.symbol == symbol,
             SimPosition.status == "pending_entry", SimPosition.updated_at <= stamp,
         ).order_by(SimPosition.id.desc()).limit(1))
-        if pos is None or not (pos.extra or {}).get("strict_a_plan"):
+        if pos is None or not ((pos.extra or {}).get("strict_a_plan") or (pos.extra or {}).get("verified_trade_plan")):
             continue
         entry, stop, tp = pos.limit_entry_price, pos.stop_loss, pos.take_profit
         sign = 1 if pos.direction == "LONG" else -1

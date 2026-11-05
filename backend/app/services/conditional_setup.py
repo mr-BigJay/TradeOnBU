@@ -111,6 +111,13 @@ def parse_conditional_plan(structured: dict[str, Any]) -> tuple[dict[str, Any] |
         return None, "missing_proposed_levels"
 
     entry_mid = (lo + hi) / 2.0
+    verified = structured.get('verified_trade_plan')
+    if verified:
+        from app.services.verified_trade_plan import plan_error
+        error = plan_error(structured, int(datetime.now(timezone.utc).timestamp()*1000))
+        if error:
+            return None, error
+        entry_mid = float(verified['entry'])
     ok, err = _validate_levels(direction, entry_mid, sl, tp)
     if not ok:
         return None, err
@@ -126,7 +133,7 @@ def parse_conditional_plan(structured: dict[str, Any]) -> tuple[dict[str, Any] |
     if not sequence:
         return None, seq_err or "missing_confirmation_sequence"
 
-    expires_hours = structured.get("expires_hours") or 48
+    expires_hours = (structured.get("proposed_setup") or {}).get("expires_hours") or structured.get("expires_hours") or 48
     try:
         expires_hours = float(expires_hours)
     except (TypeError, ValueError):
@@ -149,6 +156,9 @@ def parse_conditional_plan(structured: dict[str, Any]) -> tuple[dict[str, Any] |
         "confirmation_timeframe": structured.get("confirmation_timeframe") or "5m",
     }
     plan["expires_at"] = (datetime.now(timezone.utc) + timedelta(hours=expires_hours)).isoformat()
+    if verified:
+        plan['expires_at'] = datetime.fromtimestamp(verified['expires_ms']/1000, timezone.utc).isoformat()
+        plan['verified_trade_plan'] = verified
     return plan, None
 
 
@@ -193,6 +203,21 @@ def apply_conditional_plan_to_setup_row(
         "confirmation_timestamps": {},
         "confirmation_evidence": {},
     }
+    verified = structured.get('verified_trade_plan')
+    if verified:
+        ev = verified['evidence']
+        stamps = {'liquidity_sweep': ev['sweep_ms'], 'mss': ev['break_ms']}
+        row.confirmation_state.update({
+            'completed': list(stamps), 'missing': ['entry_zone_touch'],
+            'confirmation_timestamps': stamps,
+            'confirmation_evidence': {token: {
+                'source': 'verified_trade_plan', 'engine': 'STRICT', 'granularity': '5m',
+                'bar_5m_ms': stamp,
+                'ohlc': ev['sweep_ohlc' if token == 'liquidity_sweep' else 'break_ohlc'],
+                'bar_low': ev['sweep_ohlc' if token == 'liquidity_sweep' else 'break_ohlc'][2],
+                'bar_high': ev['sweep_ohlc' if token == 'liquidity_sweep' else 'break_ohlc'][1],
+                'candidate_id': verified['candidate_id']} for token, stamp in stamps.items()},
+        })
     row.run_id = run_id
     row.structured_snapshot = structured
 

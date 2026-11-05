@@ -1,0 +1,16 @@
+name: Verified paper trade plans
+on:
+  pull_request:
+  push:
+    branches: [main]
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r backend/requirements.txt
+      - run: mkdir -p data
+      - run: PYTHONPATH=backend pytest -q backend/tests/test_verified_trade_plan.py backend/tests/test_strict_a_execution_plan.py backend/tests/test_paper_auto_trading.py backend/tests/test_timely_entry_confirmations.py backend/tests/test_ai_first_revisions.py backend/tests/test_ai_schedule_60min.py

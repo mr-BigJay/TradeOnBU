@@ -7,6 +7,13 @@ from app.services.ai_setup_memory import create_setup_from_structured
 
 async def persist_strategy_candidates(session, *, run_id, symbol, structured, market_intelligence=None):
     enabled = await strategy_settings(session)
+    from app.services import verified_trade_plan as verified
+    if verified.enabled():
+        enabled = {sid: sid == 'ict_reversal' and on for sid, on in enabled.items()}
+        if structured.get('setup_mode') != 'flat':
+            error = verified.plan_error(structured)
+            if error:
+                return {}, {'ict_reversal': {'created': False, 'skipped': True, 'reason': error}}
     primary = strategy_id(structured)
     extras = structured.get("strategy_candidates", {})
     results, rows = {}, {}
