@@ -2,6 +2,7 @@
 import asyncio
 import json
 import time
+from app.domain.candle_quality import acceptable_prices
 from app.db import SessionLocal
 from app.models import SimPositionSettings
 from app.services.market_data import MarketDataService
@@ -12,12 +13,14 @@ async def main():
     market=MarketDataService();series={};quality={}
     # Capture one as-of boundary for every interval to avoid mixing forming bars.
     now=int(time.time()*1000)
-    for tf,step in (('1m',60000),('5m',300000),('15m',900000),('1h',3600000)):
+    for tf,step in (('1m',60000),('5m',300000),('15m',900000),('1h',3600000),('4h',14400000)):
         bundle=await market.fetch_kline_bundle('BTCUSDT',tf,120)
         bars=[b for b in bundle.closed if b.time_ms+step<=now]
         series[tf]=bars
-        bad=[b.time_ms for b in bars if not b.low<=min(b.open,b.close)<=max(b.open,b.close)<=b.high]
+        bad=[b.time_ms for i,b in enumerate(bars) if not acceptable_prices(b, bars[i-1] if i else None, step)]
+        carried=[b.time_ms for b in bars if b.carried_open_verified]
         quality[tf]={'usable':bundle.data_complete and valid_bars(bars,step,now,30),
+            'carried_open_count':len(carried),'carried_open_samples':carried[:5],
             'count':len(bars),'invalid_ohlc_samples':bad[:5],'invalid_ohlc_count':len(bad),
             'gaps_remaining':len(bundle.gaps_remaining or [])}
     quote=await market.fetch_live_price('BTCUSDT')
