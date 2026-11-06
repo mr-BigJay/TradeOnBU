@@ -152,7 +152,7 @@ async def test_monitor_with_real_seed_and_forward_order_gates(session, outcome):
         created_at=datetime.fromtimestamp(registered/1000, timezone.utc),
         expires_at=datetime.fromtimestamp((END+4*3600_000)/1000, timezone.utc),
         entry_zone_low=99.5, entry_zone_high=100.5, entry_price=100,
-        stop_loss=95, take_profit=109 if outcome == "rr_blocked" else 120, invalidation_level=95,
+        stop_loss=95, take_profit=106 if outcome == "rr_blocked" else 120, invalidation_level=95,
         conditional_plan=base.conditional_plan, confirmation_state=base.confirmation_state,
         structured_snapshot={"confirmation_type": "sweep_mss_poi"}, objective_notes={},
     )

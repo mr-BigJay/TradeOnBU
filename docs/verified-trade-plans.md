@@ -1,3 +1,45 @@
+## POI v2 and report separation
+
+The active contract is `verified_reversal_poi_v2`. The API reviews candle-derived
+order blocks and support/resistance alongside the existing market input. An order
+block is a full-range last opposite candle before displacement through a confirmed
+swing; it is a price-pattern definition, not proof of institutional orders.
+Context includes timeframe, origin, confirmation and fresh/retested/invalidated status.
+
+Entry candidates retain the sweep, reclaim, displacement and structural-break
+requirements. An untouched order block can supply a limit-entry zone independently
+of a three-candle FVG; it can be known immediately after the break candle closes.
+The model cannot invent or edit entry, stop or target. The stop remains beyond
+structural invalidation with an ATR buffer. Nearby unbroken 1H/4H levels also bound
+available target space. These areas inform selection rather than adding a mandatory
+OB + FVG + support checklist.
+
+The automatic Paper minimum is **net 1:1.4**, including configured fees/slippage.
+The target is the first price tick meeting this floor before the nearest applicable
+obstacle. A gross 1.4 ratio alone does not qualify. Position creation and fill checks
+use the same central floor. Existing risk caps, Paper-only mode and validity guards
+remain. Old v1 pending contracts do not become v2 contracts; fresh proposals are
+required. Open positions are not rewritten by this change.
+
+Daily outlook remains one attempt per Tehran date in **Outlook**. Independent
+four-hour reports appear in **Analysis**, at UTC 00:05/04:05/08:05/12:05/16:05/20:05,
+with the latest closed 4H candle required. Entry reviews remain available in a
+separate expandable section of Analysis. Each cadence has independent enabled
+settings and history; old report IDs remain readable. On the first upgrade with
+`OUTLOOK_FOUR_HOUR_ENABLED=1`, both schedules are enabled once; subsequent user
+changes are respected. The stored daily time is preserved (08:05 Tehran for a new
+installation). A migration adds `daily_split_initialized`; use the backup-first
+deployment script.
+
+Both report types use the existing inference lock and Telegram delivery tracking.
+This allows up to **seven general reports per day** (six 4H plus one daily), in
+addition to the existing maximum four candidate reviews. It is one more general
+report than the previous six-report schedule. No paid API calls are made by tests.
+Synthetic tests validate mechanics, not profitability; compare the v2 Paper results
+separately from v1 before interpreting changes in trade count or returns.
+
+## Previous v1 design (historical)
+
 # Verified trade plans — paper release v1
 
 ## Problem and chosen design

@@ -40,7 +40,7 @@ def test_real_detector_proves_structure_and_cost_adjusted_target():
     assert 1<=ev['stop_atr']<=3
     assert c['stop']>ev['sweep_extreme']>c['entry']>c['target']>ev['obstacle']
     from app.services.execution_model_sim import auto_paper_rr_from_settings
-    rr=auto_paper_rr_from_settings(cost,direction=c['direction'],entry=c['entry'],sl=c['stop'],tp=c['target'],min_net_rr=2)
+    rr=auto_paper_rr_from_settings(cost,direction=c['direction'],entry=c['entry'],sl=c['stop'],tp=c['target'],min_net_rr=1.4)
     assert rr.acceptable
 
 
@@ -142,7 +142,8 @@ async def test_contract_persists_exact_levels_and_preentry_proof(session, monkey
     # Contract persistence uses already verified evidence; test current-clock timestamps.
     c=cs[0]
     for key in ('formed_ms','expires_ms','as_of_ms'):c[key]+=offset
-    for key in ('sweep_ms','swept_pivot_ms','break_ms','broken_pivot_ms','fvg_ms'):c['evidence'][key]+=offset
+    for key in ('sweep_ms','swept_pivot_ms','break_ms','broken_pivot_ms','fvg_ms','poi_origin_ms'):
+        if c['evidence'].get(key) is not None:c['evidence'][key]+=offset
     c['evidence']['fvg_origin_ms']=[t+offset for t in c['evidence']['fvg_origin_ms']]
     import hashlib
     binding={k:val for k,val in c.items() if k not in ('candidate_id','as_of_ms','approved_at_ms')}
@@ -160,7 +161,8 @@ async def test_contract_persists_exact_levels_and_preentry_proof(session, monkey
     assert objective_confirmations_satisfied_for_order(row)[0] is False
 
 @pytest.mark.asyncio
-async def test_verified_plan_reaches_real_paper_order_service(session,monkeypatch):
+@pytest.mark.parametrize('poi_kind',['FVG','OB'])
+async def test_verified_plan_reaches_real_paper_order_service(session,monkeypatch,poi_kind):
     from app.models import AiAnalysisRun,SimPosition
     from app.services.strategy_candidates import persist_strategy_candidates
     from app.services.paper_auto_trading import maybe_auto_open_paper_position
@@ -172,10 +174,15 @@ async def test_verified_plan_reaches_real_paper_order_service(session,monkeypatc
     from sqlalchemy import select
     import hashlib
     c,series,_,base,live=candidate()
+    if poi_kind=='OB':
+        from tests.test_poi_context import ob_fixture
+        series,cost,base,live=ob_fixture()
+        c=v.build_candidates(series,cost,base,live)[0][0]
     boundary=int(datetime.now(timezone.utc).timestamp()*1000)//v.STEP*v.STEP
     offset=boundary-base
     for key in ('formed_ms','expires_ms','as_of_ms'):c[key]+=offset
-    for key in ('sweep_ms','swept_pivot_ms','break_ms','broken_pivot_ms','fvg_ms'):c['evidence'][key]+=offset
+    for key in ('sweep_ms','swept_pivot_ms','break_ms','broken_pivot_ms','fvg_ms','poi_origin_ms'):
+        if c['evidence'].get(key) is not None:c['evidence'][key]+=offset
     c['evidence']['fvg_origin_ms']=[x+offset for x in c['evidence']['fvg_origin_ms']]
     binding={k:val for k,val in c.items() if k not in ('candidate_id','as_of_ms','approved_at_ms')}
     c['candidate_id']=hashlib.sha256(json.dumps(binding,sort_keys=True).encode()).hexdigest()[:24]

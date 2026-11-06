@@ -111,7 +111,7 @@ async def test_auto_open_creates_pending_limit_order():
         assert pos.order_type == "limit"
         assert pos.limit_entry_price == 100.0
         assert pos.stop_loss == 94.0
-        assert 112.0 < pos.take_profit < 115.0
+        assert 108.4 < pos.take_profit < 110.0
         assert pos.extra.get("auto_paper") is True
 
 
@@ -146,7 +146,7 @@ async def test_auto_open_stores_ict_entry_audit_snapshot():
         assert snap["entry"] == 100.0
         assert snap["stop_loss"] == 94.0
         assert snap["proposed_take_profit"] == 115.0
-        assert 112.0 < snap["take_profit"] < 115.0
+        assert 108.4 < snap["take_profit"] < 110.0
         assert snap["liquidity_event_clear"] is True
         assert snap["poi_reaction_clear"] is True
         assert snap["structural_confirmation_clear"] is True

@@ -112,11 +112,19 @@ it('does not offer an archived AI-only short as an engine plan', async () => {
 it('shows fixed post-close slots and blocks early manual calls in four-hour mode',async()=>{
  apiFetch.mockResolvedValue({...empty(),can_generate:false,settings:{...empty().settings,enabled:true,cadence_hours:4,next_run_at:'2026-11-05T04:05:00Z'}});
  render(<DailyOutlookPage/>);
- expect(await screen.findByText('چشم‌انداز چهار‌ساعته')).toBeInTheDocument();
+ expect(await screen.findByText('تحلیل چهار‌ساعته')).toBeInTheDocument();
  expect(screen.queryByLabelText('ساعت تهران')).not.toBeInTheDocument();
  expect(screen.getByText(/۰۳:۳۵، ۰۷:۳۵، ۱۱:۳۵/)).toBeInTheDocument();
  expect(screen.getByRole('button',{name:'تولید گزارش این نوبت'})).toBeDisabled();
  fireEvent.click(screen.getByRole('checkbox'));
  fireEvent.click(screen.getByRole('button',{name:'ذخیره زمان‌بندی'}));
  await waitFor(()=>expect(apiFetch).toHaveBeenCalledWith('/api/gui/daily-outlook/settings',{method:'PUT',body:JSON.stringify({enabled:false,hour:8,minute:5})}));
+});
+
+
+it('places four-hour history under analysis with its own API cadence',async()=>{
+ apiFetch.mockResolvedValue({...empty(),settings:{...empty().settings,cadence_hours:4},history:[run]});
+ render(<DailyOutlookPage cadence="4h"/>);
+ expect(await screen.findByRole('link',{name:'مشاهده گزارش و چارت ←'})).toHaveAttribute('href','#/analysis/reports/1');
+ expect(apiFetch).toHaveBeenCalledWith('/api/gui/daily-outlook?cadence=4h');
 });

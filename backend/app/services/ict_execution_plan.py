@@ -2,6 +2,7 @@
 import math
 
 from app.domain.candles import Candle
+from app.domain.paper_execution_policy import HARD_MIN_AUTO_PAPER_NET_RR
 from app.services.execution_model_sim import auto_paper_rr_from_settings
 from app.services.ict_structure import find_swings
 from app.services.conditional_revision import objective_confirmations_satisfied_for_order
@@ -11,19 +12,19 @@ REASONS = {
     "ict_structure_unconfirmed": "جمع‌آوری نقدینگی، شکست ساختار و بازگشت به محدوده به ترتیب تأیید نشده‌اند.",
     "ict_structure_data_gap": "برای بررسی ساختار، دادهٔ پیوسته و تازهٔ کندل‌ها کافی نیست.",
     "ict_stop_inside_structure": "حدضرر از نقطهٔ ابطال و انتهای کندل جمع‌آوری نقدینگی عبور نمی‌کند.",
-    "ict_obstacle_before_two_r": "تا اولین مانع ساختاری پس از هزینه‌ها فضای ۲R وجود ندارد.",
+    "ict_obstacle_before_two_r": "تا اولین مانع ساختاری پس از هزینه‌ها فضای ۱٫۴R وجود ندارد.",
 }
 
 
-def target_at_two_r(sim, direction, entry, stop, obstacle):
-    """First BTCUSDT price tick reaching net 2R before or at the obstacle."""
+def target_at_net_rr(sim, direction, entry, stop, obstacle, minimum=HARD_MIN_AUTO_PAPER_NET_RR):
+    """First BTCUSDT price tick reaching the required net R:R before or at the obstacle."""
     sign = 1 if direction == "LONG" else -1
     first = math.floor(entry * 10) + 1 if sign == 1 else -math.ceil(entry * 10) + 1
     last = math.floor(sign * obstacle * 10)
 
     def acceptable(tick):
         return auto_paper_rr_from_settings(sim, direction=direction, entry=entry,
-            sl=stop, tp=sign * tick / 10, min_net_rr=2).acceptable
+            sl=stop, tp=sign * tick / 10, min_net_rr=minimum).acceptable
 
     if first > last or not acceptable(last):
         return None
@@ -35,6 +36,9 @@ def target_at_two_r(sim, direction, entry, stop, obstacle):
             first = middle + 1
     return sign * first / 10
 
+
+# Compatibility for older callers; the execution floor is centralized.
+target_at_two_r = target_at_net_rr
 
 def strict_a_target(row, sim, bars, now_ms):
     """Return the executable target or a stable reason to wait."""
@@ -98,6 +102,6 @@ def structural_target(sim, direction, entry, stop, target, closed):
             if not any(sign * (b.close - pivot.price) > 0 for b in series[pivot.index + 1:]):
                 levels.append(pivot.price)
     obstacle = min(levels) if long else max(levels)
-    tp = target_at_two_r(sim, direction, entry, stop, obstacle)
+    tp = target_at_net_rr(sim, direction, entry, stop, obstacle)
     return (tp, None) if tp is not None else (None, "ict_obstacle_before_two_r")
 

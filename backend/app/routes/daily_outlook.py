@@ -1,3 +1,4 @@
+from typing import Literal
 from starlette.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
@@ -21,8 +22,8 @@ class ScheduleBody(BaseModel):
 
 
 @router.get("")
-async def get_dashboard():
-    return await dashboard()
+async def get_dashboard(cadence: Literal["daily", "4h"] = "daily"):
+    return await dashboard(cadence)
 
 
 @router.get("/runs/{run_id}")
@@ -35,17 +36,17 @@ async def get_run(run_id: int):
 
 
 @router.put("/settings")
-async def save_settings(body: ScheduleBody):
+async def save_settings(body: ScheduleBody, cadence: Literal["daily", "4h"] = "daily"):
     async with SessionLocal() as session:
-        cfg = await settings_row(session)
+        cfg = await settings_row(session, cadence)
         cfg.enabled, cfg.hour, cfg.minute = body.enabled, body.hour, body.minute
         await session.commit()
-    return await dashboard()
+    return await dashboard(cadence)
 
 
 @router.post("/generate", status_code=202)
-async def generate(background: BackgroundTasks):
-    run_id, owner, status = await reserve_run("manual")
+async def generate(background: BackgroundTasks, cadence: Literal["daily", "4h"] = "daily"):
+    run_id, owner, status = await reserve_run("manual", cadence)
     if status == "analysis_busy":
         raise HTTPException(409, "تحلیل دیگری در حال اجراست؛ پس از پایان آن دوباره تلاش کنید.")
     if status == "already_attempted_today":
@@ -59,10 +60,11 @@ async def generate(background: BackgroundTasks):
 
 
 @router.get("/runs")
-async def list_runs(before_id: int | None = Query(default=None, gt=0)):
+async def list_runs(before_id: int | None = Query(default=None, gt=0), cadence: Literal["daily", "4h"] = "daily"):
     from app.config import get_effective_settings
     async with SessionLocal() as session:
-        query = select(DailyOutlookRun).where(DailyOutlookRun.symbol == get_effective_settings().default_symbol)
+        query = select(DailyOutlookRun).where(DailyOutlookRun.symbol == get_effective_settings().default_symbol,
+            DailyOutlookRun.slot_close_ms > 0 if cadence == "4h" else DailyOutlookRun.slot_close_ms == 0)
         if before_id is not None:
             query = query.where(DailyOutlookRun.id < before_id)
         rows = (await session.execute(query.order_by(DailyOutlookRun.id.desc()).limit(31))).scalars().all()

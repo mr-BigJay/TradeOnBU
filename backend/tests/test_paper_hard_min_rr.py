@@ -18,7 +18,7 @@ from app.services.runtime_settings import get_runtime_settings
 
 
 @pytest.mark.asyncio
-async def test_auto_paper_rejects_when_runtime_min_rr_below_2_but_costs_fail_hard_floor():
+async def test_auto_paper_rejects_when_runtime_min_rr_below_floor_but_costs_fail_hard_floor():
     await init_db()
     async with SessionLocal() as session:
         await wallet.append_ledger(session, entry_type=wallet.LEDGER_INITIAL, amount_usdt=10_000.0)
@@ -40,7 +40,7 @@ async def test_auto_paper_rejects_when_runtime_min_rr_below_2_but_costs_fail_har
             entry_zone_low=99.0,
             entry_zone_high=101.0,
             stop_loss=98.0,
-            take_profit=103.5,
+            take_profit=102.8,
             expires_at=datetime.now(timezone.utc) + timedelta(hours=12),
             confirmation_state={
                 "sequence": ["entry_zone_touch"],
@@ -84,7 +84,7 @@ async def test_auto_paper_rejects_when_runtime_min_rr_below_2_but_costs_fail_har
 
 
 @pytest.mark.asyncio
-async def test_opportunity_monitor_promotion_blocked_when_net_rr_under_2():
+async def test_opportunity_monitor_promotion_blocked_when_net_rr_under_floor():
     await init_db()
     async with SessionLocal() as session:
         setup = AiProposedSetup(

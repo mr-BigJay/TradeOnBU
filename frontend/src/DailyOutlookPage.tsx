@@ -74,7 +74,7 @@ function TradePlanCard({ plan, date }: { plan?: TradePlan; date: string }) {
   </article>;
 }
 
-function reportRoute() { return window.location.hash.match(/^#\/outlook\/reports\/(\d+)$/)?.[1] || null; }
+function reportRoute() { return window.location.hash.match(/^#\/(?:outlook|analysis)\/reports\/(\d+)$/)?.[1] || null; }
 
 function ReportImage({ id }: { id: number }) {
   const [image, setImage] = useState<{ data_url: string; filename: string;
@@ -110,7 +110,9 @@ function ReportImage({ id }: { id: number }) {
   </figure>;
 }
 
-export function DailyOutlookPage() {
+export function DailyOutlookPage({ cadence = "daily" }: { cadence?: "daily" | "4h" }) {
+  const root = cadence === "4h" ? "analysis" : "outlook";
+  const query = cadence === "4h" ? "?cadence=4h" : "";
   const [data, setData] = useState<Dashboard | null>(null);
   const [selected, setSelected] = useState<Run | null>(null);
   const [enabled, setEnabled] = useState(false);
@@ -137,14 +139,14 @@ export function DailyOutlookPage() {
     return () => { cancelled = true; };
   }, [reportId]);
   const refresh = useCallback(async () => {
-    const result: Dashboard = await apiFetch("/api/gui/daily-outlook");
+    const result: Dashboard = await apiFetch(`/api/gui/daily-outlook${query}`);
     setData(result);
     if (!initialized.current) {
       setEnabled(result.settings.enabled);
       setTime(`${String(result.settings.hour).padStart(2, "0")}:${String(result.settings.minute).padStart(2, "0")}`);
       initialized.current = true;
     }
-  }, []);
+  }, [query]);
   useEffect(() => {
     refresh().catch(e => setError(e.message));
     const timer = window.setInterval(() => refresh().catch(e => setError(e.message)), 15000);
@@ -164,18 +166,18 @@ export function DailyOutlookPage() {
 
   return <section className="daily-outlook" dir="rtl">
     {!reportId && <><header className="outlook-heading"><div><span className="outlook-eyebrow">تصویر بزرگ‌تر بازار</span>
-      <h2>{fourHourly ? "چشم‌انداز چهار‌ساعته" : "چشم‌انداز روزانه"}</h2><p>سناریوهای مشروط ۳ تا ۷ روز آینده، بر پایهٔ ساختار هفتگی، روزانه و ۴ساعته</p></div>
+      <h2>{fourHourly ? "تحلیل چهار‌ساعته" : "چشم‌انداز روزانه"}</h2><p>سناریوهای مشروط ۳ تا ۷ روز آینده، بر پایهٔ ساختار هفتگی، روزانه و ۴ساعته</p></div>
       <span className="outlook-horizon">۳–۷ روز</span></header>
     <div className="card outlook-controls">
       <label className="outlook-toggle"><input type="checkbox" checked={enabled} onChange={e => setEnabled(e.target.checked)} />{fourHourly ? "تحلیل خودکار چهار‌ساعته" : "تحلیل خودکار روزانه"}</label>
       {fourHourly ? <p>پنج دقیقه پس از بسته‌شدن کندل ۴ساعته؛ ساعت تهران: ۰۳:۳۵، ۰۷:۳۵، ۱۱:۳۵، ۱۵:۳۵، ۱۹:۳۵، ۲۳:۳۵</p> : <label>ساعت تهران <input aria-label="ساعت تهران" type="time" value={time} onChange={e => setTime(e.target.value)} /></label>}
       <button type="button" disabled={busy || !data || !/^\d{2}:\d{2}$/.test(time)} onClick={() => action(async () => {
         const [hour, minute] = time.split(":").map(Number);
-        await apiFetch("/api/gui/daily-outlook/settings", { method: "PUT", body: JSON.stringify({ enabled, hour, minute }) });
+        await apiFetch(`/api/gui/daily-outlook/settings${query}`, { method: "PUT", body: JSON.stringify({ enabled, hour, minute }) });
         setNotice("زمان‌بندی ذخیره شد.");
       })}>ذخیره زمان‌بندی</button>
       <button type="button" className="secondary" disabled={busy || !data || data.can_generate === false || (data.attempted_today && !data.can_retry_today)} onClick={() => action(async () => {
-        await apiFetch("/api/gui/daily-outlook/generate", { method: "POST" });
+        await apiFetch(`/api/gui/daily-outlook/generate${query}`, { method: "POST" });
         setNotice("تولید گزارش شروع شد؛ نتیجه پس از تکمیل نمایش داده می‌شود.");
       })}>{fourHourly ? (data?.can_retry_today ? "تلاش مجدد این نوبت" : "تولید گزارش این نوبت") : (data?.can_retry_today ? "تلاش مجدد گزارش امروز" : "تولید گزارش امروز")}</button>
       <p className="hint outlook-control-note">{fourHourly ? "حداکثر شش گزارش زمان‌بندی‌شده در شبانه‌روز؛ گزارش حتی بدون فرصت ورود به تلگرام ارسال می‌شود. بررسی فرصت‌های معاملاتی مستقل است." : "حداکثر یک درخواست AI در روز برای هر نماد؛ خطای داده پیش از ارسال به AI قابل تلاش مجدد دستی است."} با اتصال API مصرف جداگانه دارد.</p>
@@ -189,7 +191,7 @@ export function DailyOutlookPage() {
       <p className="hint">کد خطا: <bdi>{data.latest.error_code}</bdi></p></div>}
     {!data && !error && <p>در حال دریافت اطلاعات…</p>}
     {!reportId && data && !history.length && <div className="card outlook-empty"><h3>اولین چشم‌انداز را بسازید</h3><p>گزارش شامل سناریوی غالب و جایگزین، نواحی کلیدی، شروط ابطال و موارد قابل پیگیری خواهد بود.</p></div>}
-    {reportId && <a className="outlook-back" href="#/outlook">← بازگشت به گزارش‌های روزانه</a>}
+    {reportId && <a className="outlook-back" href={`#/${root}`}>← بازگشت به گزارش‌ها</a>}
     {reportId && detailError && <p role="alert">{detailError}</p>}
     {reportId && !run && !detailError && <p role="status">در حال دریافت گزارش…</p>}
     {run && !report && <p>گزارش هنوز آماده نیست: {statusLabel[run.status] || run.status}</p>}
@@ -227,14 +229,14 @@ export function DailyOutlookPage() {
         <div className="card outlook-post">
           <div className="outlook-card-top"><span><bdi>{r.symbol}</bdi> · {statusLabel[r.status] || r.status}</span>
             {r.direction && <span className={`outlook-badge ${r.direction}`}>{dir[r.direction]}</span>}</div>
-          <h3>{r.status === "completed" ? <a href={`#/outlook/reports/${r.id}`}>{r.title || "چشم‌انداز روزانه بیت‌کوین"}</a> : "گزارش روزانه"}</h3>
+          <h3>{r.status === "completed" ? <a href={`#/${root}/reports/${r.id}`}>{r.title || "چشم‌انداز روزانه بیت‌کوین"}</a> : "گزارش روزانه"}</h3>
           <p>{r.summary || (r.status === "running" ? "گزارش در حال آماده‌سازی است…" : r.error_code || "")}</p>
           <div className="outlook-card-top">{r.snapshot_price && <span className="hint">قیمت هنگام گزارش: <bdi>{price(r.snapshot_price)}</bdi></span>}
-            {r.status === "completed" && <a href={`#/outlook/reports/${r.id}`}>مشاهده گزارش و چارت ←</a>}</div>
+            {r.status === "completed" && <a href={`#/${root}/reports/${r.id}`}>مشاهده گزارش و چارت ←</a>}</div>
         </div>
       </article>)}
       {nextCursor && <button disabled={busy} onClick={() => action(async () => {
-        const result = await apiFetch(`/api/gui/daily-outlook/runs?before_id=${nextCursor}`);
+        const result = await apiFetch(`/api/gui/daily-outlook/runs?before_id=${nextCursor}&cadence=${cadence}`);
         setOlder(v => [...v, ...result.items]); setCursor(result.next_cursor);
       })}>گزارش‌های قدیمی‌تر</button>}
     </div>}

@@ -1,7 +1,7 @@
 """Versioned, candle-derived BTC plans. The model can veto, never set prices.
 
 All inputs are closed bars available at as_of_ms. No optimised parameters or
-claims of profitability: v1 is a fixed, falsifiable paper-trading baseline.
+claims of profitability: this is a falsifiable paper-trading baseline.
 """
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from datetime import timezone
 
 from app.domain.candle_quality import acceptable_prices, displacement_body
 from app.services.ict_structure import find_swings
-from app.services.ict_execution_plan import target_at_two_r
+from app.services.ict_execution_plan import target_at_net_rr
 
 REASONS_FA = {
  'verified_plan_missing':'سناریوی قدیمی؛ قرارداد کندلی جدید ندارد.',
@@ -29,7 +29,7 @@ REASONS_FA = {
  'verified_daily_loss_limit':'سقف زیان روزانه رسیده؛ ورود تا روز بعد متوقف است.',
  'verified_no_risk_budget':'بودجهٔ ریسک یا موجودی آزاد کافی نیست.',
 }
-VERSION = 'verified_reversal_v1'
+VERSION = 'verified_reversal_poi_v2'
 STEP = 300_000
 MAX_AGE = 6 * STEP
 TTL = 12 * STEP
@@ -41,7 +41,7 @@ available evidence is insufficient. You may NEVER invent a candidate, price,
 confirmation, confidence probability, or promised return. Prices, stop, target,
 expiry and position sizing belong to the server. No candidate is a valid outcome.
 Use only provided closed candles and candidate evidence. Prior reports are not
-new evidence. Assess structural coherence and remaining room to target.
+new evidence. Assess structural coherence and remaining room to target. Use market.poi_context to judge nearby order blocks and support/resistance. These candle-derived zones do not prove institutional orders. Prefer a coherent reaction at a relevant area; never approve merely because price touches a zone.
 '''
 
 
@@ -89,7 +89,7 @@ def _tick(value, sign):
 
 def build_candidates(series, costs, as_of_ms, live, *, audit=None):
     """Sweep of a known pivot, opposite-swing close break with displacement,
-    fresh three-candle FVG, ATR-buffered invalidation, net 2R before obstacles.
+    fresh FVG or order block, ATR-buffered invalidation, net 1.4R before obstacles.
     Return candidates + explicit rejection counters (no LLM calls).
     """
     diagnostics = {}
@@ -126,12 +126,16 @@ def build_candidates(series, costs, as_of_ms, live, *, audit=None):
     for tf, step in (('5m', STEP), ('15m', 3*STEP), ('1h', 12*STEP)):
         if not valid_bars(series.get(tf, []), step, as_of_ms, 30):
             return data_failure('invalid_or_stale_'+tf)
+    if '4h' in series and not valid_bars(series['4h'], 48*STEP, as_of_ms, 20):
+        return data_failure('invalid_or_stale_4h')
     if '1m' in series and not valid_bars(series['1m'], 60_000, as_of_ms, 20):
         return data_failure('invalid_or_stale_1m')
     if not isinstance(live, (int, float)) or not math.isfinite(live) or live <= 0:
         return data_failure('invalid_quote')
     bars = series['5m']; pivots = find_swings(bars); vol = atr(bars)
     regime = trend(series['1h'])
+    from app.services.poi_context import market_zones
+    zones = market_zones(series)
     candidates = []
     if audit is not None:
         audit['hourly_regime'] = regime
@@ -146,7 +150,7 @@ def build_candidates(series, costs, as_of_ms, live, *, audit=None):
             if audit is not None:
                 audit['directions'][direction]['status'] = 'excluded_before_pattern_search'
             reject('opposing_hourly_structure'); continue
-        for si in range(max(16, len(bars)-18), len(bars)-2):
+        for si in range(max(16, len(bars)-18), len(bars)-1):
             sweep = bars[si]
             b = ref = pivot = None
             stage('sweep_bars_examined')
@@ -167,7 +171,7 @@ def build_candidates(series, costs, as_of_ms, live, *, audit=None):
             if any(sign*(b.close-pivot.price)>0 for b in bars[pivot.index+1:si+1]):
                 reject('structure_already_broken'); continue
             stage('fresh_sweep')
-            for bi in range(si+1, min(si+7,len(bars)-1)):
+            for bi in range(si+1, min(si+7,len(bars))):
                 b = bars[bi]
                 stage('break_bars_examined')
                 if any(sign*(x.close-extreme)<=0 for x in bars[si+1:bi+1]):
@@ -180,57 +184,75 @@ def build_candidates(series, costs, as_of_ms, live, *, audit=None):
                 if local_atr<=0 or body < local_atr or body < .6*(b.high-b.low):
                     reject('weak_break'); break
                 stage('displacement_confirmed')
-                # The displacement candle is the middle of this FVG.
-                left,right=bars[bi-1],bars[bi+1]
-                lo,hi=(left.high,right.low) if sign==1 else (right.high,left.low)
-                if lo>=hi:
-                    reject('no_displacement_fvg'); break
-                stage('fvg_formed')
-                born=right.time_ms+STEP
-                if as_of_ms-born>MAX_AGE:
-                    reject('stale_zone'); break
-                later_minutes = [x for x in series.get('1m', [])
-                                 if born <= x.time_ms and x.time_ms+60_000 <= as_of_ms]
-                if any(x.low<=hi and x.high>=lo for x in [*bars[bi+2:], *later_minutes]):
-                    reject('already_retested'); break
-                # Entry uses the actual FVG midpoint, never a model-provided number.
-                entry=round((lo+hi)/2,1)
-                stop=_tick(extreme-sign*max(.25*vol,.1),sign)
-                risk=sign*(entry-stop)
-                if not vol<=risk<=3*vol:
-                    reject('stop_outside_atr_band'); break
-                if sign*(live-hi if sign==1 else live-lo)<=0 or abs(live-entry)>3*vol:
-                    reject('quote_not_waiting_for_pullback'); break
-                levels=[]
-                for tf in ('15m','1h'):
-                    ss=series[tf]
-                    for p in find_swings(ss):
-                        if p.kind!=('HIGH' if sign==1 else 'LOW') or sign*(p.price-entry)<=0:
-                            continue
-                        if not any(sign*(x.close-p.price)>0 for x in ss[p.index+1:]):
-                            levels.append(p.price-sign*.1*vol)
-                if not levels:
-                    reject('no_structural_target'); break
-                obstacle=min(levels) if sign==1 else max(levels)
-                target=target_at_two_r(costs,direction,entry,stop,obstacle)
-                if target is None:
-                    reject('insufficient_net_reward_before_obstacle'); break
-                if sign*(live-target)>=0 or any((x.high>=target if sign==1 else x.low<=target) for x in bars[bi+2:]):
-                    reject('target_consumed'); break
-                evidence={'sweep_ms':sweep.time_ms,'sweep_extreme':extreme,
-                          'sweep_ohlc':[sweep.open,sweep.high,sweep.low,sweep.close],
-                          'break_ohlc':[b.open,b.high,b.low,b.close],
-                          'swept_pivot_ms':ref.time_ms,'swept_price':ref.price,
-                          'break_ms':b.time_ms,'broken_pivot_ms':pivot.time_ms,'broken_price':pivot.price,
-                          'fvg_ms':right.time_ms,'fvg_origin_ms':[left.time_ms,b.time_ms,right.time_ms],
-                          'atr14':vol,'stop_atr':risk/vol,'obstacle':obstacle,'hourly_regime':regime}
-                raw=dict(version=VERSION,direction=direction,entry=entry,stop=stop,target=target,
-                         zone=[lo,hi],invalidation=extreme,formed_ms=born,expires_ms=born+TTL,evidence=evidence)
-                raw['opportunity_id']=f'{VERSION}:{direction}:{sweep.time_ms}:{b.time_ms}:{right.time_ms}'
-                raw['candidate_id']=hashlib.sha256(json.dumps(raw,sort_keys=True).encode()).hexdigest()[:24]
-                raw['as_of_ms']=as_of_ms
-                stage('candidate_built')
-                candidates.append(raw);break
+                # Evaluate both entry-zone types independently after the same structural proof.
+                left=bars[bi-1]
+                right=bars[bi+1] if bi+1<len(bars) else None
+                choices=[]
+                if right is not None:
+                    flo,fhi=(left.high,right.low) if sign==1 else (right.high,left.low)
+                    if flo<fhi:
+                        choices.append(('FVG',flo,fhi,right.time_ms))
+                opposite=[x for x in bars[si:bi] if sign*(x.close-x.open)<0]
+                if opposite:
+                    origin=opposite[-1]
+                    if sign*(b.close-(origin.high if sign==1 else origin.low))>0:
+                        choices.append(('OB',origin.low,origin.high,origin.time_ms))
+                if not choices:
+                    reject('no_fvg_or_order_block'); break
+                for poi_kind,lo,hi,poi_origin in choices:
+                    stage('fvg_formed' if poi_kind=='FVG' else 'order_block_formed')
+                    born=(b.time_ms if poi_kind=="OB" else right.time_ms)+STEP
+                    post_zone=bars[bi+1:] if poi_kind=="OB" else bars[bi+2:]
+                    if as_of_ms-born>MAX_AGE:
+                        reject('stale_zone'); continue
+                    later_minutes = [x for x in series.get('1m', [])
+                                     if born <= x.time_ms and x.time_ms+60_000 <= as_of_ms]
+                    if any(x.low<=hi and x.high>=lo for x in [*post_zone, *later_minutes]):
+                        reject('already_retested'); continue
+                    # Entry uses the actual zone midpoint, never a model-provided number.
+                    entry=round((lo+hi)/2,1)
+                    invalidation=(min(extreme,lo) if sign==1 else max(extreme,hi)) if poi_kind=="OB" else extreme
+                    stop=_tick(invalidation-sign*max(.25*vol,.1),sign)
+                    risk=sign*(entry-stop)
+                    if not vol<=risk<=3*vol:
+                        reject('stop_outside_atr_band'); continue
+                    if sign*(live-hi if sign==1 else live-lo)<=0 or abs(live-entry)>3*vol:
+                        reject('quote_not_waiting_for_pullback'); continue
+                    levels=[z['price']-sign*.1*vol for z in zones['support_resistance']
+                            if z['timeframe'] in ('1h','4h') and z['kind']==('resistance' if sign==1 else 'support')
+                            and sign*(z['price']-entry)>0]
+                    for tf in ('15m','1h'):
+                        ss=series[tf]
+                        for p in find_swings(ss):
+                            if p.kind!=('HIGH' if sign==1 else 'LOW') or sign*(p.price-entry)<=0:
+                                continue
+                            if not any(sign*(x.close-p.price)>0 for x in ss[p.index+1:]):
+                                levels.append(p.price-sign*.1*vol)
+                    if not levels:
+                        reject('no_structural_target'); continue
+                    obstacle=min(levels) if sign==1 else max(levels)
+                    target=target_at_net_rr(costs,direction,entry,stop,obstacle)
+                    if target is None:
+                        reject('insufficient_net_reward_before_obstacle'); continue
+                    if sign*(live-target)>=0 or any((x.high>=target if sign==1 else x.low<=target) for x in post_zone):
+                        reject('target_consumed'); continue
+                    evidence={'sweep_ms':sweep.time_ms,'sweep_extreme':extreme,
+                              'sweep_ohlc':[sweep.open,sweep.high,sweep.low,sweep.close],
+                              'break_ohlc':[b.open,b.high,b.low,b.close],
+                              'swept_pivot_ms':ref.time_ms,'swept_price':ref.price,
+                              'break_ms':b.time_ms,'broken_pivot_ms':pivot.time_ms,'broken_price':pivot.price,
+                              'fvg_ms':right.time_ms if poi_kind=='FVG' else None,
+                              'fvg_origin_ms':[left.time_ms,b.time_ms,right.time_ms] if poi_kind=='FVG' else [],
+                              'poi_kind':poi_kind,'poi_origin_ms':poi_origin,
+                              'zone_context':zones,'atr14':vol,'stop_atr':risk/vol,'obstacle':obstacle,'hourly_regime':regime}
+                    raw=dict(version=VERSION,direction=direction,entry=entry,stop=stop,target=target,
+                             zone=[lo,hi],invalidation=invalidation,formed_ms=born,expires_ms=born+TTL,evidence=evidence)
+                    raw['opportunity_id']=f'{VERSION}:{direction}:{sweep.time_ms}:{b.time_ms}:{poi_kind}:{poi_origin}'
+                    raw['candidate_id']=hashlib.sha256(json.dumps(raw,sort_keys=True).encode()).hexdigest()[:24]
+                    raw['as_of_ms']=as_of_ms
+                    stage('candidate_built')
+                    candidates.append(raw)
+                break
             else:
                 reject('break_window_exhausted')
     unique={c['candidate_id']:c for c in candidates}
@@ -268,7 +290,7 @@ def apply_review(review, candidates, now_ms):
             'market_regime':c['evidence']['hourly_regime'],'market_regime_confidence':'low',
             'market_context_caution_ack':True,'trade_against_dominant_trend':False,
             'trade_reason':reason,'uncertainty_notes':str(review.get('risk_fa') or '')[:1200],
-            'setup_timeframe':'intraday_5m_15m','entry_poi_type':'FVG',
+            'setup_timeframe':'intraday_5m_15m','entry_poi_type':c['evidence'].get('poi_kind','FVG'),
             'liquidity_event_clear':True,'structural_confirmation_clear':True,
             'logical_invalidation_clear':True,'poi_reaction_clear':False,
             'proposed_setup':{'new_setup':True,'distinct_new_setup':False,'thesis_fa':reason,

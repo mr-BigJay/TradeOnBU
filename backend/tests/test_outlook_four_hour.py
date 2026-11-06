@@ -39,32 +39,32 @@ def test_slots_are_utc_even_with_tehran_input(hour):
 async def test_guard_six_slots_duplicate_and_disabled(four):
     for hour in [0, 4, 8, 12, 16, 20]:
         Clock.value = datetime(2026, 11, 5, hour, 4, 59, tzinfo=timezone.utc)
-        assert (await service.reserve_run('scheduled'))[2] == 'waiting_for_closed_4h'
-        assert not (await service.dashboard())['can_generate']
+        assert (await service.reserve_run('scheduled', '4h'))[2] == 'waiting_for_closed_4h'
+        assert not (await service.dashboard('4h'))['can_generate']
         Clock.value += timedelta(seconds=1)
-        rid, owner, state = await service.reserve_run('scheduled')
+        rid, owner, state = await service.reserve_run('scheduled', '4h')
         assert rid and owner and state == 'started'
-        assert (await service.reserve_run('scheduled'))[2] == 'already_attempted_today'
+        assert (await service.reserve_run('scheduled', '4h'))[2] == 'already_attempted_today'
     async with TestSession() as s:
         assert await s.scalar(select(func.count()).select_from(DailyOutlookRun)) == 6
-        cfg = await s.get(DailyOutlookSettings, 1)
+        cfg = await s.get(DailyOutlookSettings, 2)
         cfg.enabled = False
         await s.commit()
     Clock.value += timedelta(hours=4)
-    assert (await service.reserve_run('scheduled'))[2] == 'not_due'
-    assert not (await service.dashboard())['settings']['enabled']
+    assert (await service.reserve_run('scheduled', '4h'))[2] == 'not_due'
+    assert not (await service.dashboard('4h'))['settings']['enabled']
 
 
 @pytest.mark.asyncio
 async def test_busy_retries_within_window_no_late_backfill(four):
     service.acquire_analysis_lock.return_value = False
-    assert (await service.reserve_run('scheduled'))[2] == 'analysis_busy'
+    assert (await service.reserve_run('scheduled', '4h'))[2] == 'analysis_busy'
     Clock.value += timedelta(minutes=3)
     service.acquire_analysis_lock.return_value = True
-    assert (await service.reserve_run('scheduled'))[2] == 'started'
+    assert (await service.reserve_run('scheduled', '4h'))[2] == 'started'
     Clock.value += timedelta(hours=4, minutes=12)
-    assert (await service.reserve_run('scheduled'))[2] == 'not_due'
-    assert (await service.dashboard())['settings']['next_run_at'].startswith('2026-11-05T12:05')
+    assert (await service.reserve_run('scheduled', '4h'))[2] == 'not_due'
+    assert (await service.dashboard('4h'))['settings']['next_run_at'].startswith('2026-11-05T12:05')
 
 
 def test_old_sqlite_history_survives_atomic_migration_and_unique_slots(tmp_path):
@@ -93,19 +93,19 @@ def test_old_sqlite_history_survives_atomic_migration_and_unique_slots(tmp_path)
 
 @pytest.mark.asyncio
 async def test_missing_latest_candle_blocks_paid_call(four, monkeypatch):
-    rid, owner, _ = await service.reserve_run('scheduled')
+    rid, owner, _ = await service.reserve_run('scheduled', '4h')
     monkeypatch.setattr(service, 'build_daily_context', AsyncMock(return_value=context()))
     ai = AsyncMock()
     monkeypatch.setattr(service, 'stream_analysis_response', ai)
     await service.execute_reserved(rid, owner)
     ai.assert_not_awaited()
-    assert (await service.dashboard())['latest']['error_code'] == 'latest_closed_candle_missing'
+    assert (await service.dashboard('4h'))['latest']['error_code'] == 'latest_closed_candle_missing'
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('send_result', [1234, None])
 async def test_report_without_candidate_sends_once_and_keeps_completed(four, monkeypatch, send_result):
-    rid, owner, _ = await service.reserve_run('scheduled')
+    rid, owner, _ = await service.reserve_run('scheduled', '4h')
     ctx = context()
     slot = int(service.four_hour_slot(Clock.value)[0].timestamp()*1000)
     ctx['candles'] = {'4h': [[slot-14400000,100,110,90,105]]}
@@ -119,7 +119,7 @@ async def test_report_without_candidate_sends_once_and_keeps_completed(four, mon
     send = AsyncMock(return_value=send_result)
     monkeypatch.setattr(telegram_notifier, 'TelegramNotifier', lambda: SimpleNamespace(enabled=True, send_message=send, settings=SimpleNamespace(dashboard_public_url='https://example.test')))
     await service.execute_reserved(rid, owner)
-    latest = (await service.dashboard())['latest']
+    latest = (await service.dashboard('4h'))['latest']
     assert latest['status'] == 'completed'
     assert latest['context']['telegram_delivery']['status'] == ('sent' if send_result else 'failed_or_unknown')
     assert latest['report']['trade_plan']['action'] == 'wait'
@@ -131,7 +131,27 @@ async def test_report_without_candidate_sends_once_and_keeps_completed(four, mon
 @pytest.mark.asyncio
 async def test_tehran_midnight_does_not_duplicate_same_utc_slot(four):
     Clock.value = datetime(2026, 11, 5, 20, 5, tzinfo=timezone.utc)
-    rid, _, _ = await service.reserve_run('scheduled')
+    rid, _, _ = await service.reserve_run('scheduled', '4h')
     Clock.value += timedelta(hours=1)
-    assert (await service.reserve_run('manual')) == (rid, None, 'already_attempted_today')
-    assert (await service.dashboard())['attempted_today']
+    assert (await service.reserve_run('manual', '4h')) == (rid, None, 'already_attempted_today')
+    assert (await service.dashboard('4h'))['attempted_today']
+
+
+@pytest.mark.asyncio
+async def test_daily_and_four_hour_reports_and_settings_are_separate(four):
+    Clock.value = datetime(2026,11,5,8,5,tzinfo=timezone.utc)
+    daily_id,_,status=await service.reserve_run('scheduled','daily')
+    assert status=='started'
+    four_id,_,status=await service.reserve_run('scheduled','4h')
+    assert status=='started' and daily_id!=four_id
+    assert (await service.dashboard('daily'))['latest']['id']==daily_id
+    assert (await service.dashboard('4h'))['latest']['id']==four_id
+    Clock.value+=timedelta(hours=4)
+    assert (await service.reserve_run('scheduled','daily'))[2]=='already_attempted_today'
+    assert (await service.reserve_run('scheduled','4h'))[2]=='started'
+    async with TestSession() as s:
+        daily=await service.settings_row(s,'daily')
+        daily.enabled=False
+        await s.commit()
+    assert not (await service.dashboard('daily'))['settings']['enabled']
+    assert (await service.dashboard('4h'))['settings']['enabled']

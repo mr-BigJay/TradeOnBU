@@ -245,7 +245,7 @@ export function OpportunitiesPage() {
       {list?.verified_plans_enabled && <section className="card" role="status">
         <h2>ورود مبتنی بر شواهد کندلی · آزمایشی</h2>
         <p>ساخت سطوح توسط موتور؛ تأیید یا رد توسط API؛ سفارش محدود پس از اثبات ساختار و پیش از بازگشت قیمت.</p>
-        <p>اسکن هر ۵ دقیقه · حداکثر ۴ بررسی API در روز · بودجهٔ ریسک هر معامله ۰٫۲۵٪ · یک پوزیشن هم‌زمان · توقف پس از ۱٪ زیان روزانه</p>
+        <p>کف سود به زیان خالص ۱:۱٫۴ · اسکن هر ۵ دقیقه · حداکثر ۴ بررسی API در روز · بودجهٔ ریسک هر معامله ۰٫۲۵٪ · یک پوزیشن هم‌زمان · توقف پس از ۱٪ زیان روزانه</p>
         <p>اجرای واقعی Bitunix فعال نیست. تنظیمات ورود قدیمی در این حالت اعمال نمی‌شوند.</p>
       </section>}
       {!list?.verified_plans_enabled && <details onToggle={event => setShowShadow(event.currentTarget.open)}><summary>آزمایش موازی ساختار و شواهد کندلی</summary>{showShadow && <StructureShadow />}</details>}
