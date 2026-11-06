@@ -28,10 +28,11 @@ async def main():
         costs=await session.get(SimPositionSettings,1)
         if costs is None:
             print(json.dumps({'status':'paper_settings_missing','quality':quality}));return 2
-        candidates,reasons=build_candidates(series,costs,now,quote.price)
+        audit={}
+        candidates,reasons=build_candidates(series,costs,now,quote.price,audit=audit)
     ok=all(q['usable'] for q in quality.values()) and not market.is_quote_stale(quote)
     print(json.dumps({'status':'data_ok' if ok else 'data_blocked','version':VERSION,'enabled':enabled(),
-        'paper_only':True,'quality':quality,'candidate_count':len(candidates),'rejections':reasons},ensure_ascii=False,indent=2))
+        'paper_only':True,'quality':quality,'candidate_count':len(candidates),'rejections':reasons,'candidate_audit':audit},ensure_ascii=False,indent=2))
     return 0 if ok else 2
 
 if __name__=='__main__':raise SystemExit(asyncio.run(main()))
