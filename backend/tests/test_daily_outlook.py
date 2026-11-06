@@ -188,6 +188,15 @@ async def test_invalid_model_report_keeps_usage(isolated,monkeypatch):
     await service.execute_reserved(run_id,owner)
     data=await service.dashboard()
     assert data['latest']['status']=='failed' and data['latest']['usage']['input_tokens']==123
+    assert data['latest']['error_code']=='outlook_response_schema_invalid'
+    assert {'field':'summary_fa','type':'missing'} in data['latest']['validation_errors']
+    assert not data['can_retry_today']  # Never spend again on a paid invalid reply.
+    assert 'response_archive' not in json.dumps(data)
+    async with TestSession() as session:
+        row=await session.get(DailyOutlookRun,run_id)
+        assert row.context['response_archive']['text']=='{}'
+        assert row.context['response_archive']['truncated'] is False
+
 
 
 def test_hourly_hotfix_manual_does_not_shift_boundary(monkeypatch):
@@ -406,3 +415,34 @@ def test_execution_card_first_net_two_r_tick(direction, stop, far, near):
     assert qualifies(tp)
     assert not qualifies(tp - (.1 if direction == "LONG" else -.1))
     assert target_at_two_r(sim, direction, 1000, stop, near) is None
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('case,code,field,kind',[
+    ('long_text','outlook_response_schema_invalid','summary_fa','string_too_long'),
+    ('bad_direction','outlook_response_schema_invalid','dominant.direction','literal_error'),
+    ('bad_json','outlook_response_json_invalid',None,None),
+    ('unknown_level','outlook_response_evidence_invalid','report','unknown_evidence_level'),
+])
+async def test_failed_response_is_archived_without_exposing_input(isolated,monkeypatch,case,code,field,kind):
+    generated=report()
+    if case=='long_text':generated['summary_fa']='PRIVATE_SENTINEL '*100
+    elif case=='bad_direction':generated['dominant']['direction']='PRIVATE_SENTINEL'
+    elif case=='unknown_level':generated['dominant']['activation_level_ids']=['PRIVATE_SENTINEL']
+    raw='PRIVATE_SENTINEL invalid json' if case=='bad_json' else json.dumps(generated)
+    monkeypatch.setattr(service,'build_daily_context',AsyncMock(return_value=context()))
+    monkeypatch.setattr(service,'load_ai_market_intelligence',AsyncMock(return_value={}))
+    monkeypatch.setattr(service,'provider_credentials',AsyncMock(return_value=('test','test-model','high')))
+    infer=AsyncMock(return_value=SimpleNamespace(text=raw,response_metadata={'usage':{'input_tokens':123}}))
+    monkeypatch.setattr(service,'stream_analysis_response',infer)
+    run_id,owner,_=await service.reserve_run('manual')
+    await service.execute_reserved(run_id,owner)
+    data=await service.dashboard()
+    assert data['latest']['error_code']==code
+    if field:assert {'field':field,'type':kind} in data['latest']['validation_errors']
+    assert 'PRIVATE_SENTINEL' not in json.dumps(data)
+    assert (await service.reserve_run('manual'))[2]=='already_attempted_today'
+    infer.assert_awaited_once()
+    async with TestSession() as session:
+        row=await session.get(DailyOutlookRun,run_id)
+        assert row.context['response_archive']['text']==raw
+        assert row.report=={}

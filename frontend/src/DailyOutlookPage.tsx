@@ -25,6 +25,7 @@ type Run = {
   title?: string; summary?: string; direction?: keyof typeof dir; snapshot_price?: number;
   slot_close_ms?: number; id: number; report_date: string; symbol: string; status: string; stale: boolean;
   started_at: string; completed_at: string | null; model: string | null; error_code?: string;
+  validation_errors?: { field: string; type: string }[];
   report?: Report; usage?: { input_tokens?: number; output_tokens?: number; total_tokens?: number };
   context?: { telegram_delivery?: { status: string }; as_of: string; source: string; live_price: number; daily_atr14: number;
     levels: Level[]; daily_candles: number[][]; four_hour_candles?: number[][]; data_quality_warnings?: unknown[] };
@@ -33,6 +34,12 @@ type Schedule = { cadence_hours?: number; enabled: boolean; hour: number; minute
 type Dashboard = { settings: Schedule; latest: Run | null; latest_completed: Run | null;
   can_generate?: boolean; history: Run[]; next_cursor?: number | null; attempted_today: boolean; can_retry_today?: boolean };
 const dir = { bullish: "صعودی", bearish: "نزولی", range: "رنج" };
+const reportError = (run: Run) => ({
+  outlook_response_schema_invalid: "پاسخ API با قالب گزارش سازگار نیست.",
+  outlook_response_json_invalid: "پاسخ API به شکل JSON معتبر دریافت نشده است.",
+  outlook_response_evidence_invalid: "سطوح یا مسیر سناریو با شواهد گزارش سازگار نیست.",
+  outlook_generation_failed: "تولید گزارش ناموفق بود؛ جزئیات این خطای قدیمی ثبت نشده است.",
+} as Record<string,string>)[run.error_code || ""] || run.error_code || "";
 const statusLabel: Record<string, string> = { completed: "آماده", running: "در حال تولید", failed: "ناموفق" };
 const price = (n: number) => n.toLocaleString("en-US", { maximumFractionDigits: 2 });
 
@@ -188,6 +195,8 @@ export function DailyOutlookPage({ cadence = "daily" }: { cadence?: "daily" | "4
     {notice && <p role="status" className="toast">{notice}</p>}
     {!reportId && data?.latest?.status === "running" && <p role="status" className="card outlook-status">گزارش امروز در حال تولید است؛ ممکن است چند دقیقه زمان ببرد.</p>}
     {!reportId && data?.latest?.status === "failed" && <div role="alert" className="card outlook-status">تولید گزارش {data.latest.report_date} ناموفق بود. گزارش‌های قبلی در تایم‌لاین در دسترس‌اند.
+      <p>{reportError(data.latest)}</p>
+      {(data.latest.validation_errors || []).map((e,i) => <p className="hint" key={i}>فیلد: <bdi>{e.field}</bdi> · نوع خطا: <bdi>{e.type}</bdi></p>)}
       <p className="hint">کد خطا: <bdi>{data.latest.error_code}</bdi></p></div>}
     {!data && !error && <p>در حال دریافت اطلاعات…</p>}
     {!reportId && data && !history.length && <div className="card outlook-empty"><h3>اولین چشم‌انداز را بسازید</h3><p>گزارش شامل سناریوی غالب و جایگزین، نواحی کلیدی، شروط ابطال و موارد قابل پیگیری خواهد بود.</p></div>}
@@ -230,7 +239,7 @@ export function DailyOutlookPage({ cadence = "daily" }: { cadence?: "daily" | "4
           <div className="outlook-card-top"><span><bdi>{r.symbol}</bdi> · {statusLabel[r.status] || r.status}</span>
             {r.direction && <span className={`outlook-badge ${r.direction}`}>{dir[r.direction]}</span>}</div>
           <h3>{r.status === "completed" ? <a href={`#/${root}/reports/${r.id}`}>{r.title || "چشم‌انداز روزانه بیت‌کوین"}</a> : "گزارش روزانه"}</h3>
-          <p>{r.summary || (r.status === "running" ? "گزارش در حال آماده‌سازی است…" : r.error_code || "")}</p>
+          <p>{r.summary || (r.status === "running" ? "گزارش در حال آماده‌سازی است…" : reportError(r))}</p>
           <div className="outlook-card-top">{r.snapshot_price && <span className="hint">قیمت هنگام گزارش: <bdi>{price(r.snapshot_price)}</bdi></span>}
             {r.status === "completed" && <a href={`#/${root}/reports/${r.id}`}>مشاهده گزارش و چارت ←</a>}</div>
         </div>
