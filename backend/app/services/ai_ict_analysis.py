@@ -402,13 +402,13 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
             symbol, settings, market=market_svc
         )
         from app.services import verified_trade_plan as verified
-        verified_candidates, verified_diagnostics = [], {}
+        verified_candidates, verified_diagnostics, verified_audit = [], {}, {}
         if verified.enabled():
             from app.services.position.settings_service import get_or_create_settings as paper_settings
             async with SessionLocal() as candidate_session:
                 costs = await paper_settings(candidate_session)
                 verified_candidates, verified_diagnostics = verified.build_candidates(
-                    candles_by_interval, costs, int(datetime.now(timezone.utc).timestamp()*1000), live)
+                    candles_by_interval, costs, int(datetime.now(timezone.utc).timestamp()*1000), live, audit=verified_audit)
                 if not (await strategy_settings(candidate_session)).get('ict_reversal'):
                     verified_candidates, verified_diagnostics = [], {'strategy_disabled': 1}
                 if symbol != 'BTCUSDT':
@@ -426,12 +426,13 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
                 await candidate_session.commit()
             if not verified_candidates:
                 draft.structured = verified.flat('ستاپ کندلی معتبر برای بررسی API وجود ندارد.', verified_diagnostics)
+                draft.structured['verified_plan_review']['candidate_audit'] = verified_audit
                 draft.report_fa = finalize_user_report(draft.structured, symbol=symbol, live=live)
                 draft.structured['report_fa'] = draft.report_fa
                 draft.decision = 'NO_TRADE'
                 draft.status = 'completed'
                 draft.validation = {'ok': True, 'api_skipped': True, 'reason': 'no_verified_candidate',
-                                    'diagnostics': verified_diagnostics}
+                                    'diagnostics': verified_diagnostics, 'candidate_audit': verified_audit}
                 draft.completed_at = datetime.now(timezone.utc)
                 return draft
         async with SessionLocal() as session:
@@ -477,7 +478,7 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
         if verified.enabled():
             verified_review_meta = {'version': verified.VERSION, 'api_attempted': True,
                 'opportunity_ids': [c['opportunity_id'] for c in verified_candidates],
-                'diagnostics': verified_diagnostics}
+                'diagnostics': verified_diagnostics, 'candidate_audit': verified_audit}
             draft.structured = verified.flat('بررسی API آغاز شد')
             draft.structured['verified_plan_review'] = verified_review_meta
             # Journal the attempt BEFORE network I/O, so a worker crash cannot

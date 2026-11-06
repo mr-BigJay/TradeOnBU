@@ -1,0 +1,16 @@
+name: Verified candidate audit
+on:
+  pull_request:
+  push:
+    branches: [main]
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r backend/requirements.txt
+      - run: mkdir -p data
+      - run: PYTHONPATH=backend pytest -q backend/tests/test_verified_audit.py backend/tests/test_verified_trade_plan.py backend/tests/test_carried_open.py backend/tests/test_ai_first_revisions.py

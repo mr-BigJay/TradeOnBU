@@ -87,57 +87,105 @@ def _tick(value, sign):
     return (math.floor(value * 10) if sign > 0 else math.ceil(value * 10)) / 10
 
 
-def build_candidates(series, costs, as_of_ms, live):
+def build_candidates(series, costs, as_of_ms, live, *, audit=None):
     """Sweep of a known pivot, opposite-swing close break with displacement,
     fresh three-candle FVG, ATR-buffered invalidation, net 2R before obstacles.
     Return candidates + explicit rejection counters (no LLM calls).
     """
     diagnostics = {}
+    direction = None
+    sweep = None
+    b = ref = pivot = None
+    if audit is not None:
+        audit.clear()
+        audit.update(version=1, as_of_ms=as_of_ms, live_price=live,
+                     candidate_count=0,
+                     count_unit="branch events, not distinct opportunities", directions={},
+                     input_counts={tf:len(rows) for tf,rows in series.items()})
+    def stage(name):
+        if audit is not None and direction:
+            counts = audit['directions'][direction]['stages']
+            counts[name] = counts.get(name, 0) + 1
     def reject(reason):
         diagnostics[reason] = diagnostics.get(reason, 0) + 1
+        if audit is not None and direction:
+            detail = audit['directions'][direction]
+            detail['reasons'][reason] = detail['reasons'].get(reason, 0) + 1
+            samples = detail['samples'].setdefault(reason, [])
+            if len(samples) < 3:
+                samples.append({'sweep_ms': sweep.time_ms if sweep else None,
+                                'break_ms': b.time_ms if b else None,
+                                'swept_price': ref.price if ref else None,
+                                'broken_price': pivot.price if pivot else None,
+                                'sweep_ohlc': [sweep.open,sweep.high,sweep.low,sweep.close] if sweep else None,
+                                'break_ohlc': [b.open,b.high,b.low,b.close] if b else None})
+    def data_failure(reason):
+        if audit is not None:
+            audit.update(status='data_blocked', rejection_counts={reason:1})
+        return [], {reason:1}
     for tf, step in (('5m', STEP), ('15m', 3*STEP), ('1h', 12*STEP)):
         if not valid_bars(series.get(tf, []), step, as_of_ms, 30):
-            return [], {'invalid_or_stale_'+tf: 1}
+            return data_failure('invalid_or_stale_'+tf)
     if '1m' in series and not valid_bars(series['1m'], 60_000, as_of_ms, 20):
-        return [], {'invalid_or_stale_1m': 1}
+        return data_failure('invalid_or_stale_1m')
     if not isinstance(live, (int, float)) or not math.isfinite(live) or live <= 0:
-        return [], {'invalid_quote': 1}
+        return data_failure('invalid_quote')
     bars = series['5m']; pivots = find_swings(bars); vol = atr(bars)
     regime = trend(series['1h'])
     candidates = []
+    if audit is not None:
+        audit['hourly_regime'] = regime
+        hp = find_swings(series['1h'])
+        audit['hourly_pivots'] = {kind:[{'time_ms':p.time_ms,'price':p.price}
+            for p in hp if p.kind == kind][-2:] for kind in ('HIGH','LOW')}
     for direction, sign in (('LONG', 1), ('SHORT', -1)):
+        sweep = b = ref = pivot = None
+        if audit is not None:
+            audit['directions'][direction] = {'status':'scanned','stages':{},'reasons':{},'samples':{}}
         if regime == ('bearish' if sign == 1 else 'bullish'):
+            if audit is not None:
+                audit['directions'][direction]['status'] = 'excluded_before_pattern_search'
             reject('opposing_hourly_structure'); continue
         for si in range(max(16, len(bars)-18), len(bars)-2):
             sweep = bars[si]
+            b = ref = pivot = None
+            stage('sweep_bars_examined')
             known = [p for p in pivots if p.index+2 < si]
             swept = [p for p in known if p.kind == ('LOW' if sign==1 else 'HIGH')]
             broken = [p for p in known if p.kind == ('HIGH' if sign==1 else 'LOW')]
             if not swept or not broken:
-                continue
+                reject('missing_reference_swings'); continue
             ref, pivot = swept[-1], broken[-1]
             extreme = sweep.low if sign==1 else sweep.high
-            if sign*(ref.price-extreme) <= 0 or sign*(sweep.close-ref.price) <= 0:
-                continue
+            if sign*(ref.price-extreme) <= 0:
+                reject('no_liquidity_sweep'); continue
+            if sign*(sweep.close-ref.price) <= 0:
+                reject('sweep_not_reclaimed'); continue
+            stage('sweep_reclaimed')
             if any((b.low < ref.price if sign==1 else b.high > ref.price) for b in bars[ref.index+1:si]):
-                continue
+                reject('liquidity_already_swept'); continue
             if any(sign*(b.close-pivot.price)>0 for b in bars[pivot.index+1:si+1]):
-                continue
+                reject('structure_already_broken'); continue
+            stage('fresh_sweep')
             for bi in range(si+1, min(si+7,len(bars)-1)):
                 b = bars[bi]
+                stage('break_bars_examined')
                 if any(sign*(x.close-extreme)<=0 for x in bars[si+1:bi+1]):
-                    break
+                    reject('sweep_invalidated_before_break'); break
                 if sign*(b.close-pivot.price)<=0:
-                    continue
+                    reject('no_structure_break'); continue
+                stage('structure_break')
                 local_atr = atr(bars[:bi])
                 body = displacement_body(b, sign)
                 if local_atr<=0 or body < local_atr or body < .6*(b.high-b.low):
                     reject('weak_break'); break
+                stage('displacement_confirmed')
                 # The displacement candle is the middle of this FVG.
                 left,right=bars[bi-1],bars[bi+1]
                 lo,hi=(left.high,right.low) if sign==1 else (right.high,left.low)
                 if lo>=hi:
                     reject('no_displacement_fvg'); break
+                stage('fvg_formed')
                 born=right.time_ms+STEP
                 if as_of_ms-born>MAX_AGE:
                     reject('stale_zone'); break
@@ -181,9 +229,17 @@ def build_candidates(series, costs, as_of_ms, live):
                 raw['opportunity_id']=f'{VERSION}:{direction}:{sweep.time_ms}:{b.time_ms}:{right.time_ms}'
                 raw['candidate_id']=hashlib.sha256(json.dumps(raw,sort_keys=True).encode()).hexdigest()[:24]
                 raw['as_of_ms']=as_of_ms
+                stage('candidate_built')
                 candidates.append(raw);break
+            else:
+                reject('break_window_exhausted')
     unique={c['candidate_id']:c for c in candidates}
-    return sorted(unique.values(),key=lambda c:c['formed_ms'],reverse=True)[:2],diagnostics
+    result = sorted(unique.values(),key=lambda c:c['formed_ms'],reverse=True)[:2]
+    if audit is not None:
+        audit['status'] = 'scanned'
+        audit['candidate_count'] = len(result)
+        audit['rejection_counts'] = dict(diagnostics)
+    return result,diagnostics
 
 
 def flat(reason, diagnostics=None):
