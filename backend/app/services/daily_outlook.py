@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select, update
+from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError
 
 from app.config import get_effective_settings
@@ -20,7 +21,7 @@ from app.services.ai_api_reasoning import effective_luna_api_effort
 from app.services.ai_market_intelligence import load_ai_market_intelligence
 from app.services.daily_execution_plan import snapshot_plan
 from app.services.daily_outlook_data import build_daily_context
-from app.services.daily_outlook_schema import INSTRUCTIONS, parse_outlook
+from app.services.daily_outlook_schema import INSTRUCTIONS, parse_outlook, Outlook, Scenario, TradePlan
 from app.services.settings_store import get_plain, get_secret
 from app.services.siwc.credentials import get_access_token
 from app.services.siwc.model_profiles import resolve_model_selection
@@ -213,10 +214,14 @@ async def _work(run_id: int) -> None:
         user_input=json.dumps({"market": context, "previous_report": prior}, ensure_ascii=False),
         reasoning_effort=effort, timeout=600, max_output_tokens=12000,
     )
-    # Store usage even when a syntactically valid completion fails schema validation.
+    # Preserve the paid response before validation; keep it out of public serializers.
     async with SessionLocal() as session:
         row = await session.get(DailyOutlookRun, run_id)
         row.usage = response.response_metadata.get("usage") or {}
+        row.context = {**row.context, "response_archive": {
+            "text": response.text[:200_000], "truncated": len(response.text) > 200_000,
+            "execution_plan": execution_plan,
+        }}
         await session.commit()
     report = parse_outlook(response.text, context, execution_plan=execution_plan)
     async with SessionLocal() as session:
@@ -277,7 +282,24 @@ async def execute_reserved(run_id: int, owner: str) -> None:
         # A process interruption is recovered on the next daily tick; no duplicate call.
         raise
     except Exception as exc:
-        if isinstance(exc, TimeoutError):
+        details = []
+        if isinstance(exc, ValidationError):
+            code = "outlook_response_schema_invalid"
+            known = set(Outlook.model_fields) | set(Scenario.model_fields) | set(TradePlan.model_fields)
+            for error in exc.errors(include_input=False, include_url=False, include_context=False)[:12]:
+                location = ".".join(str(p) if isinstance(p, int) or p in known else "extra_field"
+                                    for p in error["loc"])
+                details.append({"field": location or "report", "type": error["type"]})
+        elif isinstance(exc, json.JSONDecodeError):
+            code = "outlook_response_json_invalid"
+        elif isinstance(exc, ValueError) and str(exc) in {
+            "unknown_evidence_level", "invalid_chart_path", "invalid_scenario_stage",
+            "unknown_trade_plan_level", "invalid_trade_plan_price", "invalid_trade_plan_geometry",
+            "invalid_trade_plan_target_order", "trade_plan_rr_below_two",
+        }:
+            code = "outlook_response_evidence_invalid"
+            details = [{"field": "report", "type": str(exc)}]
+        elif isinstance(exc, TimeoutError):
             code = "analysis_timeout"
         elif isinstance(exc, OpenAIResponsesError):
             code = "ai_request_failed"
@@ -290,7 +312,7 @@ async def execute_reserved(run_id: int, owner: str) -> None:
             code = str(exc)
         else:
             code = "outlook_generation_failed"
-        logger.warning("Daily outlook %s failed: %s (%s)", run_id, code, type(exc).__name__)
+        logger.warning("Daily outlook %s failed: %s (%s) fields=%s", run_id, code, type(exc).__name__, details)
         async with SessionLocal() as session:
             row = await session.get(DailyOutlookRun, run_id)
             if row.status == "completed":
@@ -298,6 +320,7 @@ async def execute_reserved(run_id: int, owner: str) -> None:
                 return
             row.status = "failed"
             row.error_code = code
+            row.context = {**(row.context or {}), "validation_errors": details}
             row.completed_at = datetime.now(timezone.utc)
             if isinstance(exc, OpenAIResponsesError) and exc.partial:
                 row.usage = exc.partial.response_metadata.get("usage") or {}
@@ -319,6 +342,7 @@ def serialize_run(row: DailyOutlookRun, *, detail: bool = True) -> dict:
            "started_at": utc(row.started_at).isoformat(),
            "completed_at": utc(row.completed_at).isoformat() if row.completed_at else None,
            "model": row.model_slug, "error_code": row.error_code,
+           "validation_errors": (row.context or {}).get("validation_errors", []),
            "stale": (row.slot_close_ms != int(four_hour_slot(datetime.now(timezone.utc))[0].timestamp()*1000) if row.slot_close_ms else row.report_date != datetime.now(TEHRAN).date().isoformat())}
     report = row.report or {}
     dominant = report.get("dominant") or {}

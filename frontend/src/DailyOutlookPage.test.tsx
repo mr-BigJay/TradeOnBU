@@ -128,3 +128,11 @@ it('places four-hour history under analysis with its own API cadence',async()=>{
  expect(await screen.findByRole('link',{name:'مشاهده گزارش و چارت ←'})).toHaveAttribute('href','#/analysis/reports/1');
  expect(apiFetch).toHaveBeenCalledWith('/api/gui/daily-outlook?cadence=4h');
 });
+
+it('explains failed response validation with the field instead of only a generic code',async()=>{
+ apiFetch.mockResolvedValue({...empty(),latest:{...run,status:'failed',error_code:'outlook_response_schema_invalid',validation_errors:[{field:'summary_fa',type:'string_too_long'}]}});
+ render(<DailyOutlookPage/>);
+ expect(await screen.findByText('پاسخ API با قالب گزارش سازگار نیست.')).toBeInTheDocument();
+ expect(screen.getByText('summary_fa')).toBeInTheDocument();
+ expect(screen.getByText('string_too_long')).toBeInTheDocument();
+});
