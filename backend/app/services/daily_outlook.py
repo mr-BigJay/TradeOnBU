@@ -66,18 +66,22 @@ def four_hour_slot(now):
     return close, close + timedelta(minutes=5)
 
 
-async def settings_row(session) -> DailyOutlookSettings:
-    row = await session.get(DailyOutlookSettings, 1)
+async def settings_row(session, cadence="daily") -> DailyOutlookSettings:
+    settings_id = 2 if cadence == "4h" else 1
+    row = await session.get(DailyOutlookSettings, settings_id)
     if row is None:
-        row = DailyOutlookSettings(id=1, enabled=False, hour=8, minute=5)
+        row = DailyOutlookSettings(id=settings_id, enabled=False, hour=8, minute=5)
         session.add(row)
         try:
             await session.commit()
         except IntegrityError:
             await session.rollback()
-        row = await session.get(DailyOutlookSettings, 1)
+        row = await session.get(DailyOutlookSettings, settings_id)
     if four_hour_enabled() and not row.four_hour_initialized:
         row.enabled, row.four_hour_initialized = True, True
+        await session.commit()
+    if cadence == "daily" and four_hour_enabled() and not row.daily_split_initialized:
+        row.enabled, row.daily_split_initialized = True, True
         await session.commit()
     return row
 
@@ -112,22 +116,22 @@ async def recover_interrupted(session, now: datetime) -> None:
     await session.commit()
 
 
-async def reserve_run(trigger: str) -> tuple[int | None, str | None, str]:
+async def reserve_run(trigger: str, cadence="daily") -> tuple[int | None, str | None, str]:
     now = datetime.now(timezone.utc)
     symbol = get_effective_settings().default_symbol
     date = now.astimezone(TEHRAN).date().isoformat()
     async with SessionLocal() as session:
         await recover_interrupted(session, now)
-        cfg = await settings_row(session)
+        cfg = await settings_row(session, cadence)
         slot, ready = four_hour_slot(now)
-        slot_ms = int(slot.timestamp()*1000) if four_hour_enabled() else 0
+        slot_ms = int(slot.timestamp()*1000) if (cadence == "4h") else 0
         if slot_ms:
             date = slot.astimezone(TEHRAN).date().isoformat()
-        if four_hour_enabled() and now < ready:
+        if (cadence == "4h") and now < ready:
             return None, None, "waiting_for_closed_4h"
         if trigger == "scheduled" and (not cfg.enabled or
-                (four_hour_enabled() and now >= ready + timedelta(minutes=15)) or
-                (not four_hour_enabled() and not due(now, cfg.hour, cfg.minute))):
+                ((cadence == "4h") and now >= ready + timedelta(minutes=15)) or
+                (not (cadence == "4h") and not due(now, cfg.hour, cfg.minute))):
             return None, None, "not_due"
         existing = (await session.execute(select(DailyOutlookRun).where(
             DailyOutlookRun.symbol == symbol, DailyOutlookRun.report_date == date,
@@ -177,6 +181,10 @@ async def _work(run_id: int) -> None:
         slot_ms = row.slot_close_ms
     # Data acquisition/validation precedes the only paid inference call.
     context = await build_daily_context(symbol)
+    from app.domain.candles import Candle
+    from app.services.poi_context import market_zones
+    context['poi_context'] = market_zones({'4h':[Candle(r[1],r[2],r[3],r[4],r[0])
+        for r in (context.get('candles') or {}).get('4h',[])]})
     if slot_ms:
         bars = (context.get("candles") or {}).get("4h") or []
         if not bars or bars[-1][0] + 14_400_000 != slot_ms:
@@ -189,6 +197,7 @@ async def _work(run_id: int) -> None:
         previous = (await session.execute(select(DailyOutlookRun).where(
             DailyOutlookRun.symbol == symbol, DailyOutlookRun.status == "completed",
             DailyOutlookRun.id < run_id,
+            DailyOutlookRun.slot_close_ms > 0 if slot_ms else DailyOutlookRun.slot_close_ms == 0,
         ).order_by(DailyOutlookRun.id.desc()).limit(1))).scalar_one_or_none()
         prior = {"date": previous.report_date, "summary": previous.report.get("summary_fa"),
                  "dominant": previous.report.get("dominant")} if previous else None
@@ -216,11 +225,10 @@ async def _work(run_id: int) -> None:
         row.status = "completed"
         row.completed_at = datetime.now(timezone.utc)
         await session.commit()
-    if slot_ms:
-        try:
-            await deliver_outlook(run_id)
-        except Exception:
-            logger.exception("Outlook %s completed but Telegram delivery failed", run_id)
+    try:
+        await deliver_outlook(run_id)
+    except Exception:
+        logger.exception("Outlook %s completed but Telegram delivery failed", run_id)
 
 
 async def deliver_outlook(run_id):
@@ -238,8 +246,9 @@ async def deliver_outlook(run_id):
         row.context = {**row.context, "telegram_delivery": {"status": "sending"}}
         await session.commit()
         report = row.report or {}
-        close = datetime.fromtimestamp(row.slot_close_ms/1000, timezone.utc).astimezone(TEHRAN)
-        lines = [f"تحلیل چهار‌ساعته {row.symbol} | {close:%Y-%m-%d %H:%M} تهران",
+        close = (datetime.fromtimestamp(row.slot_close_ms/1000, timezone.utc) if row.slot_close_ms else utc(row.started_at)).astimezone(TEHRAN)
+        label = "تحلیل چهار‌ساعته" if row.slot_close_ms else "چشم‌انداز روزانه"
+        lines = [f"{label} {row.symbol} | {close:%Y-%m-%d %H:%M} تهران",
                  report.get("summary_fa", "")]
         for key, title in (("dominant", "سناریوی اصلی"), ("alternative", "سناریوی جایگزین")):
             sc = report.get(key) or {}
@@ -251,7 +260,7 @@ async def deliver_outlook(run_id):
                   "این گزارش به‌تنهایی سفارش ایجاد نمی‌کند؛ اجرا در حالت Paper است."]
         public = (notifier.settings.dashboard_public_url or "").strip()
         if public.startswith("https://"):
-            lines.append(public.rstrip('/') + f"/#/outlook/reports/{row.id}")
+            lines.append(public.rstrip('/') + f"/#/{'analysis' if row.slot_close_ms else 'outlook'}/reports/{row.id}")
         try:
             message_id = await notifier.send_message("\n\n".join(lines)[:4000], parse_mode=None)
             delivery = {"status": "sent" if message_id else "failed_or_unknown", "message_id": message_id}
@@ -298,9 +307,10 @@ async def execute_reserved(run_id: int, owner: str) -> None:
 
 
 async def daily_outlook_tick() -> None:
-    run_id, owner, _ = await reserve_run("scheduled")
-    if owner and run_id:
-        await execute_reserved(run_id, owner)
+    for cadence in (("4h", "daily") if four_hour_enabled() else ("daily",)):
+        run_id, owner, _ = await reserve_run("scheduled", cadence)
+        if owner and run_id:
+            await execute_reserved(run_id, owner)
 
 
 def serialize_run(row: DailyOutlookRun, *, detail: bool = True) -> dict:
@@ -331,35 +341,36 @@ def serialize_run(row: DailyOutlookRun, *, detail: bool = True) -> dict:
     return out
 
 
-async def dashboard() -> dict:
+async def dashboard(cadence="daily") -> dict:
     now = datetime.now(timezone.utc)
     symbol = get_effective_settings().default_symbol
     async with SessionLocal() as session:
         await recover_interrupted(session, now)
-        cfg = await settings_row(session)
+        cfg = await settings_row(session, cadence)
         rows = (await session.execute(select(DailyOutlookRun).where(
             DailyOutlookRun.symbol == symbol,
+            (DailyOutlookRun.slot_close_ms > 0 if cadence == "4h" else DailyOutlookRun.slot_close_ms == 0),
         ).order_by(DailyOutlookRun.id.desc()).limit(31))).scalars().all()
         slot, ready = four_hour_slot(now)
-        slot_ms = int(slot.timestamp()*1000) if four_hour_enabled() else 0
+        slot_ms = int(slot.timestamp()*1000) if (cadence == "4h") else 0
         today = next((r for r in rows if r.report_date == (slot if slot_ms else now).astimezone(TEHRAN).date().isoformat() and r.slot_close_ms == slot_ms), None)
         nxt = scheduled_time(now, cfg.hour, cfg.minute)
         if today:
             nxt += timedelta(days=1)
         elif nxt < now:
             nxt = now.astimezone(TEHRAN)
-        if four_hour_enabled():
+        if (cadence == "4h"):
             nxt = ready if now < ready or (not today and now < ready + timedelta(minutes=15)) else ready + timedelta(hours=4)
         return {
             "settings": {"enabled": cfg.enabled, "hour": cfg.hour, "minute": cfg.minute,
-                         "cadence_hours": 4 if four_hour_enabled() else 24,
+                         "cadence_hours": 4 if (cadence == "4h") else 24,
                          "timezone": "Asia/Tehran", "next_run_at": nxt.isoformat() if cfg.enabled else None},
             "latest": serialize_run(rows[0]) if rows else None,
             "latest_completed": serialize_run(next(r for r in rows if r.status == "completed"))
                 if any(r.status == "completed" for r in rows) else None,
             "history": [serialize_run(r, detail=False) for r in rows[:30]],
             "next_cursor": rows[29].id if len(rows) > 30 else None,
-            "can_generate": (not four_hour_enabled() or now >= ready) and (today is None or retryable(today)),
+            "can_generate": (not (cadence == "4h") or now >= ready) and (today is None or retryable(today)),
             "attempted_today": today is not None,
             "can_retry_today": retryable(today),
         }

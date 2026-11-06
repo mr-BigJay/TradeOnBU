@@ -391,7 +391,7 @@ def test_wait_plan_has_no_prices_and_new_report_requires_plan():
 
 
 @pytest.mark.parametrize("direction,stop,far,near", [
-    ("LONG", 990, 1050, 1020), ("SHORT", 1010, 950, 980),
+    ("LONG", 990, 1050, 1010), ("SHORT", 1010, 950, 990),
 ])
 def test_execution_card_first_net_two_r_tick(direction, stop, far, near):
     from app.services.daily_execution_plan import target_at_two_r
@@ -402,7 +402,7 @@ def test_execution_card_first_net_two_r_tick(direction, stop, far, near):
     assert tp is not None
     def qualifies(price):
         return auto_paper_rr_from_settings(sim, direction=direction, entry=1000,
-                                           sl=stop, tp=price, min_net_rr=2).acceptable
+                                           sl=stop, tp=price, min_net_rr=1.4).acceptable
     assert qualifies(tp)
     assert not qualifies(tp - (.1 if direction == "LONG" else -.1))
     assert target_at_two_r(sim, direction, 1000, stop, near) is None

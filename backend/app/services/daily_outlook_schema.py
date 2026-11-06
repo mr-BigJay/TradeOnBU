@@ -100,14 +100,16 @@ def parse_outlook(text: str, context: dict, *, execution_plan: dict | None = Non
         if any(b <= a for a, b in zip(rewards, rewards[1:])):
             raise ValueError("invalid_trade_plan_target_order")
         ratios = [reward / risk for reward in rewards]
-        if any(rr < 2 for rr in ratios):
+        from app.domain.paper_execution_policy import HARD_MIN_AUTO_PAPER_NET_RR
+        if any(rr < HARD_MIN_AUTO_PAPER_NET_RR for rr in ratios):
             raise ValueError("trade_plan_rr_below_two")
         output["trade_plan"].update(entry_price=entry, stop_loss=stop,
                                   take_profits=targets, risk_reward=ratios)
     return output
 
 
-INSTRUCTIONS = """Write a Persian multi-day BTC market outlook, horizon 3–7 days,
+INSTRUCTIONS = """Use market.poi_context when present to discuss fresh/retested/invalidated candle-derived order blocks and support/resistance. These are context, not automatic entry triggers or evidence of institutional holdings.
+Write a Persian multi-day BTC market outlook, horizon 3–7 days,
 using only the supplied complete weekly, daily and 4h OHLCV, verified price levels,
 and optional source-labelled market intelligence. This is a conditional report plan,
 not an instruction to execute an order. Assess weekly context, daily structure and 4h development. Select a

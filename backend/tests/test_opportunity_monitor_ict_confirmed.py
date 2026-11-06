@@ -98,7 +98,7 @@ async def _run_monitor(session, bundle: KlineBundle, now_ms: int) -> dict:
 
 
 @pytest.mark.asyncio
-async def test_ict_confirmed_still_monitored_on_next_tick():
+async def test_ict_confirmed_promotes_under_new_net_floor_and_remains_monitored():
     await init_db()
     created = datetime.now(timezone.utc) - timedelta(minutes=40)
     boundary = first_eligible_bar_open_ms(created, "5m")
@@ -118,7 +118,7 @@ async def test_ict_confirmed_still_monitored_on_next_tick():
 
         row = (await session.execute(select(AiProposedSetup).where(AiProposedSetup.setup_id == "ict-mon-1"))).scalar_one()
         assert summary["checked"] == 1
-        assert row.lifecycle_state == ICT_CONFIRMED_SHORT
+        assert row.lifecycle_state == "READY_SHORT"
         assert row.monitor_cursor_ms == bar3
         assert row.last_monitor_at is not None
 

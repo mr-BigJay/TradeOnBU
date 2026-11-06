@@ -41,6 +41,7 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 
 
 SIGNAL_MIGRATIONS = [
+    "ALTER TABLE daily_outlook_settings ADD COLUMN daily_split_initialized BOOLEAN DEFAULT 0",
     "ALTER TABLE daily_outlook_settings ADD COLUMN four_hour_initialized BOOLEAN DEFAULT 0",
     "ALTER TABLE signals ADD COLUMN telegram_approved_at DATETIME",
     "ALTER TABLE signals ADD COLUMN telegram_approved_by VARCHAR(32)",

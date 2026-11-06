@@ -39,7 +39,7 @@ def test_report_13_has_no_confirmed_short():
 def test_verified_plan_and_first_obstacle():
     row, bars, sim = setup_and_bars()
     tp, reason = strict_a_target(row, sim, bars, 24*STEP)
-    assert reason is None and 1012 < tp < 1030
+    assert reason is None and 1008.4 < tp < 1012
     assert strict_a_target(row, sim, bars[1:8]+bars[9:], 24*STEP)[1] == "ict_structure_data_gap"
     # Put a confirmed overhead pivot outside the MSS lookback.
     bars[4] = Candle(999, 1010, 997, 999, 4*STEP)

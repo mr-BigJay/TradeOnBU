@@ -473,6 +473,8 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
         )
         if verified.enabled():
             # No old narratives or competing discretionary plans in the reviewer input.
+            from app.services.poi_context import market_zones
+            market_payload['poi_context'] = market_zones(candles_by_interval)
             user_payload = json.dumps({'market': market_payload, 'verified_candidates': verified_candidates}, ensure_ascii=False)
         verified_review_meta = {}
         if verified.enabled():

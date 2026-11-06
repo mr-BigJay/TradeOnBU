@@ -645,6 +645,7 @@ class DailyOutlookSettings(Base):
     hour: Mapped[int] = mapped_column(Integer, default=8)
     minute: Mapped[int] = mapped_column(Integer, default=5)
 
+    daily_split_initialized: Mapped[bool] = mapped_column(Boolean, default=False)
     four_hour_initialized: Mapped[bool] = mapped_column(Boolean, default=False)
 
 

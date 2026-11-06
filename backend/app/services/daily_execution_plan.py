@@ -1,5 +1,6 @@
 """Read-only snapshot for the daily report's intraday execution card."""
 from datetime import datetime, timedelta
+from app.domain.paper_execution_policy import HARD_MIN_AUTO_PAPER_NET_RR
 
 
 from sqlalchemy import select
@@ -53,7 +54,7 @@ async def snapshot_plan(session, symbol, context):
         quote = context.get("live_price")
         if not all((entry, stop, tp, quote)) or sign * (quote - stop) <= 0 or sign * (tp - quote) <= 0:
             continue
-        rr = auto_paper_rr_from_settings(sim, direction=pos.direction, entry=entry, sl=stop, tp=tp, min_net_rr=2)
+        rr = auto_paper_rr_from_settings(sim, direction=pos.direction, entry=entry, sl=stop, tp=tp, min_net_rr=HARD_MIN_AUTO_PAPER_NET_RR)
         if not rr.acceptable:
             continue
         return dict(source="ict_engine", setup_id=row.setup_id, action=pos.direction.lower(),

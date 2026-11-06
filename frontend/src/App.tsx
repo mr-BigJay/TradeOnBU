@@ -150,12 +150,16 @@ export default function App() {
         {page === "chatgpt" && <ChatGptSettingsPage />}
         {page === "telegram" && <TelegramSettingsPage />}
         {page === "analysis" && (
+          <>
+          <DailyOutlookPage cadence="4h" />
+          <details><summary>بررسی‌های موتور ورود</summary>
           <AiAnalysisPage
             onOpenPaperPosition={(p) => {
               setPositionPrefill(p);
               navigate("position");
             }}
           />
+          </details></>
         )}
         {page === "opportunities" && <OpportunitiesPage />}
         {page === "position" && (
