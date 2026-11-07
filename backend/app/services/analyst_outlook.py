@@ -40,7 +40,7 @@ def _geometry(item):
     ) if k in item}
 
 
-def compile_forecasts(raw, evidence, *, limit=4):
+def compile_forecasts(raw, evidence, *, observed_ms=None, limit=4):
     """Return accepted, rejected. Invalid model IDs/text cannot become price levels."""
     by_id = {x["id"]: x for x in evidence}
     forecast, rejected, seen = [], [], set()
@@ -109,6 +109,8 @@ def compile_forecasts(raw, evidence, *, limit=4):
             "condition_fa": rule[2], "invalidation_fa": rule[3],
             "reason_fa": reason,
             "paper_order": False, "watchlist_only": True,
+            "as_of_ms": observed_ms,
+            "valid_until_ms": observed_ms + 4 * 60 * 60 * 1000 if isinstance(observed_ms, int) else None,
         })
     return forecast, rejected
 
@@ -118,6 +120,11 @@ def format_forecasts_fa(forecasts):
     if not forecasts:
         return "چشم‌انداز مشروط چهار‌ساعته: ناحیهٔ مستند کافی برای سناریوی قابل نمایش انتخاب نشده است."
     lines = ["چشم‌انداز چهار‌ساعته ـ سناریوهای مشروط (فقط تحت نظر؛ نه دستور ورود):"]
+    until = forecasts[0].get("valid_until_ms")
+    if isinstance(until, int):
+        from datetime import datetime, timezone
+        label = datetime.fromtimestamp(until / 1000, timezone.utc).strftime("%Y-%m-%d %H:%M")
+        lines.append(f"اعتبار این سناریوها تا {label} UTC؛ پس از آن نیازمند تحلیل تازه هستند.")
     for idx, entry in enumerate(forecasts, 1):
         zone = entry["level"]
         low, high = zone["low"], zone["high"]
