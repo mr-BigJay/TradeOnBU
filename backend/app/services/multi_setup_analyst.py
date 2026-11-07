@@ -9,6 +9,7 @@ from sqlalchemy import select
 from app.services.poi_context import market_zones
 from app.services.verified_trade_plan import atr, trend, valid_bars, flat, _tick
 from app.services.ict_execution_plan import target_at_net_rr
+from app.services.analyst_regime import executable_regime
 
 VERSION = 'multi_setup_analyst_v1'
 STEPS = {'1m':60000,'5m':300000,'15m':900000,'1h':3600000,'4h':14400000}
@@ -20,7 +21,8 @@ TRIGGERS = {
 }
 INSTRUCTIONS = '''You are a multi-scenario BTCUSDT analyst, not a reviewer of preselected reversal candidates.
 Compare trend continuation, reversal, and breakout/retest using 4H/1H context and 15m/5m execution.
-Use the provided closed candles, evidence_catalog, strategy_features and freshness-filtered market_intelligence.
+Use the provided closed candles, evidence_catalog, strategy_features, execution_regime and freshness-filtered market_intelligence.
+The market.timeframes[*].candles rows use the explicit candles_columns order [time_ms,open,high,low,close,volume], with UTC epoch milliseconds. All observed bars are present; time_iso can be derived from time_ms.
 EMA9/20, RSI14, ATR, ADX and relative volume are descriptive context for comparing scenarios,
 NEVER mandatory entry thresholds. RSI extremes or EMA crosses alone are not permission to trade.
 Return ONLY JSON with market_summary_fa, comparison_fa, and plans (0 to 3 objects, ranked best first).
@@ -28,7 +30,7 @@ Each plan: strategy_id (ict_reversal|trend_continuation|breakout_retest), direct
 zone_id, invalidation_id, target_id (exact supplied catalog IDs), reason_fa.
 At most one plan per strategy. Only enabled strategies. Empty plans is a valid outcome.
 Select meaningful candle-backed areas; NEVER invent price levels, IDs, confidence probabilities or confirmations.
-Continuation requires aligned 1H context without opposing 4H; breakout uses a resistance for LONG or support for SHORT.
+For continuation, use ONLY execution_regime.timeframes.1h.trend and .4h.trend as the executable trend: bullish/bearish are defined by two confirmed swing highs AND lows, NOT EMA slope or narrative bias. LONG requires 1h bullish and 4h not bearish; SHORT requires 1h bearish and 4h not bullish. If EMA or your visual impression disagrees, explicitly explain the discrepancy and do not propose a continuation that fails the swing rule. Breakout uses resistance for LONG or support for SHORT.
 Explain why each selected scenario is preferable and why alternatives were not selected.
 Server derives midpoint limit entry, ATR-buffered structural stop and cost-adjusted target before the nearest obstacle.
 Server verifies these EXACT conditions from the most recent 15 minutes of closed evidence or forward after registration: reversal=sweep then MSS; continuation=zone pullback
@@ -110,7 +112,7 @@ def compile_plan(proposal, evidence, series, costs, now_ms, observed_ms):
     try:z,inv,target=(by_id[proposal[k]] for k in ('zone_id','invalidation_id','target_id'))
     except (KeyError,TypeError):raise ValueError('unknown_evidence_id')
     sign=1 if direction=='LONG' else -1
-    regime=trend(series['1h']);higher=trend(series['4h'])
+    frames=executable_regime(series)['timeframes'];regime=frames['1h']['trend'];higher=frames['4h']['trend']
     aligned='bullish' if sign==1 else 'bearish';opposed='bearish' if sign==1 else 'bullish'
     if sid=='trend_continuation' and (regime!=aligned or higher==opposed):raise ValueError('continuation_trend_conflict')
     if sid=='breakout_retest' and z['kind']!=('resistance' if sign==1 else 'support'):raise ValueError('breakout_requires_level')
@@ -172,10 +174,46 @@ def compile_plan(proposal, evidence, series, costs, now_ms, observed_ms):
         verified_trade_plan=c,strategy_candidates={})
 
 
+def _proposal_diagnostic(proposal, evidence, series, rank):
+    """Bounded, candle-derived rejection context; never trust model prices."""
+    diagnostic = {"rank": rank}
+    if not isinstance(proposal, dict):
+        return diagnostic
+    for key in ("strategy_id", "direction", "zone_id", "invalidation_id", "target_id"):
+        val = proposal.get(key)
+        diagnostic[key] = val[:80] if isinstance(val, str) else None
+    by_id = {x["id"]: x for x in evidence}
+    picked = {key: by_id.get(proposal.get(key)) if isinstance(proposal.get(key), str) else None
+              for key in ("zone_id", "invalidation_id", "target_id")}
+    for key, value in picked.items():
+        diagnostic[key.replace("_id", "_evidence")] = (
+            {k: value.get(k) for k in ("id", "kind", "timeframe", "time_ms", "low", "high", "price", "direction", "status")}
+            if value else None
+        )
+    frames = executable_regime(series)["timeframes"]
+    diagnostic["regime_1h"] = frames["1h"]["trend"]
+    diagnostic["regime_4h"] = frames["4h"]["trend"]
+    vol5, vol15 = atr(series["5m"]), atr(series["15m"])
+    diagnostic.update(atr5m=vol5, atr15m=vol15, stop_distance_limit=3*vol15)
+    zone, invalidation = picked["zone_id"], picked["invalidation_id"]
+    direction = proposal.get("direction")
+    if zone and invalidation and direction in ("LONG", "SHORT"):
+        sign = 1 if direction == "LONG" else -1
+        entry = round((zone["low"]+zone["high"])/2, 1)
+        reference = invalidation["low"] if sign == 1 else invalidation["high"]
+        stop = _tick(reference-sign*max(.25*vol5, .1), sign)
+        if sign*(entry-stop) < vol5:
+            stop = _tick(entry-sign*vol5, sign)
+        diagnostic.update(entry=entry, invalidation_price=reference, stop=stop,
+                          stop_distance=sign*(entry-stop),
+                          stop_distance_atr15=(round(sign*(entry-stop)/vol15, 3) if vol15 > 0 else None))
+    return diagnostic
+
+
 def compile_response(raw,evidence,series,costs,now_ms,observed_ms,strategies):
     if not isinstance(raw,dict) or not isinstance(raw.get('plans'),list) or len(raw['plans'])>3:
         raise ValueError('invalid_analyst_response')
-    accepted={};rejections=[];seen=set()
+    accepted={};rejections=[];rejected_plans=[];seen=set()
     for rank,p in enumerate(raw['plans'],1):
         try:
             sid=p.get('strategy_id') if isinstance(p,dict) else None
@@ -186,10 +224,21 @@ def compile_response(raw,evidence,series,costs,now_ms,observed_ms,strategies):
             plan=compile_plan(p,evidence,series,costs,now_ms,observed_ms)
             plan['analyst_rank']=rank
             accepted[sid]=plan
-        except ValueError as exc:rejections.append(str(exc))
+        except ValueError as exc:
+            reason=str(exc)
+            rejections.append(reason)
+            item=_proposal_diagnostic(p,evidence,series,rank)
+            item['reason']=reason
+            rejected_plans.append(item)
     result=next(iter(accepted.values())) if accepted else flat('پیشنهاد قابل اجرای معتبر وجود ندارد.')
+    if not accepted:
+        # A legacy flat() uses ict_reversal as a default label. An analyst
+        # rejection is not an A strategy selection; never attribute one.
+        result.pop('strategy_id', None)
     result['strategy_candidates']={sid:p for sid,p in accepted.items() if p is not result}
     result['analyst_summary']={'market_summary_fa':str(raw.get('market_summary_fa') or '')[:3000],
         'comparison_fa':str(raw.get('comparison_fa') or '')[:3000], 'proposed':len(raw['plans']),
-        'accepted':len(accepted),'rejections':rejections}
+        'accepted':len(accepted),'rejections':rejections,
+        'rejected_plans':rejected_plans,
+        'execution_regime':executable_regime(series)}
     return result

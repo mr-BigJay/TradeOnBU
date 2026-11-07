@@ -358,6 +358,7 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
     symbol = settings.default_symbol
     draft = _RunDraft()
     response_audit = None
+    analyst_payload_audit = None
     async with SessionLocal() as session:
         provider = await get_plain(session, "ai", "provider", settings.ai_provider)
         stored_key = await get_secret(session, "ai", "openai_api_key")
@@ -502,8 +503,17 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
             ensure_ascii=False,
         )
         if analyst_mode:
-            user_payload=json.dumps({'market':market_payload,'evidence_catalog':evidence,
-                'market_intelligence':market_intelligence,'strategy_features':features,'enabled_strategies':enabled_strategies},ensure_ascii=False)
+            from app.services.analyst_payload import build_analyst_payload
+            from app.services.analyst_regime import executable_regime
+
+            user_payload, analyst_payload_audit = build_analyst_payload(
+                market=market_payload,
+                evidence_catalog=evidence,
+                market_intelligence=market_intelligence,
+                strategy_features=features,
+                enabled_strategies=enabled_strategies,
+                execution_regime=executable_regime(candles_by_interval),
+            )
         elif verified.enabled():
             # No old narratives or competing discretionary plans in the reviewer input.
             from app.services.poi_context import market_zones
@@ -518,7 +528,8 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
             draft.structured = verified.flat('بررسی API آغاز شد')
             draft.structured['verified_plan_review'] = verified_review_meta
             if analyst_mode:
-                draft.structured['analyst_review']={'slot_ms':analyst_slot,'version':analyst.VERSION,'api_attempted':True}
+                draft.structured['analyst_review']={'slot_ms':analyst_slot,'version':analyst.VERSION,'api_attempted':True,
+                    'payload_sizes':analyst_payload_audit}
             # Journal the attempt BEFORE network I/O, so a worker crash cannot
             # bypass deduplication or reset the daily paid-call budget.
             async with SessionLocal() as review_session:
@@ -543,7 +554,8 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
         if analyst_mode:
             structured=analyst.compile_response(structured,evidence,candles_by_interval,costs,
                 int(datetime.now(timezone.utc).timestamp()*1000),observed_ms,enabled_strategies)
-            structured['analyst_review']={'slot_ms':analyst_slot,'version':analyst.VERSION,'api_attempted':True}
+            structured['analyst_review']={'slot_ms':analyst_slot,'version':analyst.VERSION,'api_attempted':True,
+                'payload_sizes':analyst_payload_audit}
             verified_review_meta['candidate_audit']={'candidate_count':structured['analyst_summary']['accepted']}
             structured['verified_plan_review']=verified_review_meta
         elif verified.enabled():
@@ -556,7 +568,11 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
         if analyst_mode:
             overview=structured['analyst_summary']
             reports=[structured['report_fa']]+[finalize_user_report(p,symbol=symbol,live=live) for p in structured.get('strategy_candidates',{}).values()]
-            structured['report_fa']='\n\n'.join([overview['market_summary_fa'],overview['comparison_fa'],*reports])
+            frames = overview['execution_regime']['timeframes']
+            regime_head = ("روند اجرایی بر اساس Swingهای تأییدشده: "
+                           f"1H={frames['1h']['trend']}؛ 4H={frames['4h']['trend']}.")
+            structured['report_fa']='\n\n'.join(
+                [regime_head, overview['market_summary_fa'], overview['comparison_fa'], *reports])
         safety = _paper_safety_notes(structured, live)
         draft.decision = str(structured.get("decision", "NO_TRADE")).upper()
         draft.report_fa = structured["report_fa"]
@@ -588,7 +604,7 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
                 "inference": inference_meta,
                 "market_intelligence_context": market_intelligence,
                 "strategy_features": features,
-                **({"analyst_evidence_catalog": evidence} if analyst_mode else {}),
+                **({"analyst_evidence_catalog": evidence, "analyst_payload": analyst_payload_audit} if analyst_mode else {}),
                 "strategy_timing_review": timing_review,
                 **({"structure_shadow": review} if shadow_candidates else {}),
             },
