@@ -180,8 +180,17 @@ async def maybe_auto_open_paper_position(
         if not minute_bundle.data_complete or not verified.valid_bars(minute_bundle.closed, 60_000, as_of_ms, 20):
             return {**meta, 'skipped': True, 'reason': 'verified_freshness_unavailable'}
         since = vplan['as_of_ms']//60_000*60_000
+        from app.services.multi_setup_analyst import VERSION as ANALYST_VERSION
+        if vplan['version']==ANALYST_VERSION:
+            from app.services.conditional_revision import objective_confirmations_satisfied_for_order
+            confirmed,reason=objective_confirmations_satisfied_for_order(setup,allow_pre_entry_without_touch=True)
+            if not confirmed:return {**meta,'skipped':True,'reason':reason or 'missing_confirmations'}
+            stamps=(setup.confirmation_state or {}).get('confirmation_timestamps') or {}
+            structural=[t for k,t in stamps.items() if k!='entry_zone_touch']
+            if not structural:return {**meta,'skipped':True,'reason':'missing_confirmations'}
+            since=max(structural)+verified.STEP
         minutes = [b for b in minute_bundle.closed if b.time_ms >= since]
-        if not minutes or minutes[0].time_ms != since:
+        if since>as_of_ms or (since<as_of_ms//60_000*60_000 and (not minutes or minutes[0].time_ms != since)):
             return {**meta, 'skipped': True, 'reason': 'verified_freshness_unavailable'}
         if any((b.low <= vplan['entry'] if vplan['direction']=='LONG' else b.high >= vplan['entry']) for b in minutes):
             return {**meta, 'skipped': True, 'reason': 'verified_pullback_already_used'}

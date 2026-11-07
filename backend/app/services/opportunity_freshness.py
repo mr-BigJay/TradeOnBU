@@ -42,6 +42,9 @@ def seed_recent_structure(setup: Any, bars: list[Candle], *, data_complete: bool
     """
     if not active(setup):
         return None
+    from app.services.multi_setup_analyst import VERSION
+    if ((setup.structured_snapshot or {}).get('verified_trade_plan') or {}).get('version')==VERSION:
+        return None  # Analyst proposals require new, forward-observed confirmations.
     notes = dict(setup.objective_notes or {})
     if (notes.get("historical_confirmation_seed") or {}).get("checked"):
         return None

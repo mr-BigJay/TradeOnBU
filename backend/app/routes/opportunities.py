@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from app.services.verified_trade_plan import enabled as verified_plans_enabled, REASONS_FA as VERIFIED_REASONS
+from app.services.multi_setup_analyst import enabled as analyst_enabled
 
 from datetime import datetime, timezone
 
@@ -180,11 +181,13 @@ async def opportunities_summary(session: AsyncSession = Depends(get_db), _=Depen
             data = latest.structured or {}
             meta = data.get('verified_plan_review') or {}
             audit = meta.get('candidate_audit') or (latest.validation or {}).get('candidate_audit') or {}
+            from collections import Counter
+            analyst = data.get('analyst_summary') or {}
             scan = {'run_id': latest.id, 'time_tehran': format_tehran(latest.created_at),
                     'status': latest.status, 'candidate_count': audit.get('candidate_count'),
                     'api_attempted': bool(meta.get('api_attempted')),
                     'approved': bool(data.get('verified_trade_plan')),
-                    'rejections': meta.get('diagnostics') or audit.get('rejection_counts') or {}}
+                    'rejections': dict(Counter(analyst.get('rejections') or [])) or meta.get('diagnostics') or audit.get('rejection_counts') or {}}
     return {"counts": counts, "latest_scan": scan}
 
 
@@ -241,6 +244,7 @@ async def opportunities_items(
 
     return {
         "verified_plans_enabled": verified_plans_enabled(),
+        "analyst_enabled": analyst_enabled(),
         "tab": tab_norm,
         "paper_status": paper_status if tab_norm == opp_list.TAB_PAPER else None,
         "items": items,

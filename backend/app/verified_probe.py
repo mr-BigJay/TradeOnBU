@@ -24,6 +24,17 @@ async def main():
             'count':len(bars),'invalid_ohlc_samples':bad[:5],'invalid_ohlc_count':len(bad),
             'gaps_remaining':len(bundle.gaps_remaining or [])}
     quote=await market.fetch_live_price('BTCUSDT')
+    from app.services import multi_setup_analyst as analyst
+    if analyst.enabled():
+        try:
+            evidence=analyst.catalog(series,now)
+            ok=all(q['usable'] for q in quality.values()) and not market.is_quote_stale(quote)
+            print(json.dumps({'status':'data_ok' if ok else 'data_blocked','version':analyst.VERSION,
+                'enabled':True,'paper_only':True,'quality':quality,'evidence_count':len(evidence),
+                'note':'Evidence areas are not signals. API proposes scenarios every four hours; monitor confirms entry.'},ensure_ascii=False,indent=2))
+            return 0 if ok else 2
+        except ValueError as exc:
+            print(json.dumps({'status':'data_blocked','reason':str(exc),'quality':quality}));return 2
     async with SessionLocal() as session:
         costs=await session.get(SimPositionSettings,1)
         if costs is None:

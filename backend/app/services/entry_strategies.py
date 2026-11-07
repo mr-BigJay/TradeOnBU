@@ -23,14 +23,17 @@ def strategy_id(data: dict) -> str:
 
 
 async def strategy_settings(session) -> dict[str, bool]:
-    return {key: (await get_plain(session, "entry_strategies", key, "true")) == "true" for key in LABELS}
+    from app.services.multi_setup_analyst import enabled
+    namespace='analyst_strategies' if enabled() else 'entry_strategies'
+    return {key: (await get_plain(session, namespace, key, "true")) == "true" for key in LABELS}
 
 
 async def save_strategy_settings(session, values: dict[str, bool]) -> None:
     if set(values) != set(LABELS) or not any(values.values()):
         raise ValueError("at_least_one_strategy_required")
+    from app.services.multi_setup_analyst import enabled as analyst_enabled
     for key, enabled in values.items():
-        await set_plain(session, "entry_strategies", key, "true" if enabled else "false")
+        await set_plain(session, 'analyst_strategies' if analyst_enabled() else 'entry_strategies', key, "true" if enabled else "false")
 
 
 async def strategy_enabled_error(session, data: dict) -> str | None:
@@ -90,7 +93,9 @@ def validate_strategy_plan(data: dict[str, Any]) -> str | None:
                 return "invalid_strategy_levels"
             rr = (lo - tp) / (sl - lo)
         if rr < 2:
-            return "strategy_rr_below_two"
+            from app.services.verified_trade_plan import plan_error
+            if not data.get('verified_trade_plan') or plan_error(data):
+                return "strategy_rr_below_two"
     except (TypeError, ValueError, ZeroDivisionError):
         return "invalid_strategy_levels"
     return None

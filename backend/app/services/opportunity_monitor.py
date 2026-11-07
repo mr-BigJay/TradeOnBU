@@ -956,7 +956,9 @@ class OpportunityMonitorService:
             invalidated = False
             inv_reason: str | None = None
 
-            if live_engine == ENTRY_MODE_BALANCED and new_1m:
+            from app.services.multi_setup_analyst import VERSION as ANALYST_VERSION
+            analyst_5m=(structured.get('verified_trade_plan') or {}).get('version')==ANALYST_VERSION
+            if live_engine == ENTRY_MODE_BALANCED and new_1m and not analyst_5m:
                 progress_1m = process_balanced_new_closed_1m_bars(
                     direction=setup.direction,
                     policy=policy,
@@ -987,7 +989,7 @@ class OpportunityMonitorService:
                     for c in bundle.closed
                     if c.time_ms <= bar.time_ms and now_ms >= candle_close_ms(c, MONITOR_INTERVAL)
                 ][-48:]
-                if live_engine == ENTRY_MODE_STRICT:
+                if live_engine == ENTRY_MODE_STRICT or analyst_5m:
                     progress = strict_apply_5m_bar(
                         direction=setup.direction,
                         policy=policy,
@@ -1007,7 +1009,7 @@ class OpportunityMonitorService:
                         "missing": progress.missing,
                         "confirmation_timestamps": progress.confirmation_timestamps,
                         "confirmation_evidence": progress.confirmation_evidence,
-                        "confirmation_engine": "STRICT",
+                        "confirmation_engine": live_engine,
                     }
                     if progress.invalidated:
                         invalidated = True

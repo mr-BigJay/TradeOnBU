@@ -146,3 +146,15 @@ it("shows the verified policy and removes obsolete shadow controls", async () =>
   expect(await screen.findByText("ورود مبتنی بر شواهد کندلی · آزمایشی")).toBeInTheDocument();
   expect(screen.queryByText("آزمایش موازی ساختار و شواهد کندلی")).not.toBeInTheDocument();
 });
+
+it('describes analyst proposals separately from confirmed entries', async () => {
+  cleanup();
+  apiFetch.mockImplementation((path:string)=>Promise.resolve(path.includes('/summary') ? {
+    counts:{wait:1,ready:0,blocked:0,expired:0},
+    latest_scan:{run_id:15,time_tehran:'2026-11-07 19:31',status:'completed',candidate_count:3,api_attempted:true,approved:true,rejections:{}}
+  } : {verified_plans_enabled:true,analyst_enabled:true,items:[],total:0,page:1,page_size:20,total_pages:0}));
+  render(<OpportunitiesPage/>);
+  expect(await screen.findByText('تحلیل چندسناریویی · آزمایشی')).toBeInTheDocument();
+  expect(screen.getByText(/سناریوی API اعتبارسنجی و ثبت شده/)).toBeInTheDocument();
+  expect(screen.getByText(/حداکثر ۶ تلاش API/)).toBeInTheDocument();
+});
