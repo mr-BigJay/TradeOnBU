@@ -67,6 +67,7 @@ type NoTradeRow = {
 type OppItem = SetupRow | PaperRow | NoTradeRow;
 
 type ListResponse = {
+  analyst_enabled?: boolean;
   verified_plans_enabled?: boolean;
   items: OppItem[];
   total: number;
@@ -246,13 +247,13 @@ export function OpportunitiesPage() {
       </header>
 
       {list?.verified_plans_enabled && <section className="card" role="status">
-        <h2>ورود مبتنی بر شواهد کندلی · آزمایشی</h2>
-        <p>ساخت سطوح توسط موتور؛ تأیید یا رد توسط API؛ سفارش محدود پس از اثبات ساختار و پیش از بازگشت قیمت.</p>
-        <p>کف سود به زیان خالص ۱:۱٫۴ · اسکن هر ۵ دقیقه · حداکثر ۴ بررسی API در روز · بودجهٔ ریسک هر معامله ۰٫۲۵٪ · یک پوزیشن هم‌زمان · توقف پس از ۱٪ زیان روزانه</p>
+        <h2>{list.analyst_enabled ? 'تحلیل چندسناریویی · آزمایشی' : 'ورود مبتنی بر شواهد کندلی · آزمایشی'}</h2>
+        <p>{list.analyst_enabled ? "مقایسهٔ برگشت، ادامهٔ روند و شکست توسط API؛ سطوح کندلی و تأیید شروط روی کندل بستهٔ 5m؛ سپس سفارش محدود." : "ساخت سطوح توسط موتور؛ تأیید یا رد توسط API؛ سفارش محدود پس از اثبات ساختار و پیش از بازگشت قیمت."}</p>
+        <p>کف سود به زیان خالص ۱:۱٫۴ · {list.analyst_enabled ? 'تحلیل هر ۴ ساعت؛ حداکثر ۶ تلاش API در روز؛ پایش شروط هر دقیقه' : 'اسکن هر ۵ دقیقه؛ حداکثر ۴ بررسی API در روز'} · بودجهٔ ریسک هر معامله ۰٫۲۵٪ · یک پوزیشن هم‌زمان · توقف پس از ۱٪ زیان روزانه</p>
         <p>اجرای واقعی Bitunix فعال نیست. تنظیمات ورود قدیمی در این حالت اعمال نمی‌شوند.</p>
         {scan && <div>
-          <p>آخرین اسکن: <bdi>{scan.time_tehran}</bdi> · وضعیت: <bdi>{scan.status}</bdi> · ستاپ کندلی: {scan.candidate_count ?? '—'}</p>
-          <p>{scan.approved ? 'API ستاپ را تأیید کرده؛ وضعیت سفارش در جدول فرصت‌ها نمایش داده می‌شود.' : scan.api_attempted ? 'درخواست بررسی به API ارسال شده؛ ستاپ تأییدشده‌ای ثبت نشده است.' : 'ستاپی برای بررسی به API ارسال نشده است.'}</p>
+          <p>آخرین اسکن: <bdi>{scan.time_tehran}</bdi> · وضعیت: <bdi>{scan.status}</bdi> · {list.analyst_enabled ? 'سناریوی معتبر' : 'ستاپ کندلی'}: {scan.candidate_count ?? '—'}</p>
+          <p>{scan.approved ? (list.analyst_enabled ? 'سناریوی API اعتبارسنجی و ثبت شده؛ تأیید ورود و وضعیت سفارش را در جدول دنبال کنید.' : 'API ستاپ را تأیید کرده؛ وضعیت سفارش در جدول فرصت‌ها نمایش داده می‌شود.') : scan.api_attempted ? 'درخواست بررسی به API ارسال شده؛ ستاپ تأییدشده‌ای ثبت نشده است.' : 'ستاپی برای بررسی به API ارسال نشده است.'}</p>
           {Object.keys(scan.rejections || {}).length > 0 && <details><summary>علت‌های رد در آخرین اسکن</summary>
             <p className="hint">این شمارش‌ها هم‌پوشانی دارند؛ تعداد فرصت مستقل نیستند.</p>
             {Object.entries(scan.rejections).map(([reason,count])=><p key={reason}><bdi>{reason}</bdi>: {count}</p>)}

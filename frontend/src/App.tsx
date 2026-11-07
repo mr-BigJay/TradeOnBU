@@ -151,15 +151,13 @@ export default function App() {
         {page === "telegram" && <TelegramSettingsPage />}
         {page === "analysis" && (
           <>
-          <DailyOutlookPage cadence="4h" />
-          <details><summary>بررسی‌های موتور ورود</summary>
           <AiAnalysisPage
             onOpenPaperPosition={(p) => {
               setPositionPrefill(p);
               navigate("position");
             }}
           />
-          </details></>
+          <details><summary>آرشیو گزارش‌های چهار‌ساعتهٔ قبلی</summary><DailyOutlookPage cadence="4h" /></details></>
         )}
         {page === "opportunities" && <OpportunitiesPage />}
         {page === "position" && (

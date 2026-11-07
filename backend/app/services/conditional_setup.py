@@ -204,7 +204,7 @@ def apply_conditional_plan_to_setup_row(
         "confirmation_evidence": {},
     }
     verified = structured.get('verified_trade_plan')
-    if verified:
+    if verified and verified.get('evidence',{}).get('sweep_ms') is not None:
         ev = verified['evidence']
         # A delayed reclaim is not confirmed at the earlier sweep timestamp.
         stamps = {'liquidity_sweep': ev.get('reclaim_ms', ev['sweep_ms']), 'mss': ev['break_ms']}

@@ -9,7 +9,9 @@ async def persist_strategy_candidates(session, *, run_id, symbol, structured, ma
     enabled = await strategy_settings(session)
     from app.services import verified_trade_plan as verified
     if verified.enabled():
-        enabled = {sid: sid == 'ict_reversal' and on for sid, on in enabled.items()}
+        from app.services.multi_setup_analyst import enabled as analyst_enabled
+        if not analyst_enabled():
+            enabled = {sid: sid == 'ict_reversal' and on for sid, on in enabled.items()}
         if structured.get('setup_mode') != 'flat':
             error = verified.plan_error(structured)
             if error:
@@ -39,6 +41,11 @@ async def persist_strategy_candidates(session, *, run_id, symbol, structured, ma
             results[sid] = {**base, "reason": "candidate_strategy_mismatch"}
             continue
         data = deepcopy(candidate)
+        if verified.enabled() and data.get('setup_mode')!='flat':
+            error=verified.plan_error(data)
+            if error:
+                results[sid]={**base,'reason':error}
+                continue
         for key in ("strategy_candidates", "_artifacts", "report_fa", "chart_overlays"):
             data.pop(key, None)
         try:

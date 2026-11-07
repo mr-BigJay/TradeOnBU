@@ -14,6 +14,7 @@ from app.db import get_db
 from app.models import AiAnalysisRun, AiAnalysisSettings, ChatGptCredential, SiwcConnectSession
 from app.routes.auth import require_dashboard_access
 from app.services.ai_analysis_scheduler import (
+    _effective_interval_minutes,
     DEFAULT_AI_INTERVAL_MINUTES,
     MAX_AI_INTERVAL_MINUTES,
     MIN_AI_INTERVAL_MINUTES,
@@ -140,7 +141,7 @@ async def status(session: AsyncSession = Depends(get_db), _=Depends(require_dash
         "unattended_consent": cfg.unattended_consent,
         "scheduling_active": sched_ok,
         "scheduling_block_reason": sched_reason,
-        "interval_minutes": cfg.interval_minutes,
+        "interval_minutes": _effective_interval_minutes(cfg),
         "last_run_at": cfg.last_run_at.isoformat() if cfg.last_run_at else None,
         "last_run_at_tehran": format_tehran(cfg.last_run_at),
         "last_success_at": cfg.last_success_at.isoformat() if cfg.last_success_at else None,

@@ -279,11 +279,14 @@ frontend_dist = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 async def health():
     from app.services.verified_trade_plan import enabled, VERSION
     from app.services.daily_outlook import four_hour_enabled
+    from app.services import multi_setup_analyst as analyst
     return {
         "status": "ok",
         "paper_only": True,
-        "verified_plan_version": VERSION if enabled() else None,
-        "outlook_cadence_hours": 4 if four_hour_enabled() else 24,
+        "verified_plan_version": analyst.VERSION if analyst.enabled() else VERSION if enabled() else None,
+        "analyst_enabled": analyst.enabled(),
+        "analysis_cadence_hours": 4 if analyst.enabled() else None,
+        "outlook_cadence_hours": 24 if analyst.enabled() else 4 if four_hour_enabled() else 24,
         "live_trading": False,
         "time": datetime.now(timezone.utc).isoformat(),
     }

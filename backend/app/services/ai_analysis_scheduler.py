@@ -29,6 +29,8 @@ def _ensure_utc(dt: datetime) -> datetime:
 
 
 def _effective_interval_minutes(cfg: AiAnalysisSettings) -> int:
+    from app.services.multi_setup_analyst import enabled as analyst_enabled
+    if analyst_enabled():return 240
     from app.services.verified_trade_plan import enabled
     if enabled():
         return 5
@@ -292,6 +294,9 @@ async def should_run_scheduled(session: AsyncSession) -> bool:
         return True
     from app.services.verified_trade_plan import enabled
     if enabled() and not cfg.auto_retry_pending and cfg.last_run_at:
+        from app.services.multi_setup_analyst import enabled as analyst_enabled
+        if analyst_enabled():
+            return _utc_now() >= _next_regular_run_at(cfg, _ensure_utc(cfg.last_run_at))
         return _utc_now() >= min(_ensure_utc(cfg.next_run_at), _next_regular_run_at(cfg, _ensure_utc(cfg.last_run_at)))
     return _utc_now() >= _ensure_utc(cfg.next_run_at)
 

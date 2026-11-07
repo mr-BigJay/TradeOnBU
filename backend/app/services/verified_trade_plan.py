@@ -50,7 +50,7 @@ weigh that evidence rather than assuming the old 1H direction can never reverse.
 
 
 def enabled():
-    return os.getenv('VERIFIED_PLANS_ENABLED', '0') == '1'
+    return os.getenv('VERIFIED_PLANS_ENABLED', '0') == '1' or os.getenv('MULTI_SETUP_ANALYST_ENABLED','0') == '1'
 
 
 def valid_bars(bars, step, as_of_ms, minimum=20):
@@ -374,8 +374,11 @@ def plan_error(data, now_ms=None):
         binding = {k:v for k,v in c.items() if k not in ('candidate_id','as_of_ms','approved_at_ms')}
         if hashlib.sha256(json.dumps(binding,sort_keys=True).encode()).hexdigest()[:24] != c['candidate_id']:
             return 'verified_plan_contract_changed'
-        if c['version']!=VERSION or c['direction'] not in ('LONG','SHORT'):
+        from app.services.multi_setup_analyst import VERSION as ANALYST_VERSION
+        if c['version'] not in (VERSION,ANALYST_VERSION) or c['direction'] not in ('LONG','SHORT'):
             return 'verified_plan_missing'
+        if c['version']==ANALYST_VERSION and any(data.get(k)!=c.get(k) for k in ('strategy_id','confirmation_type','breakout_level')):
+            return 'verified_plan_contract_changed'
         pairs={'entry_price':'entry','stop_loss':'stop','take_profit':'target','structural_invalidation_level':'invalidation'}
         if any(not math.isfinite(float(data[k])) or abs(float(data[k])-float(c[v]))>1e-8 for k,v in pairs.items()):
             return 'verified_plan_levels_changed'
