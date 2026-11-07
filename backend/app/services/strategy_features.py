@@ -18,6 +18,20 @@ def _wilder(values, period=14):
     return result
 
 
+def _rsi_series(values, period=14):
+    """Wilder smoothing seeded by the first period of close-to-close changes.
+
+    An entirely flat series has undefined relative strength: keep it missing,
+    rather than sending a fabricated momentum reading to the model.
+    """
+    changes = [b-a for a,b in zip(values, values[1:])]
+    gains = _wilder([max(x, 0) for x in changes], period)
+    losses = _wilder([max(-x, 0) for x in changes], period)
+    return [None if gain == loss == 0 else
+            100.0 if loss == 0 else 100 - 100 / (1 + gain/loss)
+            for gain,loss in zip(gains,losses)]
+
+
 def closed_bar_features(bars):
     if len(bars) < 30:
         return {"available": False, "reason": "insufficient_closed_history"}
@@ -41,8 +55,21 @@ def closed_bar_features(bars):
     avg_volume = sum(volumes) / len(volumes) if volume_ok else 0
     rvol = last.volume / avg_volume if avg_volume > 0 and last.volume is not None and math.isfinite(last.volume) and last.volume >= 0 else None
     ema = _ema(closes, 20)
+    ema9 = _ema(closes, 9)
+    previous20, previous9 = _ema(closes[:-1], 20), _ema(closes[:-1], 9)
+    rsi = _rsi_series(closes)
+    rsi_change = rsi[-1]-rsi[-2] if rsi[-1] is not None and rsi[-2] is not None else None
+    relation = "above" if ema9 > ema else "below" if ema9 < ema else "equal"
+    cross = "up" if previous9 <= previous20 and ema9 > ema else "down" if previous9 >= previous20 and ema9 < ema else "none"
     return {
         "available": True, "last_closed_open_ms": last.time_ms,
+        "history_count": len(bars), "close": last.close,
+        "ema9": ema9, "ema9_change": ema9-previous9,
+        "ema9_ema20_relation": relation, "ema9_ema20_cross": cross,
+        "close_ema9_atr": (last.close-ema9)/atr if atr > 0 else None,
+        "rsi14": rsi[-1], "rsi14_change": rsi_change,
+        "rsi14_recent": [{"open_ms": b.time_ms, "value": value}
+                         for b,value in zip(bars[-5:],rsi[-5:])],
         "atr14": atr, "adx14": adx[-1] if adx else None,
         "ema20": ema, "ema20_change": ema - _ema(closes[:-1], 20),
         "body_atr": abs(last.close - last.open) / atr if atr > 0 else None,
@@ -53,7 +80,7 @@ def closed_bar_features(bars):
     }
 
 
-def strategy_features(candles_by_interval):
+def strategy_features(candles_by_interval, *, timeframes=("4h", "1h", "15m", "5m")):
     from app.domain.candle_utils import interval_ms
 
     def for_interval(tf):
@@ -62,7 +89,9 @@ def strategy_features(candles_by_interval):
             return {"available": False, "reason": "non_contiguous_closed_history"}
         return closed_bar_features(bars)
 
-    return {"mode": "descriptive_only_no_entry_gate", "timeframes": {
+    return {"mode": "descriptive_only_no_entry_gate", "version": 2,
+        "calculation": "Closed Bitunix candles; EMA SMA seed, alpha=2/(n+1); RSI Wilder RMA, SMA seed; flat RSI=null. Changes are one candle; cross is descriptive, not an entry condition.",
+        "timeframes": {
         tf: for_interval(tf)
-        for tf in ("4h", "1h", "5m")
+        for tf in timeframes
     }}

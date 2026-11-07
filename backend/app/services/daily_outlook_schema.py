@@ -124,7 +124,8 @@ def parse_outlook(text: str, context: dict, *, execution_plan: dict | None = Non
     return output
 
 
-INSTRUCTIONS = """Use market.poi_context when present to discuss fresh/retested/invalidated candle-derived order blocks and support/resistance. These are context, not automatic entry triggers or evidence of institutional holdings.
+INSTRUCTIONS = """Use market.strategy_features when available as descriptive context only. EMA9/20 and RSI14 help compare momentum and trend; do not turn crosses or RSI extremes into mandatory entry conditions. Missing values are not directional evidence.
+Use market.poi_context when present to discuss fresh/retested/invalidated candle-derived order blocks and support/resistance. These are context, not automatic entry triggers or evidence of institutional holdings.
 Write a Persian multi-day BTC market outlook, horizon 3–7 days,
 using only the supplied complete weekly, daily and 4h OHLCV, verified price levels,
 and optional source-labelled market intelligence. This is a conditional report plan,

@@ -499,7 +499,7 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
             from app.services.poi_context import market_zones
             market_payload['poi_context'] = market_zones(candles_by_interval)
             user_payload = json.dumps({'market': market_payload, 'verified_candidates': verified_candidates,
-                                       'market_intelligence': market_intelligence}, ensure_ascii=False)
+                                       'market_intelligence': market_intelligence, 'strategy_features': features}, ensure_ascii=False)
         verified_review_meta = {}
         if verified.enabled():
             verified_review_meta = {'version': analyst.VERSION if analyst_mode else verified.VERSION, 'api_attempted': True,

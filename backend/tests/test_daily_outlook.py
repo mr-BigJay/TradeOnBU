@@ -133,6 +133,9 @@ async def test_success_and_usage_without_trade_writes(isolated,monkeypatch,actio
     data=await service.dashboard()
     assert data['latest']['status']=='completed'
     assert data['latest']['usage']['input_tokens']==123
+    indicators=json.loads(inference.await_args.kwargs['user_input'])['market']['strategy_features']
+    assert set(indicators['timeframes'])=={'4h','1d'}
+    assert data['latest']['context']['strategy_features']==indicators
     assert data['latest']['report']['trade_plan']['action'] == 'wait'
     assert data['attempted_today'] is True
     inference.assert_awaited_once()

@@ -162,6 +162,9 @@ async def test_api_discovers_plans_without_old_candidate_and_persists_before_del
     payload=json.loads(inference.call_args.kwargs['user_input'])
     assert payload['evidence_catalog']==e and payload['market_intelligence']['funding']['available'] is False
     assert set(payload['enabled_strategies'])==set(a.PROFILES)
+    assert set(payload['strategy_features']['timeframes'])=={'5m','15m','1h','4h'}
+    assert all('rsi14' in f and 'ema9' in f for f in payload['strategy_features']['timeframes'].values())
+    assert draft.structured['_artifacts']['strategy_features']==payload['strategy_features']
     second=await ai._execute_inference(run_id=run.id,trigger='manual',model_override=None)
     assert second.validation['reason']=='analyst_slot_already_attempted'
     inference.assert_awaited_once()

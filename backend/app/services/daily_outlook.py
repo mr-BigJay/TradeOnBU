@@ -189,6 +189,9 @@ async def _work(run_id: int) -> None:
     from app.services.poi_context import market_zones
     context['poi_context'] = market_zones({'4h':[Candle(r[1],r[2],r[3],r[4],r[0])
         for r in (context.get('candles') or {}).get('4h',[])]})
+    from app.services.strategy_features import strategy_features
+    context['strategy_features'] = strategy_features({tf: [Candle(r[1],r[2],r[3],r[4],r[0],r[5] if len(r)>5 else None)
+        for r in (context.get('candles') or {}).get(tf, [])] for tf in ('4h','1d')}, timeframes=('4h','1d'))
     if slot_ms:
         bars = (context.get("candles") or {}).get("4h") or []
         if not bars or bars[-1][0] + 14_400_000 != slot_ms:
@@ -389,6 +392,7 @@ def serialize_run(row: DailyOutlookRun, *, detail: bool = True) -> dict:
             "channel_context": ctx.get("channel_context"),
             "telegram_delivery": ctx.get("telegram_delivery"),
             "data_quality_warnings": ctx.get("data_quality_warnings", []),
+            "strategy_features": ctx.get("strategy_features"),
             "daily_candles": (ctx.get("candles") or {}).get("1d", [])[-30:],
             "four_hour_candles": (ctx.get("candles") or {}).get("4h", [])[-120:],
         })
