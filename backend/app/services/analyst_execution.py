@@ -27,10 +27,15 @@ def execution_plan(setup, settings, bars, now_ms):
     stamp = stamps.get(token)
     if not isinstance(stamp, int) or stamp + 300000 > now_ms:
         return None, 'execution_structure_unconfirmed'
-    proof = ((setup.confirmation_state or {}).get('confirmation_evidence') or {}).get(token) or {}
-    candle = next((b for b in bars if b.time_ms == stamp), None)
+    finish=max(t for name,t in stamps.items() if name!='entry_zone_touch')
+    span=[b for b in bars if stamp<=b.time_ms<=finish]
+    expected=list(range(stamp,finish+300000,300000))
+    if [b.time_ms for b in span]!=expected or finish+300000>now_ms:
+        return None, 'execution_structure_evidence_missing'
     long = setup.direction == 'LONG'
-    extreme = (candle.low if long else candle.high) if candle else proof.get('bar_low' if long else 'bar_high')
+    # A later confirmation candle can sweep deeper than the first sweep.
+    # Protect the entire observed pattern, not just its opening event.
+    extreme = min(b.low for b in span) if long else max(b.high for b in span)
     if not isinstance(extreme, (int, float)) or not math.isfinite(extreme) or extreme <= 0:
         return None, 'execution_structure_evidence_missing'
     sign = 1 if long else -1
@@ -49,5 +54,5 @@ def execution_plan(setup, settings, bars, now_ms):
         return None, 'execution_target_already_reached'
     return dict(version='structure_bound_v2', entry=contract['entry'], stop=stop, target=target,
                 proposal_stop=contract['stop'], proposal_target=contract['target'],
-                confirmation_token=token, confirmation_ms=stamp, extreme=extreme,
+                confirmation_token=token, confirmation_ms=stamp, confirmation_end_ms=finish, extreme=extreme,
                 obstacle=obstacle, assessed_at_ms=now_ms), None

@@ -210,7 +210,7 @@ async def test_real_monitor_confirms_then_places_limit_and_fills_later(session,m
     previous=1020 if sid=='breakout_retest' else 1023
     five=[Candle(previous,1024,1019.5,previous,boundary-(60-i)*300000) for i in range(60)]
     if sid=='ict_reversal':
-        events=[Candle(1023,1024,1014 if deep_sweep else 1017,1021,boundary),Candle(1021,1026,1021,1025,boundary+300000)]
+        events=[Candle(1023,1024,1014 if deep_sweep else 1017,1021,boundary),Candle(1021,1026,1012 if deep_sweep else 1021,1025,boundary+300000)]
     elif sid=='trend_continuation':
         events=[Candle(1023,1024,1020,1021,boundary),Candle(1021,1026,1021,1025,boundary+300000)]
     else:
@@ -236,7 +236,7 @@ async def test_real_monitor_confirms_then_places_limit_and_fills_later(session,m
     pos=positions[0]
     assert pos.status=='pending_entry' and pos.leverage==3
     if deep_sweep:
-        assert pos.stop_loss<events[0].low<p['stop_loss']
+        assert pos.stop_loss<min(b.low for b in events)<p['stop_loss']
         assert pos.take_profit>p['take_profit']
         assert pos.extra['execution_plan']['proposal_stop']==p['stop_loss']
         from app.services.execution_model_sim import auto_paper_rr_from_settings
