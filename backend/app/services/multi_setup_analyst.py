@@ -23,7 +23,7 @@ TRIGGERS = {
 INSTRUCTIONS = '''You are a multi-scenario BTCUSDT analyst, not a reviewer of preselected reversal candidates.
 Compare trend continuation, reversal, and breakout/retest using 4H/1H context and 15m/5m execution.
 Use the provided closed candles, evidence_catalog, strategy_features, execution_regime and freshness-filtered market_intelligence.
-The market.timeframes[*].candles rows use the explicit candles_columns order [time_ms,open,high,low,close,volume], with UTC epoch milliseconds. All observed bars are present; time_iso can be derived from time_ms.
+The market.timeframes[*].candles rows use the explicit candles_columns order [time_ms,open,high,low,close,volume], with UTC epoch milliseconds. All 5m/15m/1h/4h bars are present; 1m includes the latest 45 closed minutes for sequencing only. time_iso is derivable from time_ms.
 EMA9/20, RSI14, ATR, ADX and relative volume are descriptive context for comparing scenarios,
 NEVER mandatory entry thresholds. RSI extremes or EMA crosses alone are not permission to trade.
 Return ONLY JSON with market_summary_fa, comparison_fa, forecast_scenarios, and plans.
@@ -267,7 +267,7 @@ def compile_response(raw,evidence,series,costs,now_ms,observed_ms,strategies):
         # rejection is not an A strategy selection; never attribute one.
         result.pop('strategy_id', None)
     result['strategy_candidates']={sid:p for sid,p in accepted.items() if p is not result}
-    forecast,forecast_rejected=compile_forecasts(raw.get('forecast_scenarios',[]),evidence)
+    forecast,forecast_rejected=compile_forecasts(raw.get('forecast_scenarios',[]),evidence,observed_ms=observed_ms)
     result['analyst_summary']={'market_summary_fa':str(raw.get('market_summary_fa') or '')[:3000],
         'comparison_fa':str(raw.get('comparison_fa') or '')[:3000], 'proposed':len(raw['plans']),
         'accepted':len(accepted),'rejections':rejections,
