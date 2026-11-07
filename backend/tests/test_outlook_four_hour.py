@@ -131,6 +131,8 @@ async def test_report_without_candidate_sends_once_and_keeps_completed(four, mon
     send.assert_awaited_once()
     photo.assert_awaited_once()
     ai.assert_awaited_once()
+    assert ai.await_args.kwargs["max_output_tokens"] == 25_000
+    assert ai.await_args.kwargs["reasoning_effort"] == "high"
     assert 'شرط فعال‌شدن' in send.call_args.args[0]
 
 @pytest.mark.asyncio

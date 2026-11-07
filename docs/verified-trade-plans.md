@@ -31,6 +31,13 @@ changes are respected. The stored daily time is preserved (08:05 Tehran for a ne
 installation). A migration adds `daily_split_initialized`; use the backup-first
 deployment script.
 
+Both report types allow up to **25,000 output tokens**, shared by reasoning and
+final JSON. The old 12,000 ceiling could be exhausted almost entirely by reasoning
+(report 27: 11,912 reasoning tokens out of 12,000 output tokens). This is a higher
+maximum cost, not a fixed charge or a guarantee of completion; the configured
+model/reasoning effort is preserved. Each run stores `context.ai_request_settings`
+for diagnostics. Already paid failures are never automatically retried.
+
 Both report types use the existing inference lock and Telegram delivery tracking.
 This allows up to **seven general reports per day** (six 4H plus one daily), in
 addition to the existing maximum four candidate reviews. It is one more general

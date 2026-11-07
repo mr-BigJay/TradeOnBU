@@ -30,6 +30,9 @@ from app.services.siwc.responses_client import stream_analysis_response, OpenAIR
 TEHRAN = ZoneInfo("Asia/Tehran")
 logger = logging.getLogger(__name__)
 RUN_TIMEOUT = 900
+# Shared ceiling for reasoning and the final JSON, not a visible-text allowance.
+# Keep bounded and never automatically repeat an already paid request.
+OUTLOOK_MAX_OUTPUT_TOKENS = 25_000
 PRE_AI_ERRORS = {
     "insufficient_market_history", "latest_closed_candle_missing", "invalid_market_prices",
     "invalid_candle_range", "market_history_gap", "incomplete_4h_history",
@@ -206,13 +209,15 @@ async def _work(run_id: int) -> None:
     async with SessionLocal() as session:
         row = await session.get(DailyOutlookRun, run_id)
         row.context = {**context, "ai_request_started": True,
+                       "ai_request_settings": {"model": model, "reasoning_effort": effort,
+                                               "max_output_tokens": OUTLOOK_MAX_OUTPUT_TOKENS},
                        "pre_ai_failures": (row.context or {}).get("pre_ai_failures", [])}
         row.model_slug = model
         await session.commit()
     response = await stream_analysis_response(
         token, model=model, instructions=INSTRUCTIONS + ("\nThis is the four-hour refresh after a closed 4h candle. Keep the multi-day context but clearly explain changes since the previous report." if slot_ms else ""),
         user_input=json.dumps({"market": context, "previous_report": prior}, ensure_ascii=False),
-        reasoning_effort=effort, timeout=600, max_output_tokens=12000,
+        reasoning_effort=effort, timeout=600, max_output_tokens=OUTLOOK_MAX_OUTPUT_TOKENS,
     )
     # Preserve the paid response before validation; keep it out of public serializers.
     async with SessionLocal() as session:
