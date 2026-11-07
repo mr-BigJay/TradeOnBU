@@ -261,6 +261,14 @@ async def maybe_auto_open_paper_position(
     entry_f = float(setup.entry_price)  # type: ignore[arg-type]
     sl_f = float(setup.stop_loss)  # type: ignore[arg-type]
     tp_f = float(setup.take_profit)  # type: ignore[arg-type]
+    execution = None
+    if vplan:
+        from app.services.analyst_execution import execution_plan
+        execution, error = execution_plan(setup, settings, verified_5m, as_of_ms)
+        if error:
+            return {**meta, 'skipped': True, 'reason': error}
+        if execution:
+            sl_f, tp_f = execution['stop'], execution['target']
     rr_ok, net_rr = await net_rr_acceptable_for_auto_paper(
         session,
         direction=setup.direction,
@@ -287,8 +295,8 @@ async def maybe_auto_open_paper_position(
         return meta
 
     entry = float(setup.entry_price)  # type: ignore[arg-type]
-    sl = float(setup.stop_loss)  # type: ignore[arg-type]
-    tp = float(setup.take_profit)  # type: ignore[arg-type]
+    sl = sl_f
+    tp = tp_f
     direction = (setup.direction or "").upper()
 
     from app.services.execution_tp_cap_apply import ai_take_profit_2_from_payload
@@ -308,7 +316,7 @@ async def maybe_auto_open_paper_position(
     risk_budget = None
     if vplan:
         from app.services.verified_plan_risk import budget
-        risk_budget, error = await budget(session, settings, setup, _utc_now())
+        risk_budget, error = await budget(session, settings, setup, _utc_now(), execution_stop=sl)
         if error:
             return {**meta, 'skipped': True, 'reason': error}
         tp2 = None
@@ -340,6 +348,9 @@ async def maybe_auto_open_paper_position(
         return meta
 
     ict_snapshot = build_ict_entry_audit_snapshot(structured=structured, setup=setup, validation=validation)
+    if execution:
+        ict_snapshot.update(proposed_stop_loss=setup.stop_loss, proposed_take_profit=setup.take_profit,
+                            stop_loss=sl, take_profit=tp)
     pos = await svc.get_position_by_public_id(session, result.position_id)
     if pos:
         if strict_a:
@@ -356,6 +367,7 @@ async def maybe_auto_open_paper_position(
             **(pos.extra or {}),
             "auto_paper": True,
             "verified_trade_plan": vplan,
+            "execution_plan": execution,
             "verified_risk_budget": risk_budget,
             "strict_a_plan": strict_a,
             "ai_run_id": run_id,
@@ -369,6 +381,8 @@ async def maybe_auto_open_paper_position(
         await session.flush()
 
     meta["created"] = True
+    meta.setdefault('net_rr', net_rr)
+    meta['execution_plan'] = execution
     meta["position_id"] = result.position_id
     meta["setup_id"] = setup.setup_id
     meta["ict_entry_snapshot"] = ict_snapshot

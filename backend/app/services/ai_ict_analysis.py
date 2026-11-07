@@ -344,10 +344,20 @@ async def _persist_run_draft(run_id: int, draft: _RunDraft, *, symbol: str) -> A
         return run
 
 
+def _response_audit(analysis):
+    return {'requested_model':analysis.requested_model,
+            'requested_reasoning_effort':analysis.requested_reasoning_effort,
+            'confirmed_reasoning_effort':analysis.confirmed_reasoning_effort,
+            'response_model':analysis.response_model, 'response_id':analysis.response_id,
+            'response_metadata':analysis.response_metadata,
+            'response_text':analysis.text[:32000]}
+
+
 async def _execute_inference(*, run_id: int, trigger: str, model_override: str | None) -> _RunDraft:
     settings = get_effective_settings()
     symbol = settings.default_symbol
     draft = _RunDraft()
+    response_audit = None
     async with SessionLocal() as session:
         provider = await get_plain(session, "ai", "provider", settings.ai_provider)
         stored_key = await get_secret(session, "ai", "openai_api_key")
@@ -526,6 +536,9 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
             timeout=settings.ai_response_timeout_seconds,
             **({"max_output_tokens":25000} if analyst_mode else {}),
         )
+        # Record provider usage before JSON/schema validation can fail.
+        response_audit = _response_audit(analysis)
+        draft.structured = _merge_artifacts(draft.structured, {'inference':response_audit})
         structured = _extract_json(analysis.text)
         if analyst_mode:
             structured=analyst.compile_response(structured,evidence,candles_by_interval,costs,
@@ -627,11 +640,25 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
         draft.status = "failed"
         draft.error_code = exc.code
         draft.error_detail = str(exc)
+        if exc.partial:
+            response_audit = _response_audit(exc.partial)
+        review = draft.structured.get('analyst_review')
+        if review:
+            review['retryable'] = (exc.code not in ('insufficient_quota','invalid_api_key','response_incomplete')
+                and (exc.http_status == 429 or (exc.http_status is not None and exc.http_status >= 500)
+                     or exc.code in ('stream_interrupted','incomplete','server_error')))
     except Exception as exc:
         draft.status = "failed"
         draft.error_code = "analysis_error"
         draft.error_detail = str(exc)[:500]
+        import httpx
+        review = draft.structured.get('analyst_review')
+        if review:
+            review['retryable'] = isinstance(exc, (httpx.TimeoutException, httpx.TransportError))
     finally:
+        if response_audit is not None:
+            existing=(draft.structured.get('_artifacts') or {}).get('inference') or {}
+            draft.structured = _merge_artifacts(draft.structured, {'inference':{**response_audit, **existing}})
         draft.completed_at = datetime.now(timezone.utc)
     return draft
 

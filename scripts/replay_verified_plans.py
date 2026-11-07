@@ -94,6 +94,7 @@ def replay(rows):
             seen.add(p['opportunity_id']);pending={**p,'registered_ms':now};break
     if pending:outcomes.append({'candidate_id':pending['candidate_id'],'entry_ms':entry_ms,'outcome':'censored'})
     return {'status':'component_replay_only','quality':quality,
+        'engine_version':'verified_reversal_v1','evaluates_multi_setup_analyst':False,
         'method':'Candle engine only; API approvals NOT simulated; one position at a time; no portfolio return claim.',
         'cost_assumptions':vars(cost),'outcomes':outcomes,'counts':dict(Counter(x['outcome'] for x in outcomes)),
         'rejections':dict(rejects),'performance':None}

@@ -126,7 +126,8 @@ def test_four_hour_schedule_overrides_legacy_five_minute_setting(monkeypatch):
     assert nxt==datetime(2026,11,7,12,1,tzinfo=timezone.utc)
 
 @pytest.mark.asyncio
-async def test_api_discovers_plans_without_old_candidate_and_persists_before_delivery(session,monkeypatch):
+@pytest.mark.parametrize('malformed',[False,True,'partial','quota'])
+async def test_api_discovers_plans_without_old_candidate_and_persists_before_delivery(session,monkeypatch,malformed):
     from app.models import AiAnalysisRun, AiProposedSetup
     from sqlalchemy import select
     from app.services import ai_ict_analysis as ai
@@ -147,6 +148,11 @@ async def test_api_discovers_plans_without_old_candidate_and_persists_before_del
         'market_summary_fa':'خلاصه','comparison_fa':'مقایسه'}),requested_model='test',requested_reasoning_effort='high',
         confirmed_reasoning_effort='high',response_model='test',response_id='test',response_metadata={'usage':{'input_tokens':100,'output_tokens':50}}))
     monkeypatch.setattr(ai,'stream_analysis_response',inference)
+    if malformed:inference.return_value.text='invalid json response'
+    if malformed in ('partial','quota'):
+        from app.services.siwc.responses_client import OpenAIResponsesError
+        inference.side_effect=OpenAIResponsesError('stream_interrupted' if malformed=='partial' else 'insufficient_quota',
+            'synthetic provider error',partial=inference.return_value,http_status=429 if malformed=='quota' else None)
     monkeypatch.setattr(ai,'_generate_chart_for_run',AsyncMock(side_effect=ValueError('synthetic unavailable')))
     async def delivery(**kwargs):
         async with TestSession() as check:
@@ -155,6 +161,12 @@ async def test_api_discovers_plans_without_old_candidate_and_persists_before_del
     monkeypatch.setattr(ai,'_deliver_ai_telegram',delivery)
     run=AiAnalysisRun(trigger='manual',status='running',structured={});session.add(run);await session.commit()
     draft=await ai._execute_inference(run_id=run.id,trigger='manual',model_override=None)
+    if malformed:
+        assert draft.status=='failed'
+        assert draft.structured['_artifacts']['inference']['response_metadata']['usage']['output_tokens']==50
+        assert draft.structured['_artifacts']['inference']['response_text']=='invalid json response'
+        assert draft.structured['analyst_review'].get('retryable') is (malformed=='partial')
+        return
     assert draft.status.startswith('completed'),(draft.error_code,draft.error_detail)
     assert draft.persisted and draft.structured['analyst_summary']['accepted']==3
     assert 'delivery_error' not in draft.structured.get('_artifacts',{}).get('telegram',{})
@@ -170,8 +182,8 @@ async def test_api_discovers_plans_without_old_candidate_and_persists_before_del
     inference.assert_awaited_once()
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('sid',list(a.PROFILES))
-async def test_real_monitor_confirms_then_places_limit_and_fills_later(session,monkeypatch,sid):
+@pytest.mark.parametrize('sid,deep_sweep',[(sid,False) for sid in a.PROFILES]+[('ict_reversal',True)])
+async def test_real_monitor_confirms_then_places_limit_and_fills_later(session,monkeypatch,sid,deep_sweep):
     from app.models import AiAnalysisRun,SimPosition
     from app.services.strategy_candidates import persist_strategy_candidates
     from app.services.position.settings_service import get_or_create_settings
@@ -181,7 +193,10 @@ async def test_real_monitor_confirms_then_places_limit_and_fills_later(session,m
     from app.services.position.position_monitor import SimPositionMonitorService
     from sqlalchemy import select
     monkeypatch.setenv('MULTI_SETUP_ANALYST_ENABLED','1')
-    s,c,e,n=fixture();p=a.compile_plan(proposal(sid),e,s,c,n,n)
+    s,c,e,n=fixture()
+    # The analyzed history and monitor history agree on the confirmed pivot.
+    s['5m']=[Candle(1023,1024,1019.5,1023,b.time_ms) for b in s['5m']]
+    p=a.compile_plan(proposal(sid),e,s,c,n,n)
     run=AiAnalysisRun(trigger='manual',status='completed',structured=p);session.add(run);await session.flush()
     rows,meta=await persist_strategy_candidates(session,run_id=run.id,symbol='BTCUSDT',structured=p)
     assert sid in rows,meta
@@ -195,7 +210,7 @@ async def test_real_monitor_confirms_then_places_limit_and_fills_later(session,m
     previous=1020 if sid=='breakout_retest' else 1023
     five=[Candle(previous,1024,1019.5,previous,boundary-(60-i)*300000) for i in range(60)]
     if sid=='ict_reversal':
-        events=[Candle(1023,1024,1018,1021,boundary),Candle(1021,1026,1021,1025,boundary+300000)]
+        events=[Candle(1023,1024,1014 if deep_sweep else 1017,1021,boundary),Candle(1021,1026,1012 if deep_sweep else 1021,1025,boundary+300000)]
     elif sid=='trend_continuation':
         events=[Candle(1023,1024,1020,1021,boundary),Candle(1021,1026,1021,1025,boundary+300000)]
     else:
@@ -220,6 +235,17 @@ async def test_real_monitor_confirms_then_places_limit_and_fills_later(session,m
     assert len(positions)==1,(row.confirmation_state,row.last_rejection_reason,row.last_validation_result)
     pos=positions[0]
     assert pos.status=='pending_entry' and pos.leverage==3
+    if deep_sweep:
+        assert pos.stop_loss<min(b.low for b in events)<p['stop_loss']
+        assert pos.take_profit>p['take_profit']
+        assert pos.extra['execution_plan']['proposal_stop']==p['stop_loss']
+        from app.services.execution_model_sim import auto_paper_rr_from_settings
+        assert auto_paper_rr_from_settings(settings,direction='LONG',entry=pos.entry_price,
+            sl=pos.stop_loss,tp=pos.take_profit,min_net_rr=1.4).acceptable
+        quantity=pos.margin_usdt*pos.leverage/pos.entry_price
+        adverse_exit=pos.stop_loss*(1-settings.slippage_bps/10000)
+        stop_cost=quantity*(pos.entry_price-adverse_exit+pos.entry_price*settings.maker_fee_rate+adverse_exit*settings.taker_fee_rate)
+        assert stop_cost<=pos.extra['verified_risk_budget']['equity']*.0025
     assert set(row.confirmation_state['confirmation_timestamps'].values())=={boundary,boundary+300000}
     assert pos.extra['verified_risk_budget']['risk_fraction']==.0025
     touch_ms=max(now_ms,(pos.monitor_from_ms//60000+1)*60000)

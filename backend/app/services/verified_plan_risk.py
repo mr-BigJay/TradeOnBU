@@ -20,7 +20,7 @@ def risk_margin(*, equity, available, entry, stop, direction, maker, taker, slip
     return math.floor(margin*10000)/10000
 
 
-async def budget(session, settings, setup, now):
+async def budget(session, settings, setup, now, *, execution_stop=None):
     positions=(await session.execute(select(SimPosition).where(SimPosition.status.in_(('open','pending_entry'))))).scalars().all()
     if positions:
         return None,'verified_one_position_limit'
@@ -33,7 +33,7 @@ async def budget(session, settings, setup, now):
     if start_equity<=0 or -losses>=start_equity*.01:
         return None,'verified_daily_loss_limit'
     leverage=min(3,int(settings.default_leverage))
-    margin=risk_margin(equity=equity,available=available,entry=setup.entry_price,stop=setup.stop_loss,
+    margin=risk_margin(equity=equity,available=available,entry=setup.entry_price,stop=execution_stop if execution_stop is not None else setup.stop_loss,
         direction=setup.direction,maker=settings.maker_fee_rate,taker=settings.taker_fee_rate,
         slippage_bps=settings.slippage_bps,leverage=leverage,
         cap=min(float(settings.default_margin_usdt),float(settings.max_margin_per_position)))

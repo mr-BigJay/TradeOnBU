@@ -31,10 +31,12 @@ Select meaningful candle-backed areas; NEVER invent price levels, IDs, confidenc
 Continuation requires aligned 1H context without opposing 4H; breakout uses a resistance for LONG or support for SHORT.
 Explain why each selected scenario is preferable and why alternatives were not selected.
 Server derives midpoint limit entry, ATR-buffered structural stop and cost-adjusted target before the nearest obstacle.
-Server monitors these EXACT conditions after registration: reversal=sweep then MSS; continuation=zone pullback
+Server verifies these EXACT conditions from the most recent 15 minutes of closed evidence or forward after registration: reversal=sweep then MSS; continuation=zone pullback
 then a directional close beyond prior 5m high/low; breakout=5m close crossing the level then a retest holding it.
+For reversal, sweep the selected invalidation area's reference price and reclaim it;
+MSS must close through the latest confirmed opposite 5m pivot, fixed when the plan is compiled.
 All require a later limit fill. Do not describe additional unimplemented conditions as executable requirements.
-A proposal is NOT an entry signal and none of these events are assumed completed. No market-on-touch orders.
+A proposal is NOT an entry signal; only server-verified candles can mark events completed. No market-on-touch orders.
 Respect source/timeframe/venue caveats; missing optional evidence is not a directional signal. No return promises.
 '''
 
@@ -48,16 +50,21 @@ def catalog(series, now_ms):
             raise ValueError('invalid_or_stale_'+tf)
     zones=market_zones({k:series[k] for k in ('5m','15m','1h','4h')})
     items=[]
-    def add(kind,tf,t,lo,hi,direction=None,price=None):
+    def add(kind,tf,t,lo,hi,direction=None,price=None,metadata=None):
         item=dict(kind=kind,timeframe=tf,time_ms=t,low=lo,high=hi,price=price if price is not None else (lo+hi)/2,direction=direction)
         item['id']=hashlib.sha256(json.dumps(item,sort_keys=True).encode()).hexdigest()[:20]
+        item.update(metadata or {})
         items.append(item)
     for x in zones['support_resistance']:
         width=max(.15*atr(series[x['timeframe']]),.1)
         add(x['kind'],x['timeframe'],x['time_ms'],x['price']-width,x['price']+width,price=x['price'])
     for x in zones['order_blocks']:
         if x['status']!='invalidated':
-            add('OB',x['timeframe'],x['origin_ms'],x['low'],x['high'],x['direction'])
+            later=[b for b in series[x['timeframe']] if b.time_ms>x['confirmed_ms']]
+            add('OB',x['timeframe'],x['origin_ms'],x['low'],x['high'],x['direction'],metadata={
+                'status':x['status'],'confirmed_ms':x['confirmed_ms']+STEPS[x['timeframe']],
+                'age_ms':now_ms-x['confirmed_ms']-STEPS[x['timeframe']],
+                'touch_count':sum(b.low<=x['high'] and b.high>=x['low'] for b in later)})
     for tf in ('5m','15m'):
         bars=series[tf]
         gaps=[]
@@ -65,19 +72,34 @@ def catalog(series, now_ms):
             a,b=bars[i-2],bars[i]
             for direction,lo,hi in (('LONG',a.high,b.low),('SHORT',b.high,a.low)):
                 if lo<hi and not any((x.close<lo if direction=='LONG' else x.close>hi) for x in bars[i+1:]):
-                    gaps.append((direction,lo,hi,b.time_ms))
-        for direction,lo,hi,t in gaps[-8:]:add('FVG',tf,t,lo,hi,direction)
+                    later=bars[i+1:]
+                    touches=sum(x.low<=hi and x.high>=lo for x in later)
+                    filled=any(x.low<=lo if direction=='LONG' else x.high>=hi for x in later)
+                    gaps.append((direction,lo,hi,b.time_ms,{'touch_count':touches,
+                        'status':'filled' if filled else 'retested' if touches else 'fresh',
+                        'confirmed_ms':b.time_ms+STEPS[tf],'age_ms':now_ms-b.time_ms-STEPS[tf]}))
+        for direction,lo,hi,t,meta in gaps[-8:]:add('FVG',tf,t,lo,hi,direction,metadata=meta)
     return items
 
 
 async def review_allowed(session, now):
-    """One paid attempt per UTC four-hour slot, including failures/manual clicks."""
+    """One normal call plus at most one bounded transient-error retry per slot."""
     from app.models import AiAnalysisRun
     slot=int(now.timestamp()*1000)//14400000*14400000
     rows=(await session.execute(select(AiAnalysisRun).where(AiAnalysisRun.created_at>=now-timedelta(days=1)))).scalars().all()
-    if any(((r.structured or {}).get('analyst_review') or {}).get('slot_ms')==slot for r in rows):
-        return False,slot
-    return True,slot
+    attempts=[r for r in rows if ((r.structured or {}).get('analyst_review') or {}).get('slot_ms')==slot]
+    if not attempts:return True,slot
+    if len(attempts)!=1:return False,slot
+    run=attempts[0]
+    meta=(run.structured or {}).get('analyst_review') or {}
+    from datetime import timezone
+    ended=run.completed_at
+    if ended and ended.tzinfo is None:ended=ended.replace(tzinfo=timezone.utc)
+    usage=((((run.structured or {}).get('_artifacts') or {}).get('inference') or {}).get('response_metadata') or {}).get('usage') or {}
+    # Never retry token exhaustion, malformed output, or authentication errors.
+    return bool(run.status=='failed' and meta.get('retryable') is True and ended
+                and now>=ended+timedelta(minutes=2)
+                and int(usage.get('output_tokens') or 0)<5000),slot
 
 
 def compile_plan(proposal, evidence, series, costs, now_ms, observed_ms):
@@ -118,15 +140,30 @@ def compile_plan(proposal, evidence, series, costs, now_ms, observed_ms):
            entry=entry,zone=[z['low'],z['high']],stop=stop,target=tp,invalidation=invalidation,
            formed_ms=observed_ms,expires_ms=expiry,breakout_level=z['price'] if sid=='breakout_retest' else None,
            evidence={'zone':z,'invalidation':inv,'target':target,'atr14':vol,'obstacle':obstacle,
+                     'stop_distance_limit':3*atr(series['15m']),
                      'hourly_regime':regime,'four_hour_regime':higher,'confirmed':False})
+    if sid=='ict_reversal':
+        from app.services.ict_structure import find_swings
+        pivots=[p for p in find_swings(series['5m']) if p.kind==('HIGH' if sign==1 else 'LOW')]
+        if not pivots:raise ValueError('missing_reference_swing')
+        pivot=pivots[-1]
+        c['confirmation_reference']={'liquidity_price':inv['price'], 'liquidity_id':inv['id'],
+            'liquidity_timeframe':inv['timeframe'], 'break_price':pivot.price,
+            'break_pivot_ms':pivot.time_ms,'break_confirmed_ms':series['5m'][pivot.index+2].time_ms+STEPS['5m']}
+    from app.services.analyst_confirmation import recent_confirmations
+    c['seed_confirmations']=recent_confirmations(c,series['5m'],observed_ms)
     c['opportunity_id']=f"{VERSION}:{sid}:{direction}:{z['id']}:{observed_ms//14400000}"
     c['candidate_id']=hashlib.sha256(json.dumps(c,sort_keys=True).encode()).hexdigest()[:24]
     c.update(as_of_ms=observed_ms,approved_at_ms=now_ms)
+    trigger=TRIGGERS[sid]
+    if sid=='ict_reversal':
+        ref=c['confirmation_reference']
+        trigger=f"Sweep و بازپس‌گیری سطح {ref['liquidity_price']:g}، سپس عبور بسته‌شدن 5m از پیوت مرجع {ref['break_price']:g}؛ ورود با سفارش محدود پس از تأیید کندلی."
     return dict(strategy_id=sid,decision='NO_TRADE',final_ai_decision='WAIT',setup_mode='conditional',
         potential_direction=direction,entry_price=entry,entry_zone_low=z['low'],entry_zone_high=z['high'],
         conditional_entry_zone_low=z['low'],conditional_entry_zone_high=z['high'],stop_loss=stop,take_profit=tp,
         structural_invalidation_level=invalidation,confirmation_type=PROFILES[sid],confirmation_timeframe='5m',
-        confirmation_required=TRIGGERS[sid],conditional_invalidation='بسته‌شدن 5m آن‌سوی سطح ابطال یا پایان اعتبار چهار‌ساعته.',
+        confirmation_required=trigger,conditional_invalidation='بسته‌شدن 5m آن‌سوی سطح ابطال یا پایان اعتبار چهار‌ساعته.',
         breakout_level=c['breakout_level'],trade_reason=reason,market_regime=regime,market_regime_confidence='low',
         market_context_caution_ack=True,trade_against_dominant_trend=regime==opposed,
         setup_timeframe='intraday_5m_15m',liquidity_event_clear=False,structural_confirmation_clear=False,
@@ -139,7 +176,7 @@ def compile_response(raw,evidence,series,costs,now_ms,observed_ms,strategies):
     if not isinstance(raw,dict) or not isinstance(raw.get('plans'),list) or len(raw['plans'])>3:
         raise ValueError('invalid_analyst_response')
     accepted={};rejections=[];seen=set()
-    for p in raw['plans']:
+    for rank,p in enumerate(raw['plans'],1):
         try:
             sid=p.get('strategy_id') if isinstance(p,dict) else None
             if not isinstance(sid,str) or sid not in PROFILES:raise ValueError('invalid_strategy_direction')
@@ -147,6 +184,7 @@ def compile_response(raw,evidence,series,costs,now_ms,observed_ms,strategies):
             if not strategies.get(sid):raise ValueError('strategy_disabled')
             seen.add(sid)
             plan=compile_plan(p,evidence,series,costs,now_ms,observed_ms)
+            plan['analyst_rank']=rank
             accepted[sid]=plan
         except ValueError as exc:rejections.append(str(exc))
     result=next(iter(accepted.values())) if accepted else flat('پیشنهاد قابل اجرای معتبر وجود ندارد.')

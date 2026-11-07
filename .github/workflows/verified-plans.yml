@@ -19,4 +19,5 @@ jobs:
           python-version: '3.12'
       - run: pip install -r backend/requirements.txt
       - run: mkdir -p data
+      - run: PYTHONPATH=backend pytest -q backend/tests/test_analyst_execution_audit.py
       - run: PYTHONPATH=backend pytest -q backend/tests/test_indicator_context.py backend/tests/test_multi_setup_analyst.py backend/tests/test_verified_sequence.py backend/tests/test_verified_audit.py backend/tests/test_execution_tp_cap.py backend/tests/test_chart_ai_pipeline.py backend/tests/test_ai_market_intelligence.py backend/tests/test_outlook_telegram.py backend/tests/test_openai_api_provider.py backend/tests/test_poi_context.py backend/tests/test_outlook_four_hour.py backend/tests/test_daily_outlook.py backend/tests/test_carried_open.py backend/tests/test_market_data_pagination.py backend/tests/test_verified_trade_plan.py backend/tests/test_strict_a_execution_plan.py backend/tests/test_paper_auto_trading.py backend/tests/test_timely_entry_confirmations.py backend/tests/test_ai_first_revisions.py backend/tests/test_ai_schedule_60min.py
