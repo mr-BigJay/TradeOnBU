@@ -160,8 +160,18 @@ def _token_on_bar(
     if token == "entry_zone_touch":
         return _bar_in_zone(bar, zone_lo, zone_hi)
     if token == "liquidity_sweep":
+        reference=(structured.get('verified_trade_plan') or {}).get('confirmation_reference')
+        if reference:
+            level=reference['liquidity_price']
+            return (bar.low<level<bar.close) if d=='LONG' else (bar.high>level>bar.close)
         return _liquidity_sweep_long(window) if d == "LONG" else _liquidity_sweep_short(window)
     if token == "mss":
+        reference=(structured.get('verified_trade_plan') or {}).get('confirmation_reference')
+        if reference:
+            level=reference['break_price']
+            if len(window)<2:return False
+            previous=window[-2].close
+            return previous<=level<bar.close if d=='LONG' else bar.close<level<=previous
         return _mss_long(window) if d == "LONG" else _mss_short(window)
     if token == "bos":
         return _bos_long(window) if d == "LONG" else _bos_short(window)
@@ -259,6 +269,11 @@ def process_bar_sequential(
         structured=structured,
     ):
         timestamps[nxt] = bar.time_ms
+        evidence[nxt] = {'bar_low': float(bar.low), 'bar_high': float(bar.high),
+                         'bar_close': float(bar.close), 'bar_ms': bar.time_ms}
+        reference=(structured.get('verified_trade_plan') or {}).get('confirmation_reference')
+        if reference and nxt in ('liquidity_sweep','mss'):
+            evidence[nxt]['reference_price']=reference['liquidity_price' if nxt=='liquidity_sweep' else 'break_price']
         # A POI retest and a touch of that same entry zone are concurrent
         # price facts. Do not require a second retest on the following bar.
         index = sequence.index(nxt)

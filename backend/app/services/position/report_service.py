@@ -64,7 +64,13 @@ async def build_report(
     gross_profit = sum(t.gross_pnl_usdt or 0 for t in stats_trades if (t.gross_pnl_usdt or 0) > 0)
     gross_loss = sum(abs(t.gross_pnl_usdt or 0) for t in stats_trades if (t.gross_pnl_usdt or 0) < 0)
     net = sum(t.net_pnl_usdt or 0 for t in stats_trades)
-    fees = await wallet.sum_fees(session)
+    # Attribute fees to exactly the closed trades in this report, including
+    # their entry fees even when entry predates the selected closing period.
+    fees = {
+        'opening_fees': sum(t.entry_fee_usdt or 0 for t in stats_trades),
+        'closing_fees': sum(t.exit_fee_usdt or 0 for t in stats_trades),
+        'funding_fees': sum(t.funding_fee_usdt or 0 for t in stats_trades),
+    }
 
     rr_vals = []
     for t in stats_trades:
@@ -123,7 +129,9 @@ async def build_report(
         )
 
     summary = await wallet.wallet_summary(session)
+    from app.services.strategy_performance import summarize
     return {
+        'performance_by_strategy':summarize(trades),
         "period": period,
         "total_trades": len(stats_trades),
         "total_closes_including_invalid": len(trades),

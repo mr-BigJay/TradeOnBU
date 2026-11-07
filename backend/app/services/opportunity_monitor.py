@@ -694,6 +694,10 @@ class OpportunityMonitorService:
             .where(AiProposedSetup.lifecycle_state.in_(tuple(ACTIVE_MONITOR_STATES)))
         )
         setups = list(result.scalars().all())
+        # Evaluate higher-ranked proposals first; a single-position budget must
+        # not silently substitute insertion order for the analyst's selection.
+        from app.services.analyst_execution import priority_key
+        setups.sort(key=priority_key)
         summary: dict[str, Any] = {"checked": len(setups), "promoted": 0, "invalidated": 0, "expired": 0, "orders": 0}
 
         paper_entry_mode, balanced_shadow, paper_entry_dry_run = await get_paper_entry_execution_config(session)

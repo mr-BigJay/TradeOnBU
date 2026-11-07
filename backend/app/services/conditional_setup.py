@@ -112,6 +112,12 @@ def parse_conditional_plan(structured: dict[str, Any]) -> tuple[dict[str, Any] |
 
     entry_mid = (lo + hi) / 2.0
     verified = structured.get('verified_trade_plan')
+    if verified and verified.get('seed_confirmations'):
+        seed=verified['seed_confirmations']
+        stamps=seed['confirmation_timestamps']
+        row.confirmation_state.update(seed)
+        row.confirmation_state.update(completed=[t for t in sequence if t in stamps],
+                                      missing=[t for t in sequence if t not in stamps])
     if verified:
         from app.services.verified_trade_plan import plan_error
         error = plan_error(structured, int(datetime.now(timezone.utc).timestamp()*1000))

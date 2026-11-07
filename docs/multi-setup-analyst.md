@@ -17,21 +17,32 @@ The stop is at least one 5m ATR away and cannot exceed three 15m ATRs.
 
 ## Conditions and execution
 
-| Family | Forward conditions on separate closed 5m candles |
+| Family | Conditions on separate closed 5m candles |
 | --- | --- |
-| Reversal | Liquidity sweep, then MSS |
+| Reversal | Sweep/reclaim of selected invalidation reference, then close crossing the fixed confirmed opposite 5m pivot |
 | Continuation | Zone pullback, then directional close beyond previous candle high/low |
 | Breakout/retest | Close crosses fixed level, then later retest holds the breakout side |
 
 Continuation additionally requires aligned 1H swing structure and no opposed 4H swing
-structure. All families wait for a later limit fill after these conditions. Earlier
-historical events are not seeded as confirmation. The existing balanced order mode
+structure. All families wait for a later limit fill after these conditions. A complete
+sequence in the last 15 minutes can be seeded from closed candles, only when its
+reference areas were already known at the event time and no later entry was consumed.
+No historical fills are created. Incomplete sequences remain forward-only. The existing balanced order mode
 allows the resting limit before a subsequent entry touch, but these new contracts
 use closed 5m confirmation, not partial 1m substitutes. 1m data still checks freshness,
 missed entry and fills. Plans expire four hours after the observed input timestamp.
 An invalidated or already consumed plan is never backfilled as an executed trade.
 
-All accepted families persist independently in Opportunities. The existing paper
+All accepted families persist independently in Opportunities. API ranking is retained
+and used by the monitor before the single-position budget is consumed. Existing plans
+without ranks sort after ranked plans; ties prefer the newer analysis.
+At order time the stop is widened when needed to protect the observed sweep/pullback/
+retest extreme with an ATR buffer. The target and monetary risk size are recalculated;
+the target must fit before the original structural obstacle and the stop must remain
+within three 15m ATRs. Otherwise a specific execution rejection is recorded. The signed
+proposal remains immutable; final prices and their confirmation evidence are stored
+separately in the position's `execution_plan`.
+The existing paper
 risk guard remains: 0.25% equity risk budget, maximum 3x, one pending/open position,
 1% daily loss stop, fee/slippage-aware RR, immutable contract binding and duplicate
 order checks. Existing open positions retain their lifecycle. No live Bitunix orders.
@@ -40,9 +51,14 @@ order checks. Existing open positions retain their lifecycle. No live Bitunix or
 
 Scheduled analyses run at 00:01, 04:01, 08:01, 12:01, 16:01, 20:01 UTC after candle
 close. The first startup/manual review can occur during the current slot. A durable
-journal before network I/O limits trading analysis to one paid attempt per UTC 4H slot,
-including failed attempts and manual clicks: at most six per UTC day. Failed calls do
-not automatically incur another paid attempt in that slot. Daily Outlook remains a
+journal before network I/O limits trading analysis to one normal attempt per UTC 4H slot,
+including manual clicks. One additional attempt is allowed only after a transient
+transport/429/5xx error, at least two minutes later, and only if recorded output use
+was below 5,000 tokens. Authentication, quota, malformed JSON and output exhaustion do
+not qualify. A crash with unknown outcome cannot reset the budget. Normal usage remains
+six trading calls/day; a day with retryable failures can reach twelve. Provider usage
+is saved before JSON validation and from partial error responses when available.
+Daily Outlook remains a
 separate daily request and cost; reducing Telegram messages alone does not save API cost.
 The old duplicate scheduled 4H Outlook job is disabled in this mode. Analysis shows the
 new API report; historical 4H Outlook reports remain accessible in a collapsed archive.
