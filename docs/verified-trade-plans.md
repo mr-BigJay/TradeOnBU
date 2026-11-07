@@ -206,3 +206,63 @@ These reasons explain filtering at report time, not the underlying network cause
 Historical reports cannot acquire missing diagnostics retroactively. No new AI
 calls, paid retries, feeds, or database migration are introduced. A few short
 explanations add output tokens within the existing 25,000-token ceiling.
+
+## Sequence v3: pre-review bottleneck and timely execution
+
+Version: `verified_reversal_sequence_v3`. This changes the candidate definition,
+not just a display label. Runtime evidence supplied on 2026-11-07 showed 592
+Verified scans skipped review with no candidates; it did not show 592 rejected
+AI recommendations or an exchange-order failure. Rejection counts overlap.
+
+Changes:
+- Search crossed, previously untouched confirmed liquidity pivots, rather than
+  testing only the newest internal pivot. Previously swept pools remain excluded.
+- Permit reclaim on the sweep bar or either of the next two closed 5m bars.
+  Record the actual reclaim timestamp and the extreme of that whole sequence.
+- Permit sweep and displacement break inside one 5m bar only with five complete,
+  matching 1m bars showing sweep strictly before the first structural close.
+  Same-minute ambiguity or conflicting 1m/5m prices still rejects the setup.
+- An opposing 1H regime no longer excludes a direction before pattern search.
+  Such a plan needs an additional first, displaced 15m swing break after the
+  sweep. The contract and AI input explicitly flag the countertrend exception.
+- Freshness is measured at the actual midpoint limit price in both discovery
+  and order submission. A shallow zone-edge touch alone does not consume it;
+  reaching/crossing the intended entry before registration still blocks entry.
+- Widen a structurally valid tight stop to at least one ATR, outside invalidation.
+  Never shrink structural stops to pass the maximum three-ATR bound. Recompute
+  cost-adjusted target and position size; reject inadequate room to the obstacle.
+- A review exceeding two minutes may remain conditional until the original
+  expiry. Preserve the original observation time; the order gate checks fresh,
+  complete 1m coverage since that time. It must not backfill a missed entry.
+- Pass the existing freshness-filtered `market_intelligence` to the Verified
+  reviewer instead of dropping it when replacing the prompt payload.
+- Commit the reviewed opportunity before rendering or Telegram delivery. These
+  failures cannot prevent the independent monitor from seeing the setup. Persist
+  only delivery metadata afterward, without creating/revising the setup twice.
+- Paper limit fills use the limit price, without synthetic favorable slippage;
+  market entries retain adverse slippage. Fees and post-fill net R:R still apply.
+- Show the latest scan, candidate count, review state and rejection codes on
+  Opportunities, including when there are no persisted setups.
+
+Risk remains Paper only: net R:R floor 1.4, 0.25% equity risk budget, maximum 3x,
+one active order/position, daily loss breaker, closed-candle/data/expiry guards,
+and maximum four paid candidate reviews/day. No fabricated signal or live order.
+Older unsubmitted contracts cannot submit new orders under the v3 contract;
+existing positions are not deleted. Daily and four-hour report cadence is unchanged.
+
+Validation includes actual setup persistence, order submission and position-monitor
+fills for FVG, OB and delayed-reclaim fixtures, duplicate-submit rejection,
+pre-order consumed-entry rejection, source-input assertions, persistence before
+failed chart/Telegram delivery, and frontend scan diagnostics. External AI/exchange
+responses are mocked in integration tests; these are execution tests, not PnL.
+
+Offline historical limitation: replayed the supplied 26,668 one-minute candles
+(about 18.5 days including warm-up, ending 2026-11-04), with the existing component
+replay and identical fees. Baseline: one candidate, expired unfilled. V3: three
+candidates, two expired and one invalidated before entry; **zero fills in both**.
+Source audit: zero invalid candles/gaps under the existing carried-open policy,
+1,219 carried-open observations. Higher timeframes in this tool are aggregated
+from minutes, not archived native Bitunix candles; historical AI approval is not
+replayed. This is not a backtest of production performance and does not establish
+profitability or a reliable trading frequency. The supplied recent 72-hour runtime
+counts contain no candle histories, so they cannot establish missed valid entries.

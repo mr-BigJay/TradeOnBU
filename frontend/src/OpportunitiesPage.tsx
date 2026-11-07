@@ -77,6 +77,7 @@ type ListResponse = {
 };
 
 type SummaryResponse = {
+  latest_scan?: {run_id:number;time_tehran:string;status:string;candidate_count?:number;api_attempted:boolean;approved:boolean;rejections:Record<string,number>} | null;
   counts: {
     wait: number;
     ready: number;
@@ -136,6 +137,7 @@ function isPaper(row: OppItem): row is PaperRow {
 }
 
 export function OpportunitiesPage() {
+  const [scan,setScan] = useState<SummaryResponse['latest_scan']>(null);
   const [showShadow, setShowShadow] = useState(false);
   const [tab, setTab] = useState<OppTab>("wait");
   const [paperSegment, setPaperSegment] = useState<PaperSegment>("pending");
@@ -161,6 +163,7 @@ export function OpportunitiesPage() {
   const loadSummary = useCallback(async () => {
     const d = (await apiFetch("/api/gui/opportunities/summary")) as SummaryResponse;
     setSummary(d.counts);
+    setScan(d.latest_scan);
   }, []);
 
   const loadList = useCallback(async () => {
@@ -247,6 +250,14 @@ export function OpportunitiesPage() {
         <p>ساخت سطوح توسط موتور؛ تأیید یا رد توسط API؛ سفارش محدود پس از اثبات ساختار و پیش از بازگشت قیمت.</p>
         <p>کف سود به زیان خالص ۱:۱٫۴ · اسکن هر ۵ دقیقه · حداکثر ۴ بررسی API در روز · بودجهٔ ریسک هر معامله ۰٫۲۵٪ · یک پوزیشن هم‌زمان · توقف پس از ۱٪ زیان روزانه</p>
         <p>اجرای واقعی Bitunix فعال نیست. تنظیمات ورود قدیمی در این حالت اعمال نمی‌شوند.</p>
+        {scan && <div>
+          <p>آخرین اسکن: <bdi>{scan.time_tehran}</bdi> · وضعیت: <bdi>{scan.status}</bdi> · ستاپ کندلی: {scan.candidate_count ?? '—'}</p>
+          <p>{scan.approved ? 'API ستاپ را تأیید کرده؛ وضعیت سفارش در جدول فرصت‌ها نمایش داده می‌شود.' : scan.api_attempted ? 'درخواست بررسی به API ارسال شده؛ ستاپ تأییدشده‌ای ثبت نشده است.' : 'ستاپی برای بررسی به API ارسال نشده است.'}</p>
+          {Object.keys(scan.rejections || {}).length > 0 && <details><summary>علت‌های رد در آخرین اسکن</summary>
+            <p className="hint">این شمارش‌ها هم‌پوشانی دارند؛ تعداد فرصت مستقل نیستند.</p>
+            {Object.entries(scan.rejections).map(([reason,count])=><p key={reason}><bdi>{reason}</bdi>: {count}</p>)}
+          </details>}
+        </div>}
       </section>}
       {!list?.verified_plans_enabled && <details onToggle={event => setShowShadow(event.currentTarget.open)}><summary>آزمایش موازی ساختار و شواهد کندلی</summary>{showShadow && <StructureShadow />}</details>}
 

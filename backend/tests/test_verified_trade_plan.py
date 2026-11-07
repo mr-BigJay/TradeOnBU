@@ -81,9 +81,13 @@ def test_review_fails_closed(review):
     assert v.apply_review(review,[c],c['as_of_ms'])['setup_mode']=='flat'
 
 
-def test_late_model_response_rejected_and_binding_detects_mutation():
+def test_review_latency_retains_observation_time_but_expiry_still_blocks():
     c,s,cost,now,live=candidate();review={'approve':True,'candidate_id':c['candidate_id']}
-    assert v.apply_review(review,[c],now+120001)['setup_mode']=='flat'
+    delayed=v.apply_review(review,[c],now+120001)
+    assert delayed['setup_mode']=='conditional'
+    assert delayed['verified_trade_plan']['as_of_ms']==now
+    assert v.apply_review(review,[c],c['expires_ms'])['setup_mode']=='flat'
+    assert v.apply_review(review,[c],now-1)['setup_mode']=='flat'
     p=v.apply_review(review,[c],now)
     p['stop_loss']+=1
     assert v.plan_error(p)=='verified_plan_levels_changed'
@@ -142,7 +146,7 @@ async def test_contract_persists_exact_levels_and_preentry_proof(session, monkey
     # Contract persistence uses already verified evidence; test current-clock timestamps.
     c=cs[0]
     for key in ('formed_ms','expires_ms','as_of_ms'):c[key]+=offset
-    for key in ('sweep_ms','swept_pivot_ms','break_ms','broken_pivot_ms','fvg_ms','poi_origin_ms'):
+    for key in ('sweep_ms','reclaim_ms','swept_pivot_ms','break_ms','broken_pivot_ms','fvg_ms','poi_origin_ms'):
         if c['evidence'].get(key) is not None:c['evidence'][key]+=offset
     c['evidence']['fvg_origin_ms']=[t+offset for t in c['evidence']['fvg_origin_ms']]
     import hashlib
@@ -161,7 +165,7 @@ async def test_contract_persists_exact_levels_and_preentry_proof(session, monkey
     assert objective_confirmations_satisfied_for_order(row)[0] is False
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('poi_kind',['FVG','OB'])
+@pytest.mark.parametrize('poi_kind',['FVG','OB','delayed_reclaim'])
 async def test_verified_plan_reaches_real_paper_order_service(session,monkeypatch,poi_kind):
     from app.models import AiAnalysisRun,SimPosition
     from app.services.strategy_candidates import persist_strategy_candidates
@@ -173,7 +177,13 @@ async def test_verified_plan_reaches_real_paper_order_service(session,monkeypatc
     from app.services.conditional_setup import apply_conditional_plan_to_setup_row
     from sqlalchemy import select
     import hashlib
-    c,series,_,base,live=candidate()
+    c,series,cost,base,live=candidate()
+    if poi_kind=='delayed_reclaim':
+        ref=c['evidence']['swept_price']
+        i=next(i for i,b in enumerate(series['5m']) if b.time_ms==c['evidence']['sweep_ms'])
+        series['5m'][i]=replace(series['5m'][i],close=ref+.005)
+        series['5m'][i+1]=replace(series['5m'][i+1],open=ref+.005,high=ref+.006)
+        c=v.build_candidates(series,cost,base,live)[0][0]
     if poi_kind=='OB':
         from tests.test_poi_context import ob_fixture
         series,cost,base,live=ob_fixture()
@@ -181,7 +191,7 @@ async def test_verified_plan_reaches_real_paper_order_service(session,monkeypatc
     boundary=int(datetime.now(timezone.utc).timestamp()*1000)//v.STEP*v.STEP
     offset=boundary-base
     for key in ('formed_ms','expires_ms','as_of_ms'):c[key]+=offset
-    for key in ('sweep_ms','swept_pivot_ms','break_ms','broken_pivot_ms','fvg_ms','poi_origin_ms'):
+    for key in ('sweep_ms','reclaim_ms','swept_pivot_ms','break_ms','broken_pivot_ms','fvg_ms','poi_origin_ms'):
         if c['evidence'].get(key) is not None:c['evidence'][key]+=offset
     c['evidence']['fvg_origin_ms']=[x+offset for x in c['evidence']['fvg_origin_ms']]
     binding={k:val for k,val in c.items() if k not in ('candidate_id','as_of_ms','approved_at_ms')}
@@ -206,6 +216,14 @@ async def test_verified_plan_reaches_real_paper_order_service(session,monkeypatc
         structured={**p,'decision':'SHORT'},symbol='BTCUSDT',commit=False,require_ai_flags=False,
         allow_pre_entry_without_touch=True,entry_mode='BALANCED',
         verified_5m=[replace(b,time_ms=b.time_ms+offset) for b in series['5m']],as_of_ms=now_ms)
+    # A pullback during model latency is not backfilled as a new order.
+    original=minutes[-1]
+    minutes[-1]=replace(original,high=c['entry'])
+    consumed=await maybe_auto_open_paper_position(session,**request)
+    assert consumed['reason']=='verified_pullback_already_used'
+    assert not consumed['created']
+    # A shallow zone-edge touch, without reaching the actual limit, stays eligible.
+    minutes[-1]=replace(original,high=(c['zone'][0]+c['entry'])/2)
     from app.services.opportunity_monitor import _attempt_ready_paper_order
     summary={'orders':0}
     result=await _attempt_ready_paper_order(session,row,
@@ -221,6 +239,27 @@ async def test_verified_plan_reaches_real_paper_order_service(session,monkeypatc
     # A second submit is idempotently rejected rather than creating exposure.
     again=await maybe_auto_open_paper_position(session,**request)
     assert not again['created']
+    # Real position monitor, not a direct _fill_entry call: a later pullback
+    # crosses the resting limit without touching either exit or invalidation.
+    from app.services.position.position_monitor import SimPositionMonitorService
+    from app.services import opportunity_monitor as monitor
+    touch_ms = (pos.monitor_from_ms//60000+1)*60000
+    end = max(touch_ms+60000, boundary+v.STEP)
+    fill_minutes = [Candle(live,live+.01,live-.01,live,end-(120-i)*60000) for i in range(120)]
+    idx = next(i for i,x in enumerate(fill_minutes) if x.time_ms == touch_ms)
+    fill_minutes[idx] = Candle(live,c['entry']+.05,live-.01,c['entry'],touch_ms)
+    five = list(request['verified_5m'])
+    for t in range(boundary,end//v.STEP*v.STEP,v.STEP):
+        five.append(Candle(live,max(c['entry']+.05,live+.01),live-.01,c['entry'],t))
+    async def bundle_for(symbol,interval,limit):
+        return KlineBundle(fill_minutes if interval=='1m' else five,None,[],[],True,interval)
+    market=MarketDataService()
+    monkeypatch.setattr(market,'fetch_kline_bundle',bundle_for)
+    monkeypatch.setattr(monitor,'_utc_now',lambda:datetime.fromtimestamp(end/1000,timezone.utc))
+    await SimPositionMonitorService(market).monitor_session(session)
+    assert pos.status=='open', (pos.extra,row.objective_notes,row.last_rejection_reason)
+    assert pos.fill_price==c['entry']
+    assert pos.extra['entry_fill_bar_ms']==touch_ms
 
 
 def test_source_audit_rejects_bad_ohlc():

@@ -183,7 +183,7 @@ async def maybe_auto_open_paper_position(
         minutes = [b for b in minute_bundle.closed if b.time_ms >= since]
         if not minutes or minutes[0].time_ms != since:
             return {**meta, 'skipped': True, 'reason': 'verified_freshness_unavailable'}
-        if any(b.low <= vplan['zone'][1] and b.high >= vplan['zone'][0] for b in minutes):
+        if any((b.low <= vplan['entry'] if vplan['direction']=='LONG' else b.high >= vplan['entry']) for b in minutes):
             return {**meta, 'skipped': True, 'reason': 'verified_pullback_already_used'}
 
     settings: SimPositionSettings = await get_or_create_settings(session)

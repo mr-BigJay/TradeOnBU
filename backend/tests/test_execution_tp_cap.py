@@ -347,7 +347,7 @@ async def test_existing_position_row_unchanged_by_cap_logic():
 
 
 @pytest.mark.asyncio
-async def test_limit_long_fill_recaps_tp_when_rr_exceeds_2_5_after_slippage():
+async def test_limit_long_fill_has_no_invented_improvement_or_tp_recap():
     from app.services.position.settings_service import get_or_create_settings
 
     await init_db()
@@ -385,7 +385,8 @@ async def test_limit_long_fill_recaps_tp_when_rr_exceeds_2_5_after_slippage():
         assert pos.extra.get("execution_tp_cap_post_fill_applied") is True
         rr = gross_reward_r_multiple("LONG", float(pos.fill_price), 95.0, pos.take_profit)
         assert rr <= EXECUTION_MAX_REWARD_R_MULTIPLE + 1e-6
-        assert pos.take_profit < 112.5
+        assert pos.fill_price == 100.0
+        assert pos.take_profit == 112.5
 
 
 @pytest.mark.asyncio
@@ -421,6 +422,7 @@ async def test_limit_short_fill_recaps_tp_after_fill():
         ok = await svc._fill_entry(session, pos, settings, 100.0, transition_suffix="limit_short")
         await session.commit()
         assert ok is True
+        assert pos.fill_price == 100.0
         assert pos.extra.get("execution_tp_cap_post_fill_applied") is True
         rr = gross_reward_r_multiple("SHORT", float(pos.fill_price), 105.0, pos.take_profit)
         assert rr <= EXECUTION_MAX_REWARD_R_MULTIPLE + 1e-6

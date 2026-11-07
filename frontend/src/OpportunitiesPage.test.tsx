@@ -29,6 +29,15 @@ function listPayload(tab: string, label: string, total = 1) {
 }
 
 describe("OpportunitiesPage", () => {
+  it("explains no candidate without implying an API rejection",async()=>{
+    apiFetch.mockImplementation((path:string)=>Promise.resolve(path.includes('/summary') ? {
+      counts:{wait:0,ready:0,blocked:0,expired:0},
+      latest_scan:{run_id:12,time_tehran:'2026-11-07 19:00',status:'completed',candidate_count:0,api_attempted:false,approved:false,rejections:{no_liquidity_sweep:4}}
+    } : {verified_plans_enabled:true,items:[],total:0,page:1,page_size:20,total_pages:0}));
+    render(<OpportunitiesPage/>);
+    expect(await screen.findByText('ستاپی برای بررسی به API ارسال نشده است.')).toBeInTheDocument();
+    expect(screen.getByText('no_liquidity_sweep')).toBeInTheDocument();
+  });
   beforeEach(() => {
     cleanup();
     apiFetch.mockReset();
