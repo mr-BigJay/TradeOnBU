@@ -93,15 +93,20 @@ def test_candle_payload_lossless_and_section_size_audited():
     assert audit["after_chars"] < audit["before_chars"]
     assert audit["sections"]["market"]["after_chars"] < audit["sections"]["market"]["before_chars"]
     for tf, frame in loaded["market"]["timeframes"].items():
-        assert len(frame["candles"]) == len(source["timeframes"][tf]["candles"])
+        original = source["timeframes"][tf]["candles"]
+        expected = original[-45:] if tf == "1m" else original
+        assert len(frame["candles"]) == len(expected)
         assert frame["candles_columns"] == ["time_ms", "open", "high", "low", "close", "volume"]
         assert [
             {key: row[i] for i, key in enumerate(frame["candles_columns"])}
             for row in frame["candles"]
         ] == [
             {key: c[key] for key in frame["candles_columns"]}
-            for c in source["timeframes"][tf]["candles"]
+            for c in expected
         ]
+    assert audit["breakdown"]["candles:1m"]["after_count"] == 45
+    assert audit["breakdown"]["candles:4h"]["after_count"] == len(series["4h"])
+    assert audit["sections"]["market_intelligence"]["after_utf8_bytes"] > 0
     assert loaded["evidence_catalog"] == evidence
 
 

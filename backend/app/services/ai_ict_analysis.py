@@ -513,6 +513,7 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
                 strategy_features=features,
                 enabled_strategies=enabled_strategies,
                 execution_regime=executable_regime(candles_by_interval),
+                instructions=analyst.INSTRUCTIONS,
             )
         elif verified.enabled():
             # No old narratives or competing discretionary plans in the reviewer input.
@@ -549,6 +550,15 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
         )
         # Record provider usage before JSON/schema validation can fail.
         response_audit = _response_audit(analysis)
+        if analyst_payload_audit is not None:
+            tokens = (analysis.response_metadata or {}).get("usage") or {}
+            analyst_payload_audit["provider_usage"] = {
+                "input_tokens": tokens.get("input_tokens"),
+                "output_tokens": tokens.get("output_tokens"),
+                "cached_tokens": (tokens.get("input_tokens_details") or {}).get("cached_tokens"),
+                "cache_write_tokens": (tokens.get("input_tokens_details") or {}).get("cache_write_tokens"),
+                "measurement_note": "Only total input tokens come from provider; section shares are measured characters.",
+            }
         draft.structured = _merge_artifacts(draft.structured, {'inference':response_audit})
         structured = _extract_json(analysis.text)
         if analyst_mode:
@@ -571,8 +581,11 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
             frames = overview['execution_regime']['timeframes']
             regime_head = ("روند اجرایی بر اساس Swingهای تأییدشده: "
                            f"1H={frames['1h']['trend']}؛ 4H={frames['4h']['trend']}.")
+            from app.services.analyst_outlook import format_forecasts_fa
+            outlook_text = format_forecasts_fa(overview['forecast_scenarios'])
             structured['report_fa']='\n\n'.join(
-                [regime_head, overview['market_summary_fa'], overview['comparison_fa'], *reports])
+                [regime_head, overview['market_summary_fa'], outlook_text,
+                 overview['comparison_fa'], *reports])
         safety = _paper_safety_notes(structured, live)
         draft.decision = str(structured.get("decision", "NO_TRADE")).upper()
         draft.report_fa = structured["report_fa"]
@@ -672,6 +685,18 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
         if review:
             review['retryable'] = isinstance(exc, (httpx.TimeoutException, httpx.TransportError))
     finally:
+        if analyst_payload_audit is not None and response_audit is not None:
+            tokens = (response_audit.get("response_metadata") or {}).get("usage") or {}
+            analyst_payload_audit["provider_usage"] = {
+                "input_tokens": tokens.get("input_tokens"),
+                "output_tokens": tokens.get("output_tokens"),
+                "cached_tokens": (tokens.get("input_tokens_details") or {}).get("cached_tokens"),
+                "cache_write_tokens": (tokens.get("input_tokens_details") or {}).get("cache_write_tokens"),
+                "measurement_note": "Exact total input tokens from provider; section sizes are measured characters.",
+            }
+            review = draft.structured.get("analyst_review")
+            if isinstance(review, dict):
+                review["payload_sizes"] = analyst_payload_audit
         if response_audit is not None:
             existing=(draft.structured.get('_artifacts') or {}).get('inference') or {}
             draft.structured = _merge_artifacts(draft.structured, {'inference':{**response_audit, **existing}})

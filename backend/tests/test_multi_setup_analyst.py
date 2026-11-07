@@ -145,6 +145,8 @@ async def test_api_discovers_plans_without_old_candidate_and_persists_before_del
     legacy=AsyncMock(side_effect=AssertionError('old reversal detector must not gate AI'))
     monkeypatch.setattr(v,'build_candidates',legacy)
     inference=AsyncMock(return_value=SimpleNamespace(text=json.dumps({'plans':[proposal(sid) for sid in a.PROFILES],
+        'forecast_scenarios':[{'scenario_type':'resistance_rejection','direction':'SHORT',
+            'level_id':'zone','target_id':'stop','reason_fa':'واکنش احتمالی به مقاومت ثبت‌شده'}],
         'market_summary_fa':'خلاصه','comparison_fa':'مقایسه'}),requested_model='test',requested_reasoning_effort='high',
         confirmed_reasoning_effort='high',response_model='test',response_id='test',response_metadata={'usage':{'input_tokens':100,'output_tokens':50}}))
     monkeypatch.setattr(ai,'stream_analysis_response',inference)
@@ -177,6 +179,12 @@ async def test_api_discovers_plans_without_old_candidate_and_persists_before_del
     assert set(payload['strategy_features']['timeframes'])=={'5m','15m','1h','4h'}
     assert all('rsi14' in f and 'ema9' in f for f in payload['strategy_features']['timeframes'].values())
     assert draft.structured['_artifacts']['strategy_features']==payload['strategy_features']
+    forecasts=draft.structured['analyst_summary']['forecast_scenarios']
+    assert len(forecasts)==1 and forecasts[0]['level']['id']=='zone'
+    assert forecasts[0]['paper_order'] is False
+    assert 'چشم‌انداز چهار‌ساعته' in draft.report_fa
+    assert draft.structured['analyst_review']['payload_sizes']['instructions_chars']>500
+    assert draft.structured['analyst_review']['payload_sizes']['provider_usage']['input_tokens']==100
     second=await ai._execute_inference(run_id=run.id,trigger='manual',model_override=None)
     assert second.validation['reason']=='analyst_slot_already_attempted'
     inference.assert_awaited_once()
