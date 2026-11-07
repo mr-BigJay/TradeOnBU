@@ -119,12 +119,13 @@ async def test_disabled_schedule_busy_and_single_attempt(isolated):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("action", ["wait", "long", "short"])
-async def test_success_and_usage_without_trade_writes(isolated,monkeypatch,action):
+@pytest.mark.parametrize("effort", ["high", "max"])
+async def test_success_and_usage_without_trade_writes(isolated,monkeypatch,action,effort):
     snapshot = context() if action == "wait" else plan_context(action)
     generated = report() if action == "wait" else planned_report(action)
     monkeypatch.setattr(service,'build_daily_context',AsyncMock(return_value=snapshot))
     monkeypatch.setattr(service,'load_ai_market_intelligence',AsyncMock(return_value={}))
-    monkeypatch.setattr(service,'provider_credentials',AsyncMock(return_value=('test','test-model','high')))
+    monkeypatch.setattr(service,'provider_credentials',AsyncMock(return_value=('test','test-model',effort)))
     inference=AsyncMock(return_value=SimpleNamespace(text=json.dumps(generated),response_metadata={'usage':{'input_tokens':123}}))
     monkeypatch.setattr(service,'stream_analysis_response',inference)
     run_id,owner,_=await service.reserve_run('manual')
@@ -135,9 +136,14 @@ async def test_success_and_usage_without_trade_writes(isolated,monkeypatch,actio
     assert data['latest']['report']['trade_plan']['action'] == 'wait'
     assert data['attempted_today'] is True
     inference.assert_awaited_once()
+    assert inference.await_args.kwargs["max_output_tokens"] == 25_000
+    assert inference.await_args.kwargs["reasoning_effort"] == effort
     service.release_analysis_lock.assert_awaited_once_with(owner)
     from app.models import AiAnalysisRun, AiProposedSetup
     async with TestSession() as s:
+        saved = await s.get(DailyOutlookRun, run_id)
+        assert saved.context["ai_request_settings"] == {
+            "model": "test-model", "reasoning_effort": effort, "max_output_tokens": 25_000}
         assert await s.scalar(select(func.count()).select_from(AiAnalysisRun))==0
         assert await s.scalar(select(func.count()).select_from(AiProposedSetup))==0
 
@@ -446,3 +452,38 @@ async def test_failed_response_is_archived_without_exposing_input(isolated,monke
         row=await session.get(DailyOutlookRun,run_id)
         assert row.context['response_archive']['text']==raw
         assert row.report=={}
+
+
+@pytest.mark.asyncio
+async def test_api_failure_preserves_safe_category_without_error_body(isolated,monkeypatch):
+    from app.services.siwc.responses_client import OpenAIResponsesError
+    monkeypatch.setattr(service,'build_daily_context',AsyncMock(return_value=context()))
+    monkeypatch.setattr(service,'load_ai_market_intelligence',AsyncMock(return_value={}))
+    monkeypatch.setattr(service,'provider_credentials',AsyncMock(return_value=('test','test-model','high')))
+    infer=AsyncMock(side_effect=OpenAIResponsesError('insufficient_quota','SECRET_PROVIDER_BODY',http_status=429))
+    monkeypatch.setattr(service,'stream_analysis_response',infer)
+    rid,owner,_=await service.reserve_run('manual')
+    await service.execute_reserved(rid,owner)
+    result=await service.dashboard()
+    assert result['latest']['error_code']=='ai_request_failed'
+    assert result['latest']['validation_errors']==[{'field':'api','type':'insufficient_quota'},{'field':'http_status','type':'429'}]
+    assert 'SECRET_PROVIDER_BODY' not in json.dumps(result)
+    assert not result['can_retry_today']
+    infer.assert_awaited_once()
+
+@pytest.mark.asyncio
+async def test_incomplete_api_response_shows_token_budget_reason(isolated,monkeypatch):
+    from app.services.siwc.responses_client import OpenAIResponsesError
+    monkeypatch.setattr(service,'build_daily_context',AsyncMock(return_value=context()))
+    monkeypatch.setattr(service,'load_ai_market_intelligence',AsyncMock(return_value={}))
+    monkeypatch.setattr(service,'provider_credentials',AsyncMock(return_value=('test','test-model','high')))
+    partial=SimpleNamespace(response_metadata={'usage':{'output_tokens':12000},'incomplete_reason':'max_output_tokens'})
+    monkeypatch.setattr(service,'stream_analysis_response',AsyncMock(side_effect=OpenAIResponsesError('response_incomplete','incomplete',partial=partial)))
+    rid,owner,_=await service.reserve_run('manual')
+    await service.execute_reserved(rid,owner)
+    result=await service.dashboard()
+    assert {'field':'api_response','type':'max_output_tokens'} in result['latest']['validation_errors']
+    assert result['latest']['usage']['output_tokens']==12000
+    service.stream_analysis_response.assert_awaited_once()
+    assert (await service.reserve_run('manual'))[2] == 'already_attempted_today'
+    assert not result['can_retry_today']

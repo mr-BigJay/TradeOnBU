@@ -30,6 +30,9 @@ from app.services.siwc.responses_client import stream_analysis_response, OpenAIR
 TEHRAN = ZoneInfo("Asia/Tehran")
 logger = logging.getLogger(__name__)
 RUN_TIMEOUT = 900
+# Shared ceiling for reasoning and the final JSON, not a visible-text allowance.
+# Keep bounded and never automatically repeat an already paid request.
+OUTLOOK_MAX_OUTPUT_TOKENS = 25_000
 PRE_AI_ERRORS = {
     "insufficient_market_history", "latest_closed_candle_missing", "invalid_market_prices",
     "invalid_candle_range", "market_history_gap", "incomplete_4h_history",
@@ -206,13 +209,15 @@ async def _work(run_id: int) -> None:
     async with SessionLocal() as session:
         row = await session.get(DailyOutlookRun, run_id)
         row.context = {**context, "ai_request_started": True,
+                       "ai_request_settings": {"model": model, "reasoning_effort": effort,
+                                               "max_output_tokens": OUTLOOK_MAX_OUTPUT_TOKENS},
                        "pre_ai_failures": (row.context or {}).get("pre_ai_failures", [])}
         row.model_slug = model
         await session.commit()
     response = await stream_analysis_response(
         token, model=model, instructions=INSTRUCTIONS + ("\nThis is the four-hour refresh after a closed 4h candle. Keep the multi-day context but clearly explain changes since the previous report." if slot_ms else ""),
         user_input=json.dumps({"market": context, "previous_report": prior}, ensure_ascii=False),
-        reasoning_effort=effort, timeout=600, max_output_tokens=12000,
+        reasoning_effort=effort, timeout=600, max_output_tokens=OUTLOOK_MAX_OUTPUT_TOKENS,
     )
     # Preserve the paid response before validation; keep it out of public serializers.
     async with SessionLocal() as session:
@@ -250,28 +255,39 @@ async def deliver_outlook(run_id):
         # Record intent before sending; ambiguous network outcomes must not resend AI/reports.
         row.context = {**row.context, "telegram_delivery": {"status": "sending"}}
         await session.commit()
-        report = row.report or {}
+        from app.services.outlook_telegram import format_outlook_message
+        from app.services.daily_outlook_artifact import saved_report_image
+        import base64
+        import tempfile
+        from pathlib import Path
         close = (datetime.fromtimestamp(row.slot_close_ms/1000, timezone.utc) if row.slot_close_ms else utc(row.started_at)).astimezone(TEHRAN)
-        label = "تحلیل چهار‌ساعته" if row.slot_close_ms else "چشم‌انداز روزانه"
-        lines = [f"{label} {row.symbol} | {close:%Y-%m-%d %H:%M} تهران",
-                 report.get("summary_fa", "")]
-        for key, title in (("dominant", "سناریوی اصلی"), ("alternative", "سناریوی جایگزین")):
-            sc = report.get(key) or {}
-            lines += [title + ": " + sc.get("title_fa", ""),
-                      "شرط فعال‌شدن: " + sc.get("activation_fa", ""),
-                      "شرط ابطال: " + sc.get("invalidation_fa", ""),
-                      *sc.get("path_fa", [])]
-        lines += ["ابهام‌ها: " + report.get("uncertainty_fa", ""),
-                  "این گزارش به‌تنهایی سفارش ایجاد نمی‌کند؛ اجرا در حالت Paper است."]
-        public = (notifier.settings.dashboard_public_url or "").strip()
-        if public.startswith("https://"):
-            lines.append(public.rstrip('/') + f"/#/{'analysis' if row.slot_close_ms else 'outlook'}/reports/{row.id}")
+        text = format_outlook_message(row, close, (notifier.settings.dashboard_public_url or "").strip())
+        delivery = {"status":"sending"}
         try:
-            message_id = await notifier.send_message("\n\n".join(lines)[:4000], parse_mode=None)
-            delivery = {"status": "sent" if message_id else "failed_or_unknown", "message_id": message_id}
+            message_id = await notifier.send_message(text[:4000], parse_mode=None)
+            delivery.update(message_id=message_id, text_status="sent" if message_id else "failed_or_unknown")
         except Exception:
-            delivery = {"status": "failed_or_unknown"}
-        row.context = {**row.context, "telegram_delivery": delivery}
+            delivery["text_status"] = "failed_or_unknown"
+        delivery["photo_status"] = "sending"
+        row.context = {**row.context, "telegram_delivery":dict(delivery)}
+        await session.commit()
+        try:
+            payload = {"id":row.id,"symbol":row.symbol,"date":row.report_date,
+                       "context":{k:v for k,v in row.context.items() if k not in ("response_archive","telegram_delivery")},
+                       "report":row.report}
+            artifact = await asyncio.to_thread(saved_report_image, payload)
+            png = base64.b64decode(artifact["data_url"].split(",",1)[1], validate=True)
+            with tempfile.TemporaryDirectory(prefix="outlook-telegram-") as folder:
+                path = Path(folder)/"chart.png"
+                path.write_bytes(png)
+                photo_id = await notifier.send_photo_file(path, f"{row.symbol} | گزارش {row.id} | {close:%Y-%m-%d %H:%M} تهران\nمسیرهای چارت مشروط هستند؛ تضمین حرکت قیمت نیستند.")
+            delivery.update(photo_message_id=photo_id, photo_status="sent" if photo_id else "failed_or_unknown")
+        except Exception as exc:
+            logger.warning("Outlook %s chart delivery failed (%s)",run_id,type(exc).__name__)
+            delivery["photo_status"] = "failed_or_unknown"
+        sent = [delivery.get(k)=="sent" for k in ("text_status","photo_status")]
+        delivery["status"] = "sent" if all(sent) else "partial" if any(sent) else "failed_or_unknown"
+        row.context = {**row.context, "telegram_delivery":delivery}
         await session.commit()
 
 
@@ -303,6 +319,17 @@ async def execute_reserved(run_id: int, owner: str) -> None:
             code = "analysis_timeout"
         elif isinstance(exc, OpenAIResponsesError):
             code = "ai_request_failed"
+            safe_codes = {"http_error","response_incomplete","response_failed","incomplete","stream_error",
+                          "reasoning_effort_unavailable","reasoning_max_unavailable","reasoning_downgrade",
+                          "rate_limit_exceeded","insufficient_quota","invalid_api_key","server_error"}
+            provider_code = exc.code if exc.code in safe_codes else "provider_error"
+            details = [{"field":"api","type":provider_code}]
+            if exc.partial:
+                incomplete_reason = exc.partial.response_metadata.get("incomplete_reason")
+                if incomplete_reason in ("max_output_tokens", "content_filter"):
+                    details.append({"field":"api_response","type":incomplete_reason})
+            if getattr(exc,"http_status",None):
+                details.append({"field":"http_status","type":str(exc.http_status)})
         elif isinstance(exc, ValueError) and str(exc) in {
             "insufficient_market_history", "latest_closed_candle_missing",
             "invalid_market_prices", "invalid_candle_range", "market_history_gap",

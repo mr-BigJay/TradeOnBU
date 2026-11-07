@@ -104,7 +104,8 @@ async def test_missing_latest_candle_blocks_paid_call(four, monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('send_result', [1234, None])
-async def test_report_without_candidate_sends_once_and_keeps_completed(four, monkeypatch, send_result):
+@pytest.mark.parametrize('photo_result', [5678, None])
+async def test_report_without_candidate_sends_once_and_keeps_completed(four, monkeypatch, send_result, photo_result):
     rid, owner, _ = await service.reserve_run('scheduled', '4h')
     ctx = context()
     slot = int(service.four_hour_slot(Clock.value)[0].timestamp()*1000)
@@ -117,15 +118,21 @@ async def test_report_without_candidate_sends_once_and_keeps_completed(four, mon
     monkeypatch.setattr(service, 'stream_analysis_response', ai)
     from app.services import telegram_notifier
     send = AsyncMock(return_value=send_result)
-    monkeypatch.setattr(telegram_notifier, 'TelegramNotifier', lambda: SimpleNamespace(enabled=True, send_message=send, settings=SimpleNamespace(dashboard_public_url='https://example.test')))
+    photo = AsyncMock(return_value=photo_result)
+    from app.services import daily_outlook_artifact
+    monkeypatch.setattr(daily_outlook_artifact, 'saved_report_image', lambda payload: {'data_url':'data:image/png;base64,iVBORw=='})
+    monkeypatch.setattr(telegram_notifier, 'TelegramNotifier', lambda: SimpleNamespace(enabled=True, send_message=send, send_photo_file=photo, settings=SimpleNamespace(dashboard_public_url='https://example.test')))
     await service.execute_reserved(rid, owner)
     latest = (await service.dashboard('4h'))['latest']
     assert latest['status'] == 'completed'
-    assert latest['context']['telegram_delivery']['status'] == ('sent' if send_result else 'failed_or_unknown')
+    assert latest['context']['telegram_delivery']['status'] == ('sent' if send_result and photo_result else 'partial' if send_result or photo_result else 'failed_or_unknown')
     assert latest['report']['trade_plan']['action'] == 'wait'
     await service.deliver_outlook(rid)
     send.assert_awaited_once()
+    photo.assert_awaited_once()
     ai.assert_awaited_once()
+    assert ai.await_args.kwargs["max_output_tokens"] == 25_000
+    assert ai.await_args.kwargs["reasoning_effort"] == "high"
     assert 'شرط فعال‌شدن' in send.call_args.args[0]
 
 @pytest.mark.asyncio

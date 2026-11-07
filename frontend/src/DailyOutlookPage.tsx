@@ -35,6 +35,7 @@ type Dashboard = { settings: Schedule; latest: Run | null; latest_completed: Run
   can_generate?: boolean; history: Run[]; next_cursor?: number | null; attempted_today: boolean; can_retry_today?: boolean };
 const dir = { bullish: "صعودی", bearish: "نزولی", range: "رنج" };
 const reportError = (run: Run) => ({
+  ai_request_failed: "درخواست تحلیل از API ناموفق بود؛ جزئیات ثبت‌شده را بررسی کنید.",
   outlook_response_schema_invalid: "پاسخ API با قالب گزارش سازگار نیست.",
   outlook_response_json_invalid: "پاسخ API به شکل JSON معتبر دریافت نشده است.",
   outlook_response_evidence_invalid: "سطوح یا مسیر سناریو با شواهد گزارش سازگار نیست.",
@@ -207,7 +208,7 @@ export function DailyOutlookPage({ cadence = "daily" }: { cadence?: "daily" | "4
     {report && run && <>
       <header className="outlook-heading"><div><span className="outlook-eyebrow">{run.slot_close_ms ? "گزارش چهار‌ساعته" : "گزارش روزانه"} · <bdi>{run.report_date}</bdi></span>
         <h2>{report.dominant.title_fa}</h2><p><bdi>{run.symbol}</bdi> · {displayTehranTime(null, run.completed_at)}</p></div></header>
-      {run.context?.telegram_delivery && <p className="hint">وضعیت تلگرام: {({sent:"ارسال شد",disabled:"اتصال تلگرام غیرفعال است",sending:"در حال ارسال یا نتیجه نامشخص",failed_or_unknown:"ارسال ناموفق یا نتیجه نامشخص"} as Record<string,string>)[run.context.telegram_delivery.status] || run.context.telegram_delivery.status}</p>}
+      {run.context?.telegram_delivery && <p className="hint">وضعیت تلگرام: {({sent:"ارسال شد",partial:"ارسال ناقص متن یا چارت",disabled:"اتصال تلگرام غیرفعال است",sending:"در حال ارسال یا نتیجه نامشخص",failed_or_unknown:"ارسال ناموفق یا نتیجه نامشخص"} as Record<string,string>)[run.context.telegram_delivery.status] || run.context.telegram_delivery.status}</p>}
       <ReportImage key={run.id} id={run.id} />
       <div className="card outlook-summary">
         <div className="outlook-card-top"><span><bdi>{run.symbol}</bdi> · {run.report_date}</span><span className={`outlook-badge ${report.dominant.direction}`}>{dir[report.dominant.direction]}</span></div>

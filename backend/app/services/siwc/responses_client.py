@@ -10,10 +10,11 @@ OPENAI_RESPONSES = "https://api.openai.com/v1/responses"
 
 
 class OpenAIResponsesError(Exception):
-    def __init__(self, code: str, message: str, *, partial: AnalysisResponse | None = None) -> None:
+    def __init__(self, code: str, message: str, *, partial: AnalysisResponse | None = None, http_status: int | None = None) -> None:
         super().__init__(message)
         self.code = code
         self.partial = partial
+        self.http_status = http_status
 
 
 @dataclass
@@ -49,6 +50,7 @@ def _extract_response_meta(response_obj: dict[str, Any]) -> tuple[str | None, st
     resp_id = response_obj.get("id")
     meta = {
         "status": response_obj.get("status"),
+        "incomplete_reason": (response_obj.get("incomplete_details") or {}).get("reason"),
         "reasoning": response_obj.get("reasoning"),
         "usage": response_obj.get("usage"),
     }
@@ -139,7 +141,13 @@ async def stream_analysis_response(
                 lower = detail.lower()
                 if "reasoning" in lower and ("unsupported" in lower or "invalid" in lower or "not available" in lower):
                     code = "reasoning_effort_unavailable"
-                raise OpenAIResponsesError(code, detail)
+                try:
+                    provider_code = json.loads(detail).get("error",{}).get("code")
+                    if code == "http_error" and provider_code in {"rate_limit_exceeded","insufficient_quota","invalid_api_key","server_error"}:
+                        code = provider_code
+                except (ValueError, AttributeError, TypeError):
+                    pass
+                raise OpenAIResponsesError(code, detail, http_status=resp.status_code)
             async for line in resp.aiter_lines():
                 if not line or not line.startswith("data: "):
                     continue

@@ -290,3 +290,17 @@ def test_unknown_luna_api_effort_defaults_to_high():
     assert effective_luna_api_effort("xhigh") == "high"
     assert effective_luna_api_effort("high") == "high"
     assert effective_luna_api_effort("max") == "max"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('status,error,expected',[(429,'insufficient_quota','insufficient_quota'),(401,'invalid_api_key','invalid_api_key'),(500,'unrecognized','http_error')])
+async def test_response_http_failure_retains_status_and_safe_code(monkeypatch,status,error,expected):
+    import httpx
+    from app.services.siwc import responses_client as client
+    original=httpx.AsyncClient
+    transport=httpx.MockTransport(lambda request:httpx.Response(status,json={'error':{'code':error,'message':'PRIVATE_BODY'}}))
+    monkeypatch.setattr(client.httpx,'AsyncClient',lambda **kwargs:original(transport=transport,trust_env=False))
+    with pytest.raises(OpenAIResponsesError) as caught:
+        await client.stream_analysis_response('fake',model='test',instructions='test',user_input='test',reasoning_effort='high')
+    assert caught.value.code==expected
+    assert caught.value.http_status==status
