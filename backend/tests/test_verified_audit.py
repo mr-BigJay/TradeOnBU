@@ -9,15 +9,16 @@ from app.verified_audit import evaluate, history
 from tests.test_verified_trade_plan import fixture
 
 
-def test_direction_exclusion_is_not_reported_as_found_setup(monkeypatch):
+def test_countertrend_scanned_but_requires_higher_timeframe_break(monkeypatch):
     series,cost,now,live = fixture()
     monkeypatch.setattr(v,'trend',lambda _: 'bullish')
     audit={}
     v.build_candidates(series,cost,now,live,audit=audit)
     short = audit['directions']['SHORT']
-    assert short['status'] == 'excluded_before_pattern_search'
-    assert short['stages'] == {}
-    assert short['samples']['opposing_hourly_structure'][0]['sweep_ms'] is None
+    assert short['status'] == 'scanned'
+    assert short['stages']['sweep_bars_examined'] > 0
+    assert short['samples']['opposing_hourly_structure'][0]['sweep_ms'] is not None
+    assert audit['candidate_count'] == 0
     assert audit['directions']['LONG']['stages']['sweep_bars_examined'] > 0
     assert audit['directions']['LONG']['reasons']
 

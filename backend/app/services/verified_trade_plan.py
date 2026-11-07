@@ -24,12 +24,12 @@ REASONS_FA = {
  'verified_plan_contract_changed':'شواهد یا سطوح قرارداد تغییر کرده است.',
  'verified_market_data_invalid':'کندل‌های تازه سالم و پیوسته نیستند.',
  'verified_freshness_unavailable':'پوشش یک‌دقیقه‌ای برای بررسی تازگی کافی نیست.',
- 'verified_pullback_already_used':'قیمت پیش از ثبت سفارش به ناحیه برگشته؛ فرصت مصرف شده است.',
+ 'verified_pullback_already_used':'قیمت پیش از ثبت سفارش به قیمت ورود رسیده؛ فرصت مصرف شده است.',
  'verified_one_position_limit':'یک پوزیشن یا سفارش فعال وجود دارد.',
  'verified_daily_loss_limit':'سقف زیان روزانه رسیده؛ ورود تا روز بعد متوقف است.',
  'verified_no_risk_budget':'بودجهٔ ریسک یا موجودی آزاد کافی نیست.',
 }
-VERSION = 'verified_reversal_poi_v2'
+VERSION = 'verified_reversal_sequence_v3'
 STEP = 300_000
 MAX_AGE = 6 * STEP
 TTL = 12 * STEP
@@ -42,6 +42,10 @@ confirmation, confidence probability, or promised return. Prices, stop, target,
 expiry and position sizing belong to the server. No candidate is a valid outcome.
 Use only provided closed candles and candidate evidence. Prior reports are not
 new evidence. Assess structural coherence and remaining room to target. Use market.poi_context to judge nearby order blocks and support/resistance. These candle-derived zones do not prove institutional orders. Prefer a coherent reaction at a relevant area; never approve merely because price touches a zone.
+market_intelligence is optional, freshness-filtered context. Preserve its source,
+exchange and sampling caveats; absence is not a bearish or bullish observation.
+An opposing 1H trend is explicitly flagged with a confirmed 15m reversal break;
+weigh that evidence rather than assuming the old 1H direction can never reverse.
 '''
 
 
@@ -85,6 +89,45 @@ def trend(bars):
 
 def _tick(value, sign):
     return (math.floor(value * 10) if sign > 0 else math.ceil(value * 10)) / 10
+
+
+def same_bar_sequence(minutes, bar, ref, pivot, sign):
+    """A 5m OHLC cannot establish event order. Require all five 1m bars,
+    with the first structural close strictly after the first liquidity sweep.
+    """
+    rows = [x for x in minutes if bar.time_ms <= x.time_ms < bar.time_ms+STEP]
+    if [x.time_ms for x in rows] != list(range(bar.time_ms, bar.time_ms+STEP, 60_000)):
+        return False
+    if any(not math.isclose(a,b,rel_tol=1e-10,abs_tol=1e-8) for a,b in
+           ((max(x.high for x in rows),bar.high),(min(x.low for x in rows),bar.low),(rows[-1].close,bar.close))):
+        return False
+    swept = next((i for i,x in enumerate(rows)
+                  if sign*(ref-(x.low if sign == 1 else x.high)) > 0), None)
+    broken = next((i for i,x in enumerate(rows) if sign*(x.close-pivot)>0), None)
+    return swept is not None and broken is not None and swept < broken
+
+
+def countertrend_break(bars, sweep_ms, sign):
+    """Countertrend permission requires a new displaced 15m swing break,
+    after the 5m sweep; old 1H pivots alone must not veto a proven reversal.
+    """
+    known = [p for p in find_swings(bars) if p.time_ms+3*3*STEP <= sweep_ms
+             and p.kind == ('HIGH' if sign == 1 else 'LOW')]
+    if not known:
+        return None
+    pivot = known[-1]
+    for i in range(pivot.index+1, len(bars)):
+        b = bars[i]
+        if sign*(b.close-pivot.price) <= 0:
+            continue
+        # Only the FIRST close through the known pivot is a new break.
+        if b.time_ms < sweep_ms:
+            return None
+        vol = atr(bars[:i])
+        if vol > 0 and displacement_body(b, sign) >= max(vol, .6*(b.high-b.low)):
+            return {'time_ms': b.time_ms, 'pivot_ms': pivot.time_ms, 'price': pivot.price}
+        return None
+    return None
 
 
 def build_candidates(series, costs, as_of_ms, live, *, audit=None):
@@ -146,10 +189,7 @@ def build_candidates(series, costs, as_of_ms, live, *, audit=None):
         sweep = b = ref = pivot = None
         if audit is not None:
             audit['directions'][direction] = {'status':'scanned','stages':{},'reasons':{},'samples':{}}
-        if regime == ('bearish' if sign == 1 else 'bullish'):
-            if audit is not None:
-                audit['directions'][direction]['status'] = 'excluded_before_pattern_search'
-            reject('opposing_hourly_structure'); continue
+        countertrend = regime == ('bearish' if sign == 1 else 'bullish')
         for si in range(max(16, len(bars)-18), len(bars)-1):
             sweep = bars[si]
             b = ref = pivot = None
@@ -159,25 +199,43 @@ def build_candidates(series, costs, as_of_ms, live, *, audit=None):
             broken = [p for p in known if p.kind == ('HIGH' if sign==1 else 'LOW')]
             if not swept or not broken:
                 reject('missing_reference_swings'); continue
-            ref, pivot = swept[-1], broken[-1]
+            pivot = broken[-1]
             extreme = sweep.low if sign==1 else sweep.high
-            if sign*(ref.price-extreme) <= 0:
+            crossed = [p for p in swept if sign*(p.price-extreme)>0]
+            if not crossed:
+                ref = swept[-1]
                 reject('no_liquidity_sweep'); continue
-            if sign*(sweep.close-ref.price) <= 0:
-                reject('sweep_not_reclaimed'); continue
-            stage('sweep_reclaimed')
-            if any((b.low < ref.price if sign==1 else b.high > ref.price) for b in bars[ref.index+1:si]):
+            # The latest internal swing is not necessarily the liquidity pool
+            # being swept. Select the most recent *untouched crossed* reference.
+            fresh = [p for p in crossed if not any(
+                (x.low<p.price if sign==1 else x.high>p.price) for x in bars[p.index+1:si])]
+            if not fresh:
+                ref = crossed[-1]
                 reject('liquidity_already_swept'); continue
-            if any(sign*(b.close-pivot.price)>0 for b in bars[pivot.index+1:si+1]):
+            ref = fresh[-1]
+            # Reclaim may close on either of the next two bars. Do not require
+            # a five-minute reversal to fit exactly inside one candle boundary.
+            ri = next((i for i in range(si, min(si+3,len(bars)))
+                       if sign*(bars[i].close-ref.price)>0), None)
+            if ri is None:
+                reject('sweep_not_reclaimed'); continue
+            extreme = min(x.low for x in bars[si:ri+1]) if sign==1 else max(x.high for x in bars[si:ri+1])
+            stage('sweep_reclaimed')
+            if any(sign*(b.close-pivot.price)>0 for b in bars[pivot.index+1:si]):
                 reject('structure_already_broken'); continue
             stage('fresh_sweep')
-            for bi in range(si+1, min(si+7,len(bars))):
+            higher_break = countertrend_break(series['15m'], sweep.time_ms, sign) if countertrend else None
+            if countertrend and higher_break is None:
+                reject('opposing_hourly_structure'); continue
+            for bi in range(ri, min(si+7,len(bars))):
                 b = bars[bi]
                 stage('break_bars_examined')
                 if any(sign*(x.close-extreme)<=0 for x in bars[si+1:bi+1]):
                     reject('sweep_invalidated_before_break'); break
                 if sign*(b.close-pivot.price)<=0:
                     reject('no_structure_break'); continue
+                if bi == si and not same_bar_sequence(series.get('1m', []), sweep, ref.price, pivot.price, sign):
+                    reject('ambiguous_sweep_break_order'); break
                 stage('structure_break')
                 local_atr = atr(bars[:bi])
                 body = displacement_body(b, sign)
@@ -207,16 +265,20 @@ def build_candidates(series, costs, as_of_ms, live, *, audit=None):
                         reject('stale_zone'); continue
                     later_minutes = [x for x in series.get('1m', [])
                                      if born <= x.time_ms and x.time_ms+60_000 <= as_of_ms]
-                    if any(x.low<=hi and x.high>=lo for x in [*post_zone, *later_minutes]):
-                        reject('already_retested'); continue
                     # Entry uses the actual zone midpoint, never a model-provided number.
                     entry=round((lo+hi)/2,1)
+                    if any((x.low<=entry if sign==1 else x.high>=entry) for x in [*post_zone, *later_minutes]):
+                        reject('already_retested'); continue
                     invalidation=(min(extreme,lo) if sign==1 else max(extreme,hi)) if poi_kind=="OB" else extreme
                     stop=_tick(invalidation-sign*max(.25*vol,.1),sign)
+                    # Widen a structurally valid tight stop to one ATR. Never
+                    # move it inside invalidation or shrink a wide structural stop.
+                    if sign*(entry-stop)<vol:
+                        stop=_tick(entry-sign*vol,sign)
                     risk=sign*(entry-stop)
                     if not vol<=risk<=3*vol:
                         reject('stop_outside_atr_band'); continue
-                    if sign*(live-hi if sign==1 else live-lo)<=0 or abs(live-entry)>3*vol:
+                    if sign*(live-entry)<=0 or abs(live-entry)>3*vol:
                         reject('quote_not_waiting_for_pullback'); continue
                     levels=[z['price']-sign*.1*vol for z in zones['support_resistance']
                             if z['timeframe'] in ('1h','4h') and z['kind']==('resistance' if sign==1 else 'support')
@@ -239,6 +301,11 @@ def build_candidates(series, costs, as_of_ms, live, *, audit=None):
                     evidence={'sweep_ms':sweep.time_ms,'sweep_extreme':extreme,
                               'sweep_ohlc':[sweep.open,sweep.high,sweep.low,sweep.close],
                               'break_ohlc':[b.open,b.high,b.low,b.close],
+                              'reclaim_ms':bars[ri].time_ms,
+                              'reclaim_ohlc':[bars[ri].open,bars[ri].high,bars[ri].low,bars[ri].close],
+                              'countertrend':countertrend,'countertrend_15m_break':higher_break,
+                              'same_bar_sequence_1m':[[x.time_ms,x.open,x.high,x.low,x.close]
+                                  for x in series.get('1m',[]) if sweep.time_ms<=x.time_ms<sweep.time_ms+STEP] if bi==si else [],
                               'swept_pivot_ms':ref.time_ms,'swept_price':ref.price,
                               'break_ms':b.time_ms,'broken_pivot_ms':pivot.time_ms,'broken_price':pivot.price,
                               'fvg_ms':right.time_ms if poi_kind=='FVG' else None,
@@ -275,7 +342,9 @@ def apply_review(review, candidates, now_ms):
     if not isinstance(review,dict) or review.get('approve') is not True:
         return flat(str(review.get('reason_fa','رد تحلیل‌گر'))[:1200] if isinstance(review,dict) else 'پاسخ نامعتبر تحلیل‌گر')
     c=next((c for c in candidates if c['candidate_id']==review.get('candidate_id')),None)
-    if c is None or now_ms>=c['expires_ms'] or now_ms-c['as_of_ms']>120_000:
+    # Review is not an order. Keep the original observation time, and let the
+    # order gate replay every closed minute since then before submitting.
+    if c is None or now_ms>=c['expires_ms'] or now_ms<c['as_of_ms']:
         return flat('شناسهٔ نامعتبر یا فرصت منقضی پس از پاسخ تحلیل‌گر')
     c=deepcopy(c);reason=str(review.get('reason_fa') or 'ستاپ کندلی تأیید شد')[:1200]
     c['approved_at_ms']=now_ms
@@ -288,7 +357,7 @@ def apply_review(review, candidates, now_ms):
             'confirmation_required':'جاروب و شکست ساختار از کندل بسته تأیید شده؛ سفارش محدود فقط برای بازگشت تازه معتبر است.',
             'conditional_invalidation':'عبور قیمت از نقطهٔ ابطال ساختاری یا پایان مهلت ورود',
             'market_regime':c['evidence']['hourly_regime'],'market_regime_confidence':'low',
-            'market_context_caution_ack':True,'trade_against_dominant_trend':False,
+            'market_context_caution_ack':True,'trade_against_dominant_trend':bool(c['evidence'].get('countertrend')),
             'trade_reason':reason,'uncertainty_notes':str(review.get('risk_fa') or '')[:1200],
             'setup_timeframe':'intraday_5m_15m','entry_poi_type':c['evidence'].get('poi_kind','FVG'),
             'liquidity_event_clear':True,'structural_confirmation_clear':True,

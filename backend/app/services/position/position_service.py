@@ -288,9 +288,10 @@ class SimPositionService:
                     pos.extra = {**(pos.extra or {}), "auto_paper_cancel_reason": err}
                     return False
         fees = fee_profile_from_settings(settings)
-        adverse = pos.order_type == "market"
-        fill = apply_slippage(
-            raw_price, pos.direction, side="entry", adverse=adverse, bps=settings.slippage_bps
+        # A touched resting limit fills at its limit; do not manufacture price
+        # improvement (which can even be outside the observed candle range).
+        fill = raw_price if pos.order_type == "limit" else apply_slippage(
+            raw_price, pos.direction, side="entry", adverse=True, bps=settings.slippage_bps
         )
         key = f"entry:{pos.public_id}:{transition_suffix}:{int(fill * 100)}"
         if pos.transition_key:

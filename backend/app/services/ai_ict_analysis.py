@@ -37,6 +37,7 @@ INSTRUCTIONS = ICT_TRADER_INSTRUCTIONS
 
 @dataclass
 class _RunDraft:
+    persisted: bool = False
     status: str = "failed"
     model_slug: str | None = None
     decision: str | None = None
@@ -475,7 +476,8 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
             # No old narratives or competing discretionary plans in the reviewer input.
             from app.services.poi_context import market_zones
             market_payload['poi_context'] = market_zones(candles_by_interval)
-            user_payload = json.dumps({'market': market_payload, 'verified_candidates': verified_candidates}, ensure_ascii=False)
+            user_payload = json.dumps({'market': market_payload, 'verified_candidates': verified_candidates,
+                                       'market_intelligence': market_intelligence}, ensure_ascii=False)
         verified_review_meta = {}
         if verified.enabled():
             verified_review_meta = {'version': verified.VERSION, 'api_attempted': True,
@@ -544,6 +546,12 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
         )
 
         analyzed_at = datetime.now(timezone.utc)
+        if verified.enabled():
+            # Make approved opportunities visible to the independent monitor
+            # before chart rendering or Telegram network latency can consume entry.
+            draft.completed_at = analyzed_at
+            await _persist_run_draft(run_id, draft, symbol=symbol)
+            draft.persisted = True
         chart_path: Path | None = None
         try:
             chart_path, structured_with_art = await _generate_chart_for_run(
@@ -596,6 +604,15 @@ async def run_ai_analysis(*, trigger: str = "scheduled", model_override: str | N
     settings = get_effective_settings()
     run_id = await _create_run_record(trigger=trigger)
     draft = await _execute_inference(run_id=run_id, trigger=trigger, model_override=model_override)
+    if draft.persisted:
+        # Delivery metadata only: never create/revise the opportunity a second time.
+        async with SessionLocal() as session:
+            run = await session.get(AiAnalysisRun, run_id)
+            run.structured = draft.structured
+            run.telegram_sent = draft.telegram_sent
+            await session.commit()
+            await session.refresh(run)
+            return run
     return await _persist_run_draft(run_id, draft, symbol=settings.default_symbol)
 
 

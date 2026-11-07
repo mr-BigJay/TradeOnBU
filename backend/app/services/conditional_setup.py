@@ -206,7 +206,8 @@ def apply_conditional_plan_to_setup_row(
     verified = structured.get('verified_trade_plan')
     if verified:
         ev = verified['evidence']
-        stamps = {'liquidity_sweep': ev['sweep_ms'], 'mss': ev['break_ms']}
+        # A delayed reclaim is not confirmed at the earlier sweep timestamp.
+        stamps = {'liquidity_sweep': ev.get('reclaim_ms', ev['sweep_ms']), 'mss': ev['break_ms']}
         row.confirmation_state.update({
             'completed': list(stamps), 'missing': ['entry_zone_touch'],
             'confirmation_timestamps': stamps,

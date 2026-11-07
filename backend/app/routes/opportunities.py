@@ -59,7 +59,7 @@ _REJECTION_FA: dict[str, str] = {
     "entry_zone_used_before_registration": "ناحیه پس از تأیید ساختار و پیش از ثبت پلن مصرف شده بود",
     "first_touch_missed": "برخورد اول بدون سفارش و سپس حرکت قیمت؛ نیازمند ارزیابی تازه",
     "missing_confirmations": "در انتظار تأییدهای ICT (MSS، sweep، POI و …)",
-    "net_rr_below_min": "نسبت ریسک به بازده خالص کافی نیست (حداقل ۱:۲)",
+    "net_rr_below_min": "نسبت ریسک به بازده خالص کافی نیست (حداقل ۱:۱٫۴)",
     "ict_confirmed_blocked_by_net_rr": DISPLAY_ICT_CONFIRMED_BLOCKED_RR,
     "auto_paper_disabled": "ورود خودکار Paper غیرفعال است",
     "wallet_not_initialized": "موجودی Paper اولیه تنظیم نشده",
@@ -173,7 +173,19 @@ def _serialize_no_trade_run(row: AiAnalysisRun) -> dict:
 async def opportunities_summary(session: AsyncSession = Depends(get_db), _=Depends(require_dashboard_access)):
     """Real counts for dashboard summary cards (server-side, not limited to 200 rows)."""
     counts = await opp_list.fetch_summary_counts(session)
-    return {"counts": counts}
+    scan = None
+    if verified_plans_enabled():
+        latest = (await session.execute(select(AiAnalysisRun).order_by(desc(AiAnalysisRun.id)).limit(1))).scalar_one_or_none()
+        if latest:
+            data = latest.structured or {}
+            meta = data.get('verified_plan_review') or {}
+            audit = meta.get('candidate_audit') or (latest.validation or {}).get('candidate_audit') or {}
+            scan = {'run_id': latest.id, 'time_tehran': format_tehran(latest.created_at),
+                    'status': latest.status, 'candidate_count': audit.get('candidate_count'),
+                    'api_attempted': bool(meta.get('api_attempted')),
+                    'approved': bool(data.get('verified_trade_plan')),
+                    'rejections': meta.get('diagnostics') or audit.get('rejection_counts') or {}}
+    return {"counts": counts, "latest_scan": scan}
 
 
 @router.get("/items")
