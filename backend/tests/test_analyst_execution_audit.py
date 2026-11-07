@@ -72,6 +72,15 @@ async def test_retry_one_transient_failure_after_backoff_only(session):
     assert not (await a.review_allowed(session,later+timedelta(minutes=3)))[0]
 
 
+@pytest.mark.asyncio
+async def test_unknown_legacy_strategy_cannot_break_ranked_persistence(session,monkeypatch):
+    from app.services.strategy_candidates import persist_strategy_candidates
+    monkeypatch.setenv('VERIFIED_PLANS_ENABLED','0')
+    monkeypatch.setenv('MULTI_SETUP_ANALYST_ENABLED','0')
+    rows,meta=await persist_strategy_candidates(session,run_id=1,symbol='BTCUSDT',structured={'strategy_id':[]})
+    assert not rows and len(meta)==3
+
+
 def test_catalog_preserves_ob_status_and_touch_metadata(monkeypatch):
     s,c,e,n=fixture()
     t=s['5m'][-3].time_ms

@@ -19,7 +19,9 @@ async def persist_strategy_candidates(session, *, run_id, symbol, structured, ma
     primary = strategy_id(structured)
     extras = structured.get("strategy_candidates", {})
     results, rows = {}, {}
-    ordered = [primary, *[sid for sid in extras if sid in LABELS and sid != primary]] if isinstance(extras,dict) else [primary]
+    ordered = [primary] if isinstance(primary,str) and primary in LABELS else []
+    if isinstance(extras,dict):
+        ordered += [sid for sid in extras if sid in LABELS and sid not in ordered]
     ordered += [sid for sid in LABELS if sid not in ordered]
     for sid in ordered:
         base = {"created": False, "updated": False, "skipped": True}
