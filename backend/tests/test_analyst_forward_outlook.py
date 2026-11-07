@@ -83,7 +83,8 @@ def test_support_and_resistance_retests_count_distinct_post_confirmation_events(
     origin = series["5m"][5].time_ms
     levels = {
         "support_resistance": [
-            dict(timeframe="5m", time_ms=origin, kind="support", price=1000.),
+            dict(timeframe="5m", time_ms=origin, kind="support",
+                 price=series["5m"][-1].close),
             dict(timeframe="5m", time_ms=origin, kind="resistance", price=2500.),
         ],
         "order_blocks": [],
