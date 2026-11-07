@@ -136,3 +136,17 @@ it('explains failed response validation with the field instead of only a generic
  expect(screen.getByText('summary_fa')).toBeInTheDocument();
  expect(screen.getByText('string_too_long')).toBeInTheDocument();
 });
+
+it('distinguishes neutral evidence, omitted assessment and unavailable sources',async()=>{
+ window.location.hash='#/outlook/reports/1';
+ const evidenceRun={...run,report:{...run.report,supplemental_evidence:[
+  {source:'funding',effect:'neutral',explanation_fa:'شاهد کافی برای تغییر جهت نیست.'},
+  {source:'trade_flow',effect:'not_assessed',explanation_fa:'اثر در پاسخ توضیح داده نشده است.'}
+ ]},context:{...run.context,market_intelligence:{missing_sources:{order_book:'stale_or_future;micro_not_recorded'}}}};
+ apiFetch.mockImplementation((url:string)=>Promise.resolve(url.endsWith('/chart-image')?{data_url:'data:image/png;base64,abc',filename:'report.png'}:url.endsWith('/runs/1')?evidenceRun:empty()));
+ render(<DailyOutlookPage/>);
+ expect(await screen.findByText('شواهد تکمیلی')).toBeInTheDocument();
+ expect(screen.getByText('شاهد کافی برای تغییر جهت نیست.')).toBeInTheDocument();
+ expect(screen.getByText('اثر در پاسخ توضیح داده نشده است.')).toBeInTheDocument();
+ expect(screen.getByText(/زمان داده خارج از محدوده مجاز؛ دادهٔ لحظه‌ای ثبت نشده/)).toBeInTheDocument();
+});

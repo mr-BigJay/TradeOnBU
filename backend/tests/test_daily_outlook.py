@@ -487,3 +487,24 @@ async def test_incomplete_api_response_shows_token_budget_reason(isolated,monkey
     service.stream_analysis_response.assert_awaited_once()
     assert (await service.reserve_run('manual'))[2] == 'already_attempted_today'
     assert not result['can_retry_today']
+
+
+def test_supplemental_evidence_preserves_neutral_and_marks_omissions():
+    ctx=context()
+    ctx['market_intelligence']={'sources':{'funding':{'source':'bitunix'},'order_book':{'source':'bitunix'}}}
+    data=report()
+    data['supplemental_evidence']=[{'source':'funding','effect':'neutral','explanation_fa':'این داده به‌تنهایی جهت بازار را مشخص نمی‌کند.'}]
+    result=parse_outlook(json.dumps(data),ctx)
+    assert result['supplemental_evidence'][0]['effect']=='neutral'
+    assert result['supplemental_evidence'][1]['source']=='order_book'
+    assert result['supplemental_evidence'][1]['effect']=='not_assessed'
+    assert len(result['supplemental_evidence'])==2
+    assert parse_outlook(json.dumps(report()),context())['supplemental_evidence']==[]
+
+
+@pytest.mark.parametrize('sources', [['order_book'],['funding','funding']])
+def test_supplemental_evidence_rejects_absent_or_duplicate_sources(sources):
+    ctx=context();ctx['market_intelligence']={'sources':{'funding':{}}}
+    data=report();data['supplemental_evidence']=[{'source':name,'effect':'supports','explanation_fa':'شواهد همسو با سناریو است.'} for name in sources]
+    with pytest.raises(ValueError,match='invalid_supplemental_evidence_source'):
+        parse_outlook(json.dumps(data),ctx)

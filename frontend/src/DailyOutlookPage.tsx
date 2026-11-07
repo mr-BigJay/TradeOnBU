@@ -15,7 +15,11 @@ type TradePlan = {
   action: "long" | "short" | "wait"; rationale_fa: string; trigger_fa: string;
   entry_price?: number; stop_loss?: number; take_profits?: number[]; risk_reward?: number[];
 };
+const evidenceNames: Record<string,string> = {funding:"Funding Rate",open_interest:"Open Interest",trade_flow:"Trade Flow",order_book:"Order Book",liquidations:"Liquidations"};
+const evidenceEffects: Record<string,string> = {supports:"همسو با سناریوی غالب",opposes:"مخالف سناریوی غالب",neutral:"خنثی",not_assessed:"توضیح داده نشده"};
+const missingReasons: Record<string,string> = {not_recorded:"داده ثبت نشده",stale_or_future:"زمان داده خارج از محدوده مجاز",collector_disabled:"جمع‌آوری غیرفعال",collector_unavailable:"منبع در دسترس نبود",collector_stale:"دادهٔ جمع‌آوری‌شده قدیمی بود",collector_error:"خطای جمع‌آوری",invalid_source_or_quality:"منبع یا کیفیت داده پذیرفته نشد",micro_not_recorded:"دادهٔ لحظه‌ای ثبت نشده",micro_source_mismatch:"منبع دادهٔ لحظه‌ای نامعتبر",micro_stale_or_future:"زمان دادهٔ لحظه‌ای خارج از محدوده مجاز",micro_invalid_values:"مقادیر دادهٔ لحظه‌ای نامعتبر",snapshot_gate_prevented_micro_read:"به‌علت نامعتبر بودن دادهٔ پایه بررسی نشد",snapshot_invalid_or_missing:"دادهٔ پایه نامعتبر یا ثبت‌نشده",snapshot_stale_or_future:"دادهٔ پایه قدیمی یا دارای زمان نامعتبر",snapshot_symbol_mismatch:"نماد دادهٔ پایه نامعتبر",no_public_snapshot:"دادهٔ پایه ثبت نشده",snapshot_read_failed:"خواندن داده ناموفق",context_size_limit:"حجم داده بیش از حد مجاز"};
 type Report = {
+  supplemental_evidence?: {source:string;effect:string;explanation_fa:string}[];
   trade_plan?: TradePlan;
   summary_fa: string; weekly_context_fa: string; daily_structure_fa: string;
   dominant: Scenario; alternative: Scenario; uncertainty_fa: string;
@@ -27,7 +31,7 @@ type Run = {
   started_at: string; completed_at: string | null; model: string | null; error_code?: string;
   validation_errors?: { field: string; type: string }[];
   report?: Report; usage?: { input_tokens?: number; output_tokens?: number; total_tokens?: number };
-  context?: { telegram_delivery?: { status: string }; as_of: string; source: string; live_price: number; daily_atr14: number;
+  context?: { market_intelligence?: {status?:string;reason?:string;missing_sources?:Record<string,string>}; telegram_delivery?: { status: string }; as_of: string; source: string; live_price: number; daily_atr14: number;
     levels: Level[]; daily_candles: number[][]; four_hour_candles?: number[][]; data_quality_warnings?: unknown[] };
 };
 type Schedule = { cadence_hours?: number; enabled: boolean; hour: number; minute: number; next_run_at: string | null };
@@ -226,6 +230,13 @@ export function DailyOutlookPage({ cadence = "daily" }: { cadence?: "daily" | "4
       <div className="outlook-grid"><article className="card"><h3>چه چیزهایی را پیگیری کنیم؟</h3><ul>{report.watch_next_fa.map((s, i) => <li key={i}>{s}</li>)}</ul></article>
         <article className="card"><h3>تغییر نسبت به گزارش قبلی</h3><p>{report.change_since_previous_fa}</p></article></div>
       </details>
+      {(report.supplemental_evidence || run.context?.market_intelligence?.missing_sources) && <section className="card">
+        <h3>شواهد تکمیلی</h3>
+        <p className="hint">برداشت مدل نسبت به سناریوی غالب؛ داده‌های کوتاه‌مدت، تأیید مستقل ورود نیستند.</p>
+        {(report.supplemental_evidence || []).map(item => <p key={item.source}><strong><bdi>{evidenceNames[item.source] || item.source}</bdi> — {evidenceEffects[item.effect] || item.effect}:</strong> {item.explanation_fa}</p>)}
+        {Object.entries(run.context?.market_intelligence?.missing_sources || {}).map(([name,reason]) => <p key={name}><strong><bdi>{evidenceNames[name] || name}</bdi> — ارسال نشده:</strong> {reason.split(';').map(code=>missingReasons[code] || 'داده قابل استفاده نبود').join('؛ ')}</p>)}
+        {!report.supplemental_evidence?.length && !Object.keys(run.context?.market_intelligence?.missing_sources || {}).length && <p>شواهد تکمیلی در این گزارش ثبت نشده است.</p>}
+      </section>}
       <p className="card"><strong>ابهام‌های مهم:</strong> {report.uncertainty_fa}</p>
       <details className="card"><summary>منابع داده و مصرف گزارش</summary><p>کندل‌های Bitunix؛ روزانه و هفتگی از کندل‌های کامل ۴ساعته با مرز UTC ساخته شده‌اند. اطلاعات تکمیلی بازار، در صورت تازگی، زمینهٔ کمکی است.</p>
         <p>منبع اخبار و تقویم اقتصادی متصل نیست. این بخش سفارش معاملاتی ایجاد نمی‌کند.</p>

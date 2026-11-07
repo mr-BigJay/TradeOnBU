@@ -41,7 +41,14 @@ class TradePlan(StrictModel):
         return self
 
 
+class SupplementalEvidence(StrictModel):
+    source: Literal["funding", "open_interest", "trade_flow", "order_book", "liquidations"]
+    effect: Literal["supports", "opposes", "neutral", "not_assessed"]
+    explanation_fa: str = Field(min_length=5, max_length=180)
+
+
 class Outlook(StrictModel):
+    supplemental_evidence: list[SupplementalEvidence] = Field(default_factory=list, max_length=5)
     trade_plan: TradePlan
     summary_fa: str = Field(min_length=30, max_length=550)
     weekly_context_fa: str = Field(min_length=10, max_length=250)
@@ -80,6 +87,15 @@ def parse_outlook(text: str, context: dict, *, execution_plan: dict | None = Non
         if any(not stage.strip() or len(stage) > 180 for stage in scenario.path_fa):
             raise ValueError("invalid_scenario_stage")
     output = result.model_dump()
+    supplied = (context.get("market_intelligence") or {}).get("sources") or {}
+    entries = {item.source: item.model_dump() for item in result.supplemental_evidence}
+    if len(entries) != len(result.supplemental_evidence) or not set(entries) <= set(supplied):
+        raise ValueError("invalid_supplemental_evidence_source")
+    # Never imply the model assessed a source when it omitted it.
+    output["supplemental_evidence"] = [entries.get(name, {
+        "source": name, "effect": "not_assessed",
+        "explanation_fa": "داده ارسال شد؛ اثر آن در پاسخ مدل توضیح داده نشده است."
+    }) for name in ("funding", "open_interest", "trade_flow", "order_book", "liquidations") if name in supplied]
     if execution_plan is not None:
         output["trade_plan"] = execution_plan
         return output
@@ -122,7 +138,16 @@ Copy prices from the matching level; never invent, estimate or substitute a pric
 If evidence is weak prefer range/unclear descriptions and explain uncertainty.
 No external news/calendar feed is connected: do not invent news, Fed probabilities,
 events or catalysts. Historical liquidations are not future heatmap levels. Binance
-OI is not Bitunix positioning; provisional trade delta is not verified CVD. Optional
+OI is not Bitunix positioning; provisional trade delta is not verified CVD. For supplemental_evidence, include one short Persian explanation for EACH key actually
+present in market.market_intelligence.sources, and no absent source. effect is supports,
+opposes or neutral relative to the DOMINANT scenario (not simply bullish/bearish);
+use not_assessed only if you cannot assess it. Explain the supplied observation and
+its limitation; neutral is appropriate for inconclusive or short-lived observations.
+Never force directional evidence from funding sign, tiny changes or a partial trade
+bucket. Do not treat Binance sampled liquidations as complete market totals, or
+Order Book imbalance as durable demand. Missing sources are unavailable, not zero.
+These explanations describe your stated assessment, not a proven causal influence.
+Optional
 microdata is secondary context for this multi-day horizon, not a direction gate.
 Optional channel_context describes the SAME major-swing channel drawn on the chart.
 Use it only as secondary context alongside candles and horizontal levels. Mention its

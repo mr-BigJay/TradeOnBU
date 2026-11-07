@@ -271,3 +271,42 @@ def test_persisted_microdata_rejects_bad_values_and_future_buckets():
         source="bitunix", kind="depth_1m", bucket_start_ms=NOW_MS - 10000,
         payload={"imbalance_ratio": 1.4, "levels_used": 15},
     ), now_ms=NOW_MS) is None
+
+
+def test_missing_source_diagnostics_are_bounded_and_do_not_copy_provider_errors():
+    ctx = compact_snapshot(snapshot(age_seconds=600, payload={
+        'funding': {'status':'ok','source':'bitunix','funding_rate':0.1},
+        'order_book': {'status':'ok','source':'bitunix','levels_used':15,'imbalance_ratio':0.2},
+        'liquidations': {'status':'disabled','message':'SECRET_PROVIDER_BODY'},
+    }), symbol='BTCUSDT', now=NOW)
+    assert ctx['missing_sources']['order_book'] == 'stale_or_future'
+    assert ctx['missing_sources']['liquidations'] == 'collector_disabled'
+    assert ctx['missing_sources']['open_interest'] == 'not_recorded'
+    assert 'funding' not in ctx['missing_sources']
+    assert 'SECRET_PROVIDER_BODY' not in str(ctx)
+
+
+@pytest.mark.asyncio
+async def test_book_missing_diagnoses_snapshot_and_micro_age(session):
+    now=datetime.now(timezone.utc)
+    session.add_all([
+        MarketDataSnapshot(symbol='BTCUSDT',valid=True,collected_at=now-timedelta(minutes=12),freshness={},payload={
+            'symbol':'BTCUSDT','funding':{'status':'ok','source':'bitunix','funding_rate':0.1},
+            'order_book':{'status':'ok','source':'bitunix','levels_used':15,'imbalance_ratio':0.2}}),
+        MarketMicroRollup(symbol='BTCUSDT',kind='depth_1m',source='bitunix',
+            bucket_start_ms=int(now.timestamp()*1000)-240000,payload={'levels_used':15,'imbalance_ratio':0.3})])
+    await session.commit()
+    ctx=await load_ai_market_intelligence(session,symbol='BTCUSDT')
+    assert ctx['missing_sources']['order_book']=='stale_or_future;micro_stale_or_future'
+    assert ctx['missing_sources']['trade_flow']=='micro_not_recorded'
+    assert 'order_book' not in ctx['sources']
+
+
+@pytest.mark.asyncio
+async def test_snapshot_gate_diagnoses_unread_microdata(session):
+    session.add(MarketDataSnapshot(symbol='BTCUSDT',valid=True,
+        collected_at=datetime.now(timezone.utc)-timedelta(hours=1),freshness={},payload={'symbol':'BTCUSDT'}))
+    await session.commit()
+    ctx=await load_ai_market_intelligence(session,symbol='BTCUSDT')
+    assert ctx['reason']=='snapshot_stale_or_future'
+    assert ctx['missing_sources']['order_book']=='snapshot_gate_prevented_micro_read'

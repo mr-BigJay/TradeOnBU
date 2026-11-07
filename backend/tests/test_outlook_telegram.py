@@ -27,3 +27,13 @@ def test_only_engine_prices_shown_with_actual_net_ratio():
     assert '1:1.41' in text and '1:2.5' not in text
     r.report['trade_plan']['source']='ai'
     assert 'ورود پیشنهادی:' not in format_outlook_message(r,datetime.now(timezone.utc),'')
+
+
+def test_evidence_explained_and_missing_sources_distinct():
+    r=row({'action':'wait'})
+    r.report['supplemental_evidence']=[{'source':'funding','effect':'neutral','explanation_fa':'شاهد کافی برای تغییر جهت نیست.'}]
+    r.context['market_intelligence']={'missing_sources':{'order_book':'micro_not_recorded'}}
+    text=format_outlook_message(r,datetime.now(timezone.utc),'')
+    assert 'Funding Rate: خنثی؛ شاهد کافی' in text
+    assert 'داده‌های ارسال‌نشده: Order Book' in text
+    assert 'micro_not_recorded' not in text

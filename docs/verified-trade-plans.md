@@ -176,3 +176,33 @@ Local Python 3.12 / isolated test SQLite, UTC, no inherited proxy configuration:
   and the compatibility policy above supersede that classification.
 No production deployment, real-money execution, live market performance result,
 or API-review trading win rate is represented by these software checks.
+
+## Supplemental report evidence and missing-source diagnostics
+
+New daily and 4H reports request one `supplemental_evidence` item per source
+actually present in the saved `market_intelligence.sources`. Its `effect` is
+`supports`, `opposes`, `neutral`, or `not_assessed` relative to the dominant
+scenario; the short Persian explanation must retain exchange, sampling and
+short-horizon limitations. This records the model's stated assessment, not proof
+of causal influence or statistical benefit. Duplicate or absent source references
+are rejected. If an available source is omitted, the server explicitly fills
+`not_assessed` rather than inventing an assessment. Old saved reports remain
+unchanged and readable.
+
+The panel and Telegram display the assessments. The panel additionally explains
+`context.market_intelligence.missing_sources`; Telegram lists absent sources.
+Diagnostics distinguish missing records, stale/future timestamps, collector
+status, invalid source/quality and failed snapshot gates. Missing Order Book
+entries preserve both snapshot and one-minute rollup rejection codes. No raw
+provider messages or credentials are copied. The existing 2,600-character source
+payload cap is retained; at most five bounded diagnostic entries are added after
+that check so diagnostic overhead does not evict previously usable sources.
+
+Freshness thresholds and entry rules are unchanged: order-book observations
+must be at most 180 seconds old; trade rollups use the existing 420-second bucket
+age limit. A rejected base snapshot still prevents reading microdata; the new
+code states this explicitly rather than claiming that the collector was offline.
+These reasons explain filtering at report time, not the underlying network cause.
+Historical reports cannot acquire missing diagnostics retroactively. No new AI
+calls, paid retries, feeds, or database migration are introduced. A few short
+explanations add output tokens within the existing 25,000-token ceiling.
