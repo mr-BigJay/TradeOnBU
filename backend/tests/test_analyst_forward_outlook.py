@@ -140,3 +140,43 @@ def test_payload_measures_all_sections_instruction_cost_and_micro_history():
     assert data["market"]["timeframes"]["4h"]["closed_count"] == 48
     assert audit["saved_chars"] > 0
     assert "not exact token attribution" in audit["accounting_note"]
+
+
+def test_read_only_audit_exposes_cost_and_scenarios_without_reconstructing_old_tokens(tmp_path):
+    import sqlite3
+    import json
+    from app.analyst_prompt_audit import inspect
+
+    path = tmp_path / "analyst_audit.db"
+    with sqlite3.connect(path) as db:
+        db.execute("""CREATE TABLE ai_analysis_runs
+            (id INTEGER, created_at TEXT, status TEXT, model_slug TEXT,
+             structured TEXT, report_fa TEXT)""")
+        data = {
+            "analyst_review": {"api_attempted": True, "payload_sizes": {
+                "after_chars": 200,
+                "request_text_chars": 250, "instructions_chars": 50,
+                "reduction_pct": 14,
+                "sections": {"market": {"after_chars": 100},
+                             "evidence_catalog": {"after_chars": 50}},
+                "breakdown": {"candles:1m": {"before_count": 120, "after_count": 45}},
+                "candle_counts": {"1m": 120}, "sent_candle_counts": {"1m": 45},
+            }},
+            "analyst_summary": {"proposed": 0, "accepted": 0,
+                                "forecast_scenarios": [{"watchlist_only": True}]},
+            "_artifacts": {"inference": {"response_metadata": {
+                "usage": {"input_tokens": 40000, "output_tokens": 500}}}},
+        }
+        db.execute("INSERT INTO ai_analysis_runs VALUES (?,?,?,?,?,?)",
+                   (1159, "2026-11-08 00:01", "completed", "test",
+                    json.dumps(data), "چشم‌انداز چهار‌ساعته"))
+    with sqlite3.connect("file:" + str(path) + "?mode=ro", uri=True) as db:
+        db.row_factory = sqlite3.Row
+        result = inspect(db)
+    assert result["run_id"] == 1159
+    assert result["usage"]["input_tokens"] == 40000
+    assert result["change_input_tokens_vs_1158_pct"] < 0
+    assert result["sections"]["market"]["pct_of_user_payload"] == 50
+    assert result["candle_counts_sent"]["1m"] == 45
+    assert result["forecast_watchlist"][0]["watchlist_only"] is True
+    assert "not provider token shares" in result["limits"]
