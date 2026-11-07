@@ -41,8 +41,12 @@ def build_ai_telegram_summary(*, symbol: str, live: float, decision: str | None,
               f"انتظار برای {direction}؛ ورود تأیید نشده" if conditional else
               f"پیشنهاد {direction}؛ اجرای ورود مشروط به کنترل‌های سامانه" if final in ("LONG", "SHORT") else
               "عدم ورود؛ بدون سناریوی فعال")
-    strategy = {"ict_reversal": "A · برگشت قیمت", "trend_continuation": "B · ادامه روند",
-                "breakout_retest": "C · شکست و بازآزمایی"}.get(s.get("strategy_id"), "ICT")
+    analyst_summary = s.get("analyst_summary") or {}
+    if isinstance(analyst_summary, dict) and analyst_summary.get("accepted") == 0:
+        strategy = "بدون استراتژی پذیرفته‌شده"
+    else:
+        strategy = {"ict_reversal": "A · برگشت قیمت", "trend_continuation": "B · ادامه روند",
+                    "breakout_retest": "C · شکست و بازآزمایی"}.get(s.get("strategy_id"), "ICT")
     fixed = [f"{_short(symbol, 20)} | {strategy}", status,
              f"قیمت: {_price(live)} | زمان تهران: {format_tehran(analyzed_at)}"]
     regime = {"bearish": "نزولی", "bullish": "صعودی", "ranging": "رنج", "unclear": "نامشخص"}.get(s.get("market_regime"), "نامشخص")
