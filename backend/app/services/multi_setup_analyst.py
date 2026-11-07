@@ -10,6 +10,7 @@ from app.services.poi_context import market_zones
 from app.services.verified_trade_plan import atr, trend, valid_bars, flat, _tick
 from app.services.ict_execution_plan import target_at_net_rr
 from app.services.analyst_regime import executable_regime
+from app.services.analyst_outlook import compile_forecasts
 
 VERSION = 'multi_setup_analyst_v1'
 STEPS = {'1m':60000,'5m':300000,'15m':900000,'1h':3600000,'4h':14400000}
@@ -25,7 +26,22 @@ Use the provided closed candles, evidence_catalog, strategy_features, execution_
 The market.timeframes[*].candles rows use the explicit candles_columns order [time_ms,open,high,low,close,volume], with UTC epoch milliseconds. All observed bars are present; time_iso can be derived from time_ms.
 EMA9/20, RSI14, ATR, ADX and relative volume are descriptive context for comparing scenarios,
 NEVER mandatory entry thresholds. RSI extremes or EMA crosses alone are not permission to trade.
-Return ONLY JSON with market_summary_fa, comparison_fa, and plans (0 to 3 objects, ranked best first).
+Return ONLY JSON with market_summary_fa, comparison_fa, forecast_scenarios, and plans.
+The four-hour outlook must explain the likely paths *conditionally*, NOT claim guaranteed price movements:
+support rebound on a fresh/untested zone, resistance rejection, tested support breakdown with retest,
+resistance breakout with retest, or pullback continuation, wherever actual candle evidence supports them.
+Compare what happens IF price reaches a zone, IF it holds, and IF it breaks; include 1h/4h structural
+trend, EMA9/20 direction, RSI14, ADX14, ATR14 and volume when available and relevant.
+A previously tested area is NOT necessarily going to break: describe test count, displacement,
+rejection strength and volume as context, not a quantified probability or a signal by themselves.
+forecast_scenarios is 0 to 4 ranked watch-only objects, preferably 2+ distinct paths when supported.
+Each: scenario_type (support_bounce|resistance_rejection|support_break|resistance_break|trend_pullback),
+direction (LONG|SHORT), level_id (exact evidence_catalog ID), target_id (exact evidence_catalog ID or null),
+reason_fa (why this area is significant, considering touch_count, status, HTF/LTF and relevant indicators).
+Do not invent levels. The server resolves every forecast price, state, condition and invalidation from evidence.
+All forecast_scenarios are a *watchlist*, NOT executable positions. Provide forward-looking levels even
+when no executable plan passes the server rules. Never promise that an untouched area must reverse.
+plans is 0 to 3 *independently executable conditional proposals* ranked best first.
 Each plan: strategy_id (ict_reversal|trend_continuation|breakout_retest), direction (LONG|SHORT),
 zone_id, invalidation_id, target_id (exact supplied catalog IDs), reason_fa.
 At most one plan per strategy. Only enabled strategies. Empty plans is a valid outcome.
@@ -58,8 +74,23 @@ def catalog(series, now_ms):
         item.update(metadata or {})
         items.append(item)
     for x in zones['support_resistance']:
-        width=max(.15*atr(series[x['timeframe']]),.1)
-        add(x['kind'],x['timeframe'],x['time_ms'],x['price']-width,x['price']+width,price=x['price'])
+        tf=x['timeframe']; width=max(.15*atr(series[tf]),.1)
+        lo,hi=x['price']-width,x['price']+width
+        # Only AFTER both confirmation candles have closed; touching the
+        # originating swing must not count as a retest of its own level.
+        confirmed_ms=x['time_ms']+3*STEPS[tf]
+        later=[b for b in series[tf] if b.time_ms>=confirmed_ms]
+        touches=[];in_touch=False
+        for bar in later:
+            touching=bar.low<=hi and bar.high>=lo
+            if touching and not in_touch:
+                touches.append(bar.time_ms)
+            in_touch=touching
+        add(x['kind'],tf,x['time_ms'],lo,hi,price=x['price'],metadata={
+            'status':'retested' if touches else 'fresh',
+            'touch_count':len(touches),'last_touch_ms':touches[-1] if touches else None,
+            'confirmed_ms':confirmed_ms,'age_ms':now_ms-confirmed_ms,
+        })
     for x in zones['order_blocks']:
         if x['status']!='invalidated':
             later=[b for b in series[x['timeframe']] if b.time_ms>x['confirmed_ms']]
@@ -236,9 +267,11 @@ def compile_response(raw,evidence,series,costs,now_ms,observed_ms,strategies):
         # rejection is not an A strategy selection; never attribute one.
         result.pop('strategy_id', None)
     result['strategy_candidates']={sid:p for sid,p in accepted.items() if p is not result}
+    forecast,forecast_rejected=compile_forecasts(raw.get('forecast_scenarios',[]),evidence)
     result['analyst_summary']={'market_summary_fa':str(raw.get('market_summary_fa') or '')[:3000],
         'comparison_fa':str(raw.get('comparison_fa') or '')[:3000], 'proposed':len(raw['plans']),
         'accepted':len(accepted),'rejections':rejections,
         'rejected_plans':rejected_plans,
+        'forecast_scenarios':forecast,'forecast_rejections':forecast_rejected,
         'execution_regime':executable_regime(series)}
     return result
