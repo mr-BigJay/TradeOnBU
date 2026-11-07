@@ -31,6 +31,17 @@ def format_outlook_message(row, close, public_url):
         if rr and positive(rr[0]):lines.append(f'سود به زیان خالص: 1:{rr[0]:.2f}')
     else:
         lines.append('ورود / حدضرر / هدف اجرایی: هنوز ستاپ تأییدشده‌ای وجود ندارد.')
+    names = {'funding':'Funding Rate','open_interest':'Open Interest','trade_flow':'Trade Flow',
+             'order_book':'Order Book','liquidations':'Liquidations'}
+    effects = {'supports':'همسو','opposes':'مخالف','neutral':'خنثی','not_assessed':'توضیح داده نشده'}
+    evidence = report.get('supplemental_evidence') or []
+    if evidence:
+        lines.append('شواهد تکمیلی نسبت به سناریوی غالب:\n' + '\n'.join(
+            f"{names.get(e['source'], e['source'])}: {effects.get(e['effect'], e['effect'])}؛ {e['explanation_fa']}"
+            for e in evidence))
+    missing = ((row.context or {}).get('market_intelligence') or {}).get('missing_sources') or {}
+    if missing:
+        lines.append('داده‌های ارسال‌نشده: ' + '، '.join(names.get(k,k) for k in missing))
     lines += ['ابهام‌ها: '+report.get('uncertainty_fa',''), 'معامله آزمایشی؛ گزارش کامل و سناریوی جایگزین در پنل.']
     if public_url.startswith('https://'):
         lines.append(public_url.rstrip('/')+f'/#/{"analysis" if row.slot_close_ms else "outlook"}/reports/{row.id}')

@@ -21,7 +21,7 @@ from app.services.ai_api_reasoning import effective_luna_api_effort
 from app.services.ai_market_intelligence import load_ai_market_intelligence
 from app.services.daily_execution_plan import snapshot_plan
 from app.services.daily_outlook_data import build_daily_context
-from app.services.daily_outlook_schema import INSTRUCTIONS, parse_outlook, Outlook, Scenario, TradePlan
+from app.services.daily_outlook_schema import INSTRUCTIONS, parse_outlook, Outlook, Scenario, TradePlan, SupplementalEvidence
 from app.services.settings_store import get_plain, get_secret
 from app.services.siwc.credentials import get_access_token
 from app.services.siwc.model_profiles import resolve_model_selection
@@ -301,7 +301,7 @@ async def execute_reserved(run_id: int, owner: str) -> None:
         details = []
         if isinstance(exc, ValidationError):
             code = "outlook_response_schema_invalid"
-            known = set(Outlook.model_fields) | set(Scenario.model_fields) | set(TradePlan.model_fields)
+            known = set(Outlook.model_fields) | set(Scenario.model_fields) | set(TradePlan.model_fields) | set(SupplementalEvidence.model_fields)
             for error in exc.errors(include_input=False, include_url=False, include_context=False)[:12]:
                 location = ".".join(str(p) if isinstance(p, int) or p in known else "extra_field"
                                     for p in error["loc"])
@@ -309,7 +309,7 @@ async def execute_reserved(run_id: int, owner: str) -> None:
         elif isinstance(exc, json.JSONDecodeError):
             code = "outlook_response_json_invalid"
         elif isinstance(exc, ValueError) and str(exc) in {
-            "unknown_evidence_level", "invalid_chart_path", "invalid_scenario_stage",
+            "invalid_supplemental_evidence_source", "unknown_evidence_level", "invalid_chart_path", "invalid_scenario_stage",
             "unknown_trade_plan_level", "invalid_trade_plan_price", "invalid_trade_plan_geometry",
             "invalid_trade_plan_target_order", "trade_plan_rr_below_two",
         }:
@@ -383,6 +383,8 @@ def serialize_run(row: DailyOutlookRun, *, detail: bool = True) -> dict:
             "as_of": ctx.get("as_of"), "source": ctx.get("source"),
             "live_price": ctx.get("live_price"), "levels": ctx.get("levels", []),
             "daily_atr14": ctx.get("daily_atr14"),
+            "market_intelligence": {k: (ctx.get("market_intelligence") or {}).get(k)
+                                    for k in ("status", "reason", "missing_sources")},
             "channel_context": ctx.get("channel_context"),
             "telegram_delivery": ctx.get("telegram_delivery"),
             "data_quality_warnings": ctx.get("data_quality_warnings", []),

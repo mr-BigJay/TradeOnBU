@@ -182,18 +182,48 @@ def _order_book(raw: Any, *, snapshot_age_seconds: int) -> dict[str, Any] | None
     }
 
 
+SOURCE_NAMES = ("funding", "open_interest", "trade_flow", "order_book", "liquidations")
+
+
+def _unavailable(reason):
+    return {"status": "unavailable", "reason": reason,
+            "missing_sources": {name: reason for name in SOURCE_NAMES}}
+
+
+def _missing_reason(raw, *, stale=False):
+    # Fixed codes only: never copy provider messages into the model or GUI.
+    if not isinstance(raw, dict) or not raw:
+        return "not_recorded"
+    if stale:
+        return "stale_or_future"
+    if raw.get("status") in ("disabled", "unavailable", "stale", "error"):
+        return "collector_" + raw["status"]
+    return "invalid_source_or_quality"
+
+
+def _micro_reason(row, *, now_ms, source, max_age):
+    if row is None:
+        return "micro_not_recorded"
+    if row.source != source:
+        return "micro_source_mismatch"
+    age = _age_ms(now_ms, row.bucket_start_ms)
+    if age is None or age > max_age * 1000:
+        return "micro_stale_or_future"
+    return "micro_invalid_values"
+
+
 def compact_snapshot(snapshot: MarketDataSnapshot, *, symbol: str, now: datetime | None = None) -> dict[str, Any]:
     """Drop old/mismatched/invalid sources; bound input size; never invent zero metrics."""
     now = _utc(now or datetime.now(timezone.utc))
     if not snapshot.valid or snapshot.symbol != symbol or not snapshot.collected_at:
-        return {"status": "unavailable"}
+        return _unavailable("snapshot_invalid_or_missing")
     age = (now - _utc(snapshot.collected_at)).total_seconds()
     if not (0 <= age <= MAX_SNAPSHOT_AGE_SECONDS):
-        return {"status": "unavailable", "reason": "snapshot_stale_or_future"}
+        return _unavailable("snapshot_stale_or_future")
 
     payload = snapshot.payload or {}
     if not isinstance(payload, dict) or payload.get("symbol") != symbol:
-        return {"status": "unavailable", "reason": "snapshot_symbol_mismatch"}
+        return _unavailable("snapshot_symbol_mismatch")
 
     now_ms = int(now.timestamp() * 1000)
     candidates = {
@@ -204,11 +234,11 @@ def compact_snapshot(snapshot: MarketDataSnapshot, *, symbol: str, now: datetime
         "order_book": _order_book(payload.get("order_book"), snapshot_age_seconds=int(age)),
     }
     sources = {key: value for key, value in candidates.items() if value is not None}
-    if not sources:
-        return {"status": "unavailable", "reason": "no_fresh_usable_sources"}
-
+    missing = {name: _missing_reason(payload.get(name),
+               stale=(name == "order_book" and age > MAX_ORDER_BOOK_AGE_SECONDS))
+               for name in SOURCE_NAMES if name not in sources}
     result = {
-        "status": "available",
+        "status": "available" if sources else "unavailable",
         "symbol": symbol,
         "snapshot_at": _utc(snapshot.collected_at).isoformat(),
         "snapshot_age_seconds": int(age),
@@ -219,9 +249,11 @@ def compact_snapshot(snapshot: MarketDataSnapshot, *, symbol: str, now: datetime
 
     # Fail closed rather than silently trim arbitrary fields and their quality labels.
     if len(json.dumps(result, ensure_ascii=False)) > MAX_CONTEXT_CHARS:
-        return {"status": "unavailable", "reason": "context_size_limit"}
+        return _unavailable("context_size_limit")
+    result["missing_sources"] = missing
+    if not sources:
+        result["reason"] = "no_fresh_usable_sources"
     return result
-
 
 
 def _persisted_trade_flow(row: MarketMicroRollup | None, *, now_ms: int) -> dict[str, Any] | None:
@@ -293,34 +325,49 @@ async def load_ai_market_intelligence(session: AsyncSession, *, symbol: str) -> 
             )
         ).scalar_one_or_none()
         if row is None:
-            return {"status": "unavailable", "reason": "no_public_snapshot"}
+            return _unavailable("no_public_snapshot")
         context = compact_snapshot(row, symbol=symbol)
         if context.get("status") != "available":
+            context.setdefault("missing_sources", {}).update(
+                trade_flow="snapshot_gate_prevented_micro_read",
+                order_book="snapshot_gate_prevented_micro_read")
             return context
 
         # Snapshot refreshes every 15m, while websocket microdata persists about
         # every minute. Read the DB at inference time; no exchange or LLM calls.
         now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
         sources = dict(context["sources"])
+        missing = dict(context.get("missing_sources") or {})
         # A trade bucket's old snapshot-time collector status is not live evidence.
         sources.pop("trade_flow", None)
         trade_row = await _latest_micro_row(session, symbol=symbol, kind="trade_5m")
         trade_flow = _persisted_trade_flow(trade_row, now_ms=now_ms)
         if trade_flow is not None:
             sources["trade_flow"] = trade_flow
+            missing.pop("trade_flow", None)
+        else:
+            missing["trade_flow"] = _micro_reason(trade_row, now_ms=now_ms,
+                source="bitunix_ws_trades", max_age=MAX_MICRO_TRADE_BUCKET_AGE_SECONDS)
 
         depth_row = await _latest_micro_row(session, symbol=symbol, kind="depth_1m")
         depth = _persisted_order_book(depth_row, now_ms=now_ms)
         if depth is not None:
             sources["order_book"] = depth
+            missing.pop("order_book", None)
+        elif "order_book" not in sources:
+            missing["order_book"] = (missing.get("order_book", "not_recorded") + ";" +
+                _micro_reason(depth_row, now_ms=now_ms, source="bitunix",
+                              max_age=MAX_ORDER_BOOK_AGE_SECONDS))
 
-        if not sources:
-            return {"status": "unavailable", "reason": "no_fresh_usable_sources"}
         context["sources"] = sources
+        context.pop("missing_sources", None)
         import json
         if len(json.dumps(context, ensure_ascii=False)) > MAX_CONTEXT_CHARS:
-            return {"status": "unavailable", "reason": "context_size_limit"}
+            return _unavailable("context_size_limit")
+        context["missing_sources"] = missing
+        if not sources:
+            context.update(status="unavailable", reason="no_fresh_usable_sources")
         return context
     except Exception:
         logger.exception("Optional public market intelligence skipped for %s", symbol)
-        return {"status": "unavailable", "reason": "snapshot_read_failed"}
+        return _unavailable("snapshot_read_failed")
