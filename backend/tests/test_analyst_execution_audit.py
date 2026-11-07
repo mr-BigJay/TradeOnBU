@@ -114,6 +114,16 @@ def test_read_only_audit_reports_failed_usage_and_observed_results(tmp_path):
         assert result['performance_by_strategy']==[]
 
 
+def test_performance_does_not_mix_previous_and_corrected_execution():
+    from app.services.strategy_performance import summarize
+    common=dict(closed_at=datetime.now(timezone.utc),close_reason='tp_hit',net_pnl_usdt=2)
+    old=NS(public_id='old',extra={'verified_trade_plan':{'version':a.VERSION},'strategy_id':'ict_reversal'},**common)
+    new=NS(public_id='new',extra={**old.extra,'execution_plan':{'version':'structure_bound_v2'}},**common)
+    groups=summarize([old,new])
+    assert len(groups)==2
+    assert {g['execution_version'] for g in groups}=={'legacy_execution','structure_bound_v2'}
+
+
 @pytest.mark.asyncio
 async def test_report_fees_match_selected_closes_and_version_metrics(session):
     from app.models import SimPosition

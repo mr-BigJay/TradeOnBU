@@ -30,7 +30,8 @@ docker compose exec -T tradeonbu python -m app.analyst_audit --days 7
 ```
 
 This command reports attempts, provider token use, rejected proposals, latest setup
-blocking reasons and observed net results grouped by engine version and strategy.
+blocking reasons and observed net results grouped by engine version, execution revision
+and strategy. New `structure_bound_v2` executions are not pooled with earlier orders.
 Missing provider usage is counted explicitly; it does not mean the request was free.
 Realized drawdown is measured in USDT from closed trades, not portfolio mark-to-market
 drawdown. It excludes transfers and unrealized positions. The dashboard report API

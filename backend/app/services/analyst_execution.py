@@ -47,7 +47,7 @@ def execution_plan(setup, settings, bars, now_ms):
     # A completed move is not an opportunity to place a late resting order.
     if sign * (bars[-1].close - target) >= 0:
         return None, 'execution_target_already_reached'
-    return dict(entry=contract['entry'], stop=stop, target=target,
+    return dict(version='structure_bound_v2', entry=contract['entry'], stop=stop, target=target,
                 proposal_stop=contract['stop'], proposal_target=contract['target'],
                 confirmation_token=token, confirmation_ms=stamp, extreme=extreme,
                 obstacle=obstacle, assessed_at_ms=now_ms), None
