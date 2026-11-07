@@ -67,3 +67,26 @@ wait -> condition -> pending limit -> subsequent paper fill. External inference 
 market data are synthetic fixtures, not profitability evidence. Existing backend and
 frontend regressions must pass as well. Historical v3 reversal replay statistics do
 not measure this AI selector; evaluate its separately versioned forward paper results.
+
+## Descriptive indicator context (version 2)
+
+Trading analysis receives EMA9/EMA20, their one-candle changes, last-candle cross and
+relative ordering, close-to-EMA distance in ATR units, RSI14 with one-candle change
+and five recent timestamped readings. Existing ATR14/ADX14/relative volume remain.
+Coverage: 5m, 15m, 1H, 4H. Daily Outlook receives 4H and 1D from its existing candle
+snapshot; it makes no extra exchange or model calls for indicators. The dashboard
+shows the exact saved input in each new report's indicator table, not live values.
+Old reports without version 2 show an explicit missing-data message.
+
+EMA reuses the existing SMA seed and alpha=2/(n+1). RSI uses Wilder smoothing seeded
+by the mean of the first 14 close changes; positive-only/negative-only series return
+100/0. With both averages zero, RSI is undefined and recorded as null. Missing or
+non-contiguous history remains unavailable, never zero-filled. Calculation conventions
+and source history count are included in the API context. Identical readings to a
+TradingView chart are not promised: market feed and available warm-up history differ.
+Definitions: https://www.tradingview.com/support/solutions/43000502338-relative-strength-index-rsi/
+and https://www.tradingview.com/support/solutions/43000592270-exponential-moving-average/
+
+These metrics are model context only. No RSI threshold, EMA cross requirement,
+confirmation sequence, risk rule, order rule or scheduler change is introduced.
+They add a small input payload to existing requests, not an additional paid request.

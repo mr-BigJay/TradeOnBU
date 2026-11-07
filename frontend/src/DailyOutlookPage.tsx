@@ -1,3 +1,4 @@
+import { IndicatorContext } from "./IndicatorContext";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { apiFetch } from "./api";
 import { displayTehranTime } from "./displayTime";
@@ -31,7 +32,7 @@ type Run = {
   started_at: string; completed_at: string | null; model: string | null; error_code?: string;
   validation_errors?: { field: string; type: string }[];
   report?: Report; usage?: { input_tokens?: number; output_tokens?: number; total_tokens?: number };
-  context?: { market_intelligence?: {status?:string;reason?:string;missing_sources?:Record<string,string>}; telegram_delivery?: { status: string }; as_of: string; source: string; live_price: number; daily_atr14: number;
+  context?: { strategy_features?: unknown; market_intelligence?: {status?:string;reason?:string;missing_sources?:Record<string,string>}; telegram_delivery?: { status: string }; as_of: string; source: string; live_price: number; daily_atr14: number;
     levels: Level[]; daily_candles: number[][]; four_hour_candles?: number[][]; data_quality_warnings?: unknown[] };
 };
 type Schedule = { cadence_hours?: number; enabled: boolean; hour: number; minute: number; next_run_at: string | null };
@@ -223,10 +224,12 @@ export function DailyOutlookPage({ cadence = "daily" }: { cadence?: "daily" | "4
           <span>قیمت هنگام تحلیل: <bdi>{run.context?.live_price ? price(run.context.live_price) : "—"}</bdi></span></div>
       </div>
       <details className="card"><summary>جزئیات تحلیل و سناریوها</summary>
+      <IndicatorContext features={run.context?.strategy_features} />
       <div className="outlook-grid"><article className="card"><h3>ساختار هفتگی</h3><p>{report.weekly_context_fa}</p></article>
         <article className="card"><h3>ساختار روزانه</h3><p>{report.daily_structure_fa}</p></article></div>
       <div className="outlook-grid"><ScenarioCard primary scenario={report.dominant} levels={levels} />
         <ScenarioCard primary={false} scenario={report.alternative} levels={levels} /></div>
+      <IndicatorContext features={run.context?.strategy_features} />
       <div className="outlook-grid"><article className="card"><h3>چه چیزهایی را پیگیری کنیم؟</h3><ul>{report.watch_next_fa.map((s, i) => <li key={i}>{s}</li>)}</ul></article>
         <article className="card"><h3>تغییر نسبت به گزارش قبلی</h3><p>{report.change_since_previous_fa}</p></article></div>
       </details>

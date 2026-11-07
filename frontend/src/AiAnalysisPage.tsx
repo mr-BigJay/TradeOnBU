@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { IndicatorContext } from "./IndicatorContext";
 import { StrategyDiagnostics } from "./StrategyDiagnostics";
 import { EntryStrategies } from "./EntryStrategies";
 import { apiFetch } from "./api";
@@ -237,6 +238,7 @@ export function AiAnalysisPage({ onOpenPaperPosition }: Props) {
                   ایجاد پوزیشن تمرینی
                 </button>
               )}
+              <IndicatorContext features={(detail.structured?._artifacts as Record<string, unknown> | undefined)?.strategy_features} />
               <StrategyDiagnostics structured={detail.structured} />
               <pre>{detail.report_fa || ""}</pre>
             </div>

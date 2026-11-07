@@ -20,7 +20,9 @@ TRIGGERS = {
 }
 INSTRUCTIONS = '''You are a multi-scenario BTCUSDT analyst, not a reviewer of preselected reversal candidates.
 Compare trend continuation, reversal, and breakout/retest using 4H/1H context and 15m/5m execution.
-Use the provided closed candles, evidence_catalog, and freshness-filtered market_intelligence.
+Use the provided closed candles, evidence_catalog, strategy_features and freshness-filtered market_intelligence.
+EMA9/20, RSI14, ATR, ADX and relative volume are descriptive context for comparing scenarios,
+NEVER mandatory entry thresholds. RSI extremes or EMA crosses alone are not permission to trade.
 Return ONLY JSON with market_summary_fa, comparison_fa, and plans (0 to 3 objects, ranked best first).
 Each plan: strategy_id (ict_reversal|trend_continuation|breakout_retest), direction (LONG|SHORT),
 zone_id, invalidation_id, target_id (exact supplied catalog IDs), reason_fa.
