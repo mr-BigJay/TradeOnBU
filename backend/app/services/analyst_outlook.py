@@ -181,6 +181,29 @@ def compile_forecasts(raw, evidence, *, observed_ms=None, limit=4):
     return forecast, rejected
 
 
+def _fallback_forecast_reason(entry):
+    zone = entry.get("level") or {}
+    kind = {"support": "حمایت", "resistance": "مقاومت",
+            "OB": "اوردر بلاک", "FVG": "ناحیه عدم تعادل قیمت"}.get(
+                str(zone.get("kind") or ""), "ناحیه قیمتی")
+    timeframe = str(zone.get("timeframe") or "نامشخص")
+    status = str(zone.get("status") or "").lower()
+    parts = [f"{kind} در تایم‌فریم {timeframe} شناسایی شده است"]
+    if status == "fresh":
+        parts.append("پس از تأیید هنوز برخورد مجزایی نداشته و دست‌نخورده است")
+    elif status == "retested":
+        parts.append("پس از تأیید بازآزمایی شده است")
+    elif status == "filled":
+        parts.append("ناحیه قبلاً پر شده است")
+    return "؛ ".join(parts) + "."
+
+
+def _status_fa(value):
+    return {"fresh": "دست‌نخورده", "retested": "بازآزمایی‌شده",
+            "filled": "پرشده", "invalidated": "بی‌اعتبارشده"}.get(
+                str(value or "").lower(), str(value or "نامشخص"))
+
+
 def format_forecasts_fa(forecasts):
     """Persian watchlist text; invalid model-language fragments fall back to evidence facts."""
     if not forecasts:
