@@ -185,7 +185,8 @@ async def test_api_discovers_plans_without_old_candidate_and_persists_before_del
     forecasts=draft.structured['analyst_summary']['forecast_scenarios']
     assert forecasts==[]
     assert '1:not_proven_major_htf_level' in draft.structured['analyst_summary']['forecast_rejections']
-    assert 'چشم‌انداز چهار‌ساعته' in draft.report_fa
+    assert 'چشم‌انداز مشروط چهار‌ساعته' in draft.report_fa
+    assert 'سطوح اصلی:' in draft.report_fa
     assert draft.structured['analyst_review']['payload_sizes']['instructions_chars']>500
     assert draft.structured['analyst_review']['payload_sizes']['provider_usage']['input_tokens']==100
     second=await ai._execute_inference(run_id=run.id,trigger='manual',model_override=None)
