@@ -280,7 +280,8 @@ async def test_ai_pipeline_chart_and_telegram(session, client, tmp_path, monkeyp
     assert "هدف تحلیلی" in posts[0]["data"]["caption"]
     assert len(posts[0]["data"]["caption"].encode("utf-16-le")) // 2 <= 1024
     assert posts[1]["url"].endswith("/sendMessage")
-    assert "گزارش تست" in posts[1]["json"]["text"]
+    assert "پیشنهاد لانگ" in posts[1]["json"]["text"]
+    assert "هدف تحلیلی" in posts[1]["json"]["text"]
 
     resp = await client.get(f"/api/gui/chatgpt/history/{run.id}/chart")
     assert resp.status_code == 200
