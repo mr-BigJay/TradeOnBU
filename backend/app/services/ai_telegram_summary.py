@@ -137,7 +137,7 @@ def _fallback_forecast_reason(zone: dict[str, Any]) -> str:
 
 def _forecast_lines(forecasts: list[dict[str, Any]], reason_limit: int) -> list[str]:
     names = {
-        "support_bounce": "واکنش احتمالی به حمایت",
+        "support_bounce": "برگشت احتمالی از حمایت",
         "resistance_rejection": "واکنش احتمالی به مقاومت",
         "support_break": "شکست و بازآزمایی حمایت",
         "resistance_break": "شکست و بازآزمایی مقاومت",
@@ -236,6 +236,18 @@ def build_ai_telegram_caption(
         symbol=symbol, live=live, analyzed_at=analyzed_at,
         structured=structured, validation=validation,
     )
+    s = structured
+    final = str(s.get("final_ai_decision") or decision or "NO_TRADE").upper()
+    conditional = s.get("setup_mode") == "conditional" or final == "WAIT"
+    if conditional or final in ("LONG", "SHORT"):
+        lo = s.get("conditional_entry_zone_low") or s.get("entry_zone_low")
+        hi = s.get("conditional_entry_zone_high") or s.get("entry_zone_high")
+        lines.extend([
+            f"ناحیه ورود: {_price(lo)} تا {_price(hi)}",
+            f"ورود پیشنهادی: {_price(s.get('entry_price'))}",
+            f"حدضرر: {_price(s.get('stop_loss'))} | هدف تحلیلی: {_price(s.get('take_profit'))}",
+            f"سقف R:R اجرایی: 1:{EXECUTION_MAX_REWARD_R_MULTIPLE:g} قبل از هزینه‌ها",
+        ])
     lines.append(
         "جزئیات تحلیل و سناریوهای مشروط در پیام متنی بعدی آمده است."
         if forecasts else "گزارش تحلیلی کامل در پیام متنی بعدی آمده است."
