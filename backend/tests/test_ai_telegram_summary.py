@@ -122,7 +122,7 @@ def test_zero_accepted_plans_still_delivers_four_hour_outlook_and_regimes():
     )
     plain = strip_telegram_bidi_control_chars(text)
     for value in (
-        "بدون پلن اجرایی پذیرفته‌شده",
+        "بدون استراتژی پذیرفته‌شده",
         "عدم ورود؛ 4 سناریوی مشروط برای رصد",
         "روند ساختاری: 4H نزولی | 1H رنج",
         "چشم‌انداز چهار‌ساعته",
