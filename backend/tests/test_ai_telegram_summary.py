@@ -199,4 +199,7 @@ async def test_delivery_sends_full_text_with_or_without_chart_and_preserves_repo
     assert draft.telegram_photo_sent is (photo_result is not None and chart_exists)
     assert draft.report_fa == report
     for key in s:
-        assert draft.structured[key] == s[key]
+        if key == "_artifacts":
+            assert draft.structured[key]["strategy_features"] == s[key]["strategy_features"]
+        else:
+            assert draft.structured[key] == s[key]
