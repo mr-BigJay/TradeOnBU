@@ -15,6 +15,35 @@ structural invalidation plus ATR-buffered stop, and the nearest tick satisfying 
 the plan is rejected. The selected target level is a ceiling, not a promised destination.
 The stop is at least one 5m ATR away and cannot exceed three 15m ATRs.
 
+## Major structural levels for four-hour forecasts (watch-only)
+
+The **outlook** now uses a separate, server-validated `outlook_major_levels` shortlist. The
+executable plan's complete 5m/15m/1h/4h evidence catalog is unchanged. This separation
+prevents low-timeframe pivots being promoted to the main four-hour support/resistance report.
+
+Selection requires a real confirmed 1h/4h swing from closed Bitunix bars or an
+uninvalidated HTF displacement order block, a bounded zone width, no later
+closed-candle break of the zone, and an ATR-scaled move away. A normal 1h pivot
+also needs an independent corroborating HTF level or an unusually large 4h-scale
+reaction. Nearby same-side levels are deduplicated, preferring stronger 4h
+evidence. The selected output preserves original catalog IDs and price ranges;
+no intermediate, invented or widened support/resistance is created.
+
+For each four-hour watch scenario, **both** source and destination (if given)
+must belong to the independent major-level shortlist. Targets that overlap the
+source, do not leave sufficient **full-zone** room (at least max(1h ATR,
+0.45×4h ATR)), or skip a nearer major barrier are rejected. Inadequate evidence
+means fewer scenarios or zero; never fill four just to make the report look busy.
+The Telegram report and the analysis history also list corroborated major levels,
+even when no watch scenario is selected.
+
+These thresholds are deterministic engineering heuristics, **not scientifically
+calibrated support strength or profitability estimates**. Review live false
+positives/negatives against subsequent closed candles before tuning. No 1D
+history is currently used to prove multi-week levels. 5m/15m remain exclusively
+for execution timing and are not upgraded to main outlook zones.
+All Paper order filters, stops, fees, risk limits and confirmation gates are unchanged.
+
 ## Conditions and execution
 
 | Family | Conditions on separate closed 5m candles |
