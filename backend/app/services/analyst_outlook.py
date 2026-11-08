@@ -265,7 +265,7 @@ def _status_fa(value):
 def format_forecasts_fa(forecasts):
     """Persian watchlist text; invalid model-language fragments fall back to evidence facts."""
     if not forecasts:
-        return "چشم‌انداز مشروط چهار‌ساعته: ناحیهٔ مستند کافی برای سناریوی قابل نمایش انتخاب نشده است."
+        return "چشم‌انداز مشروط چهار‌ساعته: در این نوبت سناریوی قابل دفاعی با سطح و مقصد معتبر پذیرفته نشد؛ سطوح اصلی در بخش بالا آمده‌اند."
     lines = ["چشم‌انداز چهار‌ساعته ـ سناریوهای مشروط (فقط تحت نظر؛ نه دستور ورود):"]
     until = forecasts[0].get("valid_until_ms")
     if isinstance(until, int):
