@@ -14,17 +14,21 @@ from tests.test_multi_setup_analyst import fixture
 def test_bounce_and_break_scenarios_survive_zero_executable_plans():
     series, costs, evidence, now = fixture()
     evidence = deepcopy(evidence)
-    evidence.append(dict(id="lower", kind="support", timeframe="1h",
-                         time_ms=now-3600000, low=999., high=1001., price=1000.,
+    evidence[0].update(timeframe="1h", low=1040., high=1042., price=1041.,
+                       status="fresh", touch_count=0)
+    evidence[1].update(timeframe="4h", status="retested", touch_count=3)
+    evidence.append(dict(id="lower", kind="support", timeframe="4h",
+                         time_ms=now-14400000, low=999., high=1001., price=1000.,
                          direction=None, status="retested", touch_count=3))
-    evidence[0].update(status="fresh", touch_count=0)
-    evidence[1].update(status="retested", touch_count=3)
+    major_levels = [dict(id=x["id"], role=x["kind"], quality_score=5,
+                         proof="confirmed_unbroken_swing", reaction_atr4h=1.2,
+                         confluence_count=1) for x in evidence]
     raw = {
         "market_summary_fa": "روند مشروط است",
         "plans": [],
         "forecast_scenarios": [
             {"scenario_type": "support_bounce", "direction": "LONG",
-             "level_id": "stop", "target_id": "target",
+             "level_id": "stop", "target_id": "zone",
              "reason_fa": "حمایت چندبار آزموده شده و بازگشت تنها بعد از تأیید قابل بررسی است"},
             {"scenario_type": "support_break", "direction": "SHORT",
              "level_id": "stop", "target_id": "lower",
@@ -36,7 +40,8 @@ def test_bounce_and_break_scenarios_survive_zero_executable_plans():
     }
     report = analyst.compile_response(
         raw, evidence, series, costs, now, now,
-        {sid: True for sid in analyst.PROFILES}
+        {sid: True for sid in analyst.PROFILES},
+        outlook_major_levels=major_levels,
     )
     assert report["setup_mode"] == "flat"
     assert report["decision"] == "NO_TRADE"
@@ -52,12 +57,16 @@ def test_bounce_and_break_scenarios_survive_zero_executable_plans():
     assert "شکست و بازآزمایی حمایت" in text
     assert "تعداد برخوردهای مجزا: 3" in text
     assert "ناحیه 1017 تا 1019" in text
-    assert "مقصد مشروط: 1060 تا 1062" in text
+    assert "مقصد مشروط: 1040 تا 1042" in text
     assert "هیچ سناریوی تحت نظر" in text
 
 
 def test_forecasts_reject_made_up_levels_wrong_side_and_duplicates():
     _, _, evidence, _ = fixture()
+    evidence = deepcopy(evidence)
+    evidence[0].update(timeframe="4h", low=1079., high=1081., price=1080.)
+    evidence[1].update(timeframe="1h")
+    major_levels = [dict(id=x["id"], role=x["kind"], reaction_atr4h=1) for x in evidence]
     proposals = [
         {"scenario_type": "support_break", "direction": "SHORT",
          "level_id": "invented", "target_id": None, "reason_fa": "x"},
@@ -68,7 +77,7 @@ def test_forecasts_reject_made_up_levels_wrong_side_and_duplicates():
         {"scenario_type": "support_bounce", "direction": "LONG",
          "level_id": "stop", "target_id": "target", "reason_fa": "x"},
     ]
-    accepted, rejected = compile_forecasts(proposals, evidence)
+    accepted, rejected = compile_forecasts(proposals, evidence, major_levels=major_levels, min_gap=0)
     assert len(accepted) == 1
     assert rejected == [
         "1:unknown_or_wrong_level",
