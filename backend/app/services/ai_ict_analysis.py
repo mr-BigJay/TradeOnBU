@@ -429,6 +429,7 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
             from app.services.position.settings_service import get_or_create_settings as paper_settings
             if symbol!='BTCUSDT':raise ValueError('unsupported_symbol')
             evidence=analyst.catalog(candles_by_interval,observed_ms)
+            outlook_major_levels=analyst.select_major_levels(evidence,candles_by_interval)
             async with SessionLocal() as candidate_session:
                 costs=await paper_settings(candidate_session)
                 allowed,analyst_slot=await analyst.review_allowed(candidate_session,datetime.now(timezone.utc))
@@ -515,6 +516,7 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
             user_payload, analyst_payload_audit = build_analyst_payload(
                 market=market_payload,
                 evidence_catalog=evidence,
+                outlook_major_levels=outlook_major_levels,
                 market_intelligence=market_intelligence,
                 strategy_features=features,
                 enabled_strategies=enabled_strategies,
@@ -569,7 +571,8 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
         structured = _extract_json(analysis.text)
         if analyst_mode:
             structured=analyst.compile_response(structured,evidence,candles_by_interval,costs,
-                int(datetime.now(timezone.utc).timestamp()*1000),observed_ms,enabled_strategies)
+                int(datetime.now(timezone.utc).timestamp()*1000),observed_ms,enabled_strategies,
+                outlook_major_levels=outlook_major_levels)
             structured['analyst_review']={'slot_ms':analyst_slot,'version':analyst.VERSION,'api_attempted':True,
                 'payload_sizes':analyst_payload_audit}
             verified_review_meta['candidate_audit']={'candidate_count':structured['analyst_summary']['accepted']}
@@ -591,15 +594,17 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
                            f"1H={regime_names.get(frames['1h']['trend'], 'نامشخص')}؛ "
                            f"4H={regime_names.get(frames['4h']['trend'], 'نامشخص')}.")
             from app.services.analyst_outlook import (
-                format_forecasts_fa, format_market_features_fa, safe_model_narrative_fa,
+                format_forecasts_fa, format_major_levels_fa,
+                format_market_features_fa, safe_model_narrative_fa,
             )
             outlook_text = format_forecasts_fa(overview['forecast_scenarios'])
+            major_text = format_major_levels_fa(overview.get('outlook_major_levels', []))
             market_text = safe_model_narrative_fa(overview.get('market_summary_fa'))
             if not market_text:
                 market_text = format_market_features_fa(features, overview.get('execution_regime') or {})
             comparison_text = safe_model_narrative_fa(overview.get('comparison_fa'))
             structured['report_fa'] = '\n\n'.join(
-                part for part in (regime_head, market_text, outlook_text, comparison_text, *reports)
+                part for part in (regime_head, market_text, major_text, outlook_text, comparison_text, *reports)
                 if part
             )
         safety = _paper_safety_notes(structured, live)

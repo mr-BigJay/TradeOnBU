@@ -10,6 +10,7 @@ from app.domain.execution_tp_cap import EXECUTION_MAX_REWARD_R_MULTIPLE
 from app.domain.tehran_time import format_tehran
 from app.services.analyst_outlook import (
     format_market_features_fa,
+    format_major_levels_fa,
     safe_model_narrative_fa,
 )
 from app.services.telegram_message_format import format_persian_report_for_telegram
@@ -303,6 +304,9 @@ def build_ai_telegram_summary(
                 )
                 if comparison:
                     sections.append("مقایسه سناریوها:\n" + comparison)
+
+                if summary:
+                    sections.append(format_major_levels_fa(summary.get("outlook_major_levels", [])))
 
                 if forecasts:
                     sections.append(
