@@ -11,9 +11,10 @@ from app.services.verified_trade_plan import atr, trend, valid_bars, flat, _tick
 from app.services.ict_execution_plan import target_at_net_rr
 from app.services.analyst_regime import executable_regime
 from app.services.analyst_outlook import compile_forecasts
+from app.services.analyst_major_levels import select_major_levels, minimum_forecast_gap
 
 VERSION = 'multi_setup_analyst_v1'
-PROMPT_VERSION = 4
+PROMPT_VERSION = 5
 STEPS = {'1m':60000,'5m':300000,'15m':900000,'1h':3600000,'4h':14400000}
 PROFILES = {'ict_reversal':'sweep_mss_poi', 'trend_continuation':'trend_pullback_resume', 'breakout_retest':'level_breakout_retest'}
 TRIGGERS = {
@@ -28,6 +29,13 @@ The market.timeframes[*].candles rows use the explicit candles_columns order [ti
 EMA9/20, RSI14, ATR, ADX and relative volume are descriptive context for comparing scenarios,
 NEVER mandatory entry thresholds. RSI extremes or EMA crosses alone are not permission to trade.
 Return ONLY JSON with market_summary_fa, comparison_fa, forecast_scenarios, and plans.
+The four-hour outlook must explain only evidence-backed paths conditionally, NOT claim guaranteed movements.
+outlook_major_levels contains ONLY independently screened major 1H/4H candle-derived
+support/resistance or confirmed displacement order blocks. For forecast_scenarios,
+choose level_id and target_id ONLY from outlook_major_levels. Do NOT use the
+5m/15m catalog for outlook levels or destinations; it remains available ONLY for
+5m/15m executable plan precision. If the major list has too few defensible levels,
+return zero or fewer scenarios rather than forcing a count.
 The four-hour outlook must explain the likely paths *conditionally*, NOT claim guaranteed price movements:
 support rebound on a fresh/untested zone, resistance rejection, tested support breakdown with retest,
 resistance breakout with retest, or pullback continuation, wherever actual candle evidence supports them.
@@ -35,7 +43,9 @@ Compare what happens IF price reaches a zone, IF it holds, and IF it breaks; inc
 trend, EMA9/20 direction, RSI14, ADX14, ATR14 and volume when available and relevant.
 A previously tested area is NOT necessarily going to break: describe test count, displacement,
 rejection strength and volume as context, not a quantified probability or a signal by themselves.
-forecast_scenarios is 0 to 4 ranked watch-only objects, preferably 2+ distinct paths when supported.
+forecast_scenarios is 0 to 4 ranked watch-only objects. Never fill a quota with weak levels.
+A target must be fully outside the source zone with meaningful ATR-scaled room,
+and no nearer major structural obstacle. Selection is server validated.
 Each: scenario_type (support_bounce|resistance_rejection|support_break|resistance_break|trend_pullback),
 direction (LONG|SHORT), level_id (exact evidence_catalog ID), target_id (exact evidence_catalog ID or null),
 reason_fa (why this area is significant, considering touch_count, status, HTF/LTF and relevant indicators).
@@ -243,7 +253,7 @@ def _proposal_diagnostic(proposal, evidence, series, rank):
     return diagnostic
 
 
-def compile_response(raw,evidence,series,costs,now_ms,observed_ms,strategies):
+def compile_response(raw,evidence,series,costs,now_ms,observed_ms,strategies,*,outlook_major_levels=None):
     if not isinstance(raw,dict) or not isinstance(raw.get('plans'),list) or len(raw['plans'])>3:
         raise ValueError('invalid_analyst_response')
     accepted={};rejections=[];rejected_plans=[];seen=set()
@@ -269,11 +279,16 @@ def compile_response(raw,evidence,series,costs,now_ms,observed_ms,strategies):
         # rejection is not an A strategy selection; never attribute one.
         result.pop('strategy_id', None)
     result['strategy_candidates']={sid:p for sid,p in accepted.items() if p is not result}
-    forecast,forecast_rejected=compile_forecasts(raw.get('forecast_scenarios',[]),evidence,observed_ms=observed_ms)
+    major_levels = (select_major_levels(evidence,series) if outlook_major_levels is None
+                    else outlook_major_levels)
+    forecast,forecast_rejected=compile_forecasts(
+        raw.get('forecast_scenarios',[]),evidence,observed_ms=observed_ms,
+        major_levels=major_levels,min_gap=minimum_forecast_gap(series))
     result['analyst_summary']={'market_summary_fa':str(raw.get('market_summary_fa') or '')[:3000],
         'comparison_fa':str(raw.get('comparison_fa') or '')[:3000], 'proposed':len(raw['plans']),
         'accepted':len(accepted),'rejections':rejections,
         'rejected_plans':rejected_plans,
         'forecast_scenarios':forecast,'forecast_rejections':forecast_rejected,
+        'outlook_major_levels':major_levels,'outlook_major_policy':'major_htf_levels_v1',
         'execution_regime':executable_regime(series)}
     return result
