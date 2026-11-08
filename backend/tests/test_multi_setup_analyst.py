@@ -179,9 +179,12 @@ async def test_api_discovers_plans_without_old_candidate_and_persists_before_del
     assert set(payload['strategy_features']['timeframes'])=={'5m','15m','1h','4h'}
     assert all('rsi14' in f and 'ema9' in f for f in payload['strategy_features']['timeframes'].values())
     assert draft.structured['_artifacts']['strategy_features']==payload['strategy_features']
+    # Synthetic execution fixtures deliberately contain no independently proven
+    # HTF zones. They must not leak into the major-level watchlist.
+    assert payload['outlook_major_levels']==[]
     forecasts=draft.structured['analyst_summary']['forecast_scenarios']
-    assert len(forecasts)==1 and forecasts[0]['level']['id']=='zone'
-    assert forecasts[0]['paper_order'] is False
+    assert forecasts==[]
+    assert '1:not_proven_major_htf_level' in draft.structured['analyst_summary']['forecast_rejections']
     assert 'چشم‌انداز چهار‌ساعته' in draft.report_fa
     assert draft.structured['analyst_review']['payload_sizes']['instructions_chars']>500
     assert draft.structured['analyst_review']['payload_sizes']['provider_usage']['input_tokens']==100
