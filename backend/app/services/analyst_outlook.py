@@ -9,6 +9,8 @@ from __future__ import annotations
 import math
 import re
 
+_ARMENIAN_RE = re.compile(r"[\u0530-\u058F]")
+
 SCENARIOS = {
     "support_bounce": ("LONG", ("support", "OB", "FVG"),
         "رسیدن قیمت به حمایت/تقاضا، واکنش و تأیید برگشت در کندل بستهٔ 5m؛ ورود روی تماس اولیه مجاز نیست.",
