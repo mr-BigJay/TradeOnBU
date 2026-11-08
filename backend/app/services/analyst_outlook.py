@@ -106,14 +106,24 @@ def _geometry(item):
     ) if k in item}
 
 
-def compile_forecasts(raw, evidence, *, observed_ms=None, limit=4):
-    """Return accepted, rejected. Invalid model IDs/text cannot become price levels."""
+def compile_forecasts(raw, evidence, *, observed_ms=None, limit=4,
+                      major_levels=None, min_gap=None):
+    """Only independently validated HTF levels can appear in watch-only outlooks.
+
+    This gate is separate from compile_plan. AI selection never upgrades a
+    low-timeframe pivot into major support/resistance. A target needs a clear
+    full-zone, volatility-scaled path with no nearer *validated* HTF obstacle.
+    """
     by_id = {x["id"]: x for x in evidence}
+    major_by_id = {x["id"]: x for x in (major_levels or [])}
     forecast, rejected, seen = [], [], set()
     if not isinstance(raw, list):
         return forecast, ["invalid_forecast_collection"]
     if len(raw) > limit:
         rejected.append("forecast_count_exceeded")
+    required_gap = float(min_gap) if isinstance(min_gap, (float, int)) else math.inf
+    if not math.isfinite(required_gap) or required_gap < 0:
+        required_gap = math.inf
     for index, proposal in enumerate(raw[:limit], 1):
         if not isinstance(proposal, dict):
             rejected.append(f"{index}:invalid_forecast")
@@ -132,6 +142,9 @@ def compile_forecasts(raw, evidence, *, observed_ms=None, limit=4):
         if not item or item.get("kind") not in rule[1]:
             rejected.append(f"{index}:unknown_or_wrong_level")
             continue
+        if item.get("timeframe") not in ("1h", "4h") or id_ not in major_by_id:
+            rejected.append(f"{index}:not_proven_major_htf_level")
+            continue
         if item.get("direction") and item["direction"] != direction:
             rejected.append(f"{index}:level_direction_conflict")
             continue
@@ -141,37 +154,62 @@ def compile_forecasts(raw, evidence, *, observed_ms=None, limit=4):
         ):
             rejected.append(f"{index}:pullback_level_conflict")
             continue
-        if kind == "support_bounce" and item["kind"] in ("OB", "FVG") and direction != "LONG":
-            rejected.append(f"{index}:level_direction_conflict")
-            continue
-        if kind == "resistance_rejection" and item["kind"] in ("OB", "FVG") and direction != "SHORT":
-            rejected.append(f"{index}:level_direction_conflict")
-            continue
         target_id = proposal.get("target_id")
         target = by_id.get(target_id) if isinstance(target_id, str) else None
-        if target_id is not None and target is None:
-            rejected.append(f"{index}:unknown_target")
-            continue
+        if target_id is not None:
+            if target is None:
+                rejected.append(f"{index}:unknown_target")
+                continue
+            if target.get("timeframe") not in ("1h", "4h") or target_id not in major_by_id:
+                rejected.append(f"{index}:target_not_proven_major_htf_level")
+                continue
         sign = 1 if direction == "LONG" else -1
         if target is not None:
             if target.get("kind") != ("resistance" if sign == 1 else "support"):
                 rejected.append(f"{index}:wrong_target_kind")
                 continue
-            if sign * (float(target["price"]) - float(item["price"])) <= 0:
-                rejected.append(f"{index}:target_wrong_side")
+            # Measure the usable distance from the two *near* zone edges.
+            # Center-to-center distance mistakenly approved overlapping zones.
+            clearance = (
+                float(target["low"]) - float(item["high"]) if sign == 1
+                else float(item["low"]) - float(target["high"])
+            )
+            if clearance <= 0:
+                rejected.append(f"{index}:target_overlaps_or_behind_source")
+                continue
+            if clearance < required_gap:
+                rejected.append(f"{index}:target_without_htf_room")
+                continue
+            closer_obstacle = any(
+                other["id"] not in (id_, target_id)
+                and other["kind"] == ("resistance" if sign == 1 else "support")
+                and (
+                    float(item["high"]) < float(other["low"]) < float(target["low"])
+                    if sign == 1 else
+                    float(target["high"]) < float(other["high"]) < float(item["low"])
+                )
+                for other in (by_id[x] for x in major_by_id if x in by_id)
+            )
+            if closer_obstacle:
+                rejected.append(f"{index}:nearer_major_obstacle")
                 continue
         key = (kind, direction, id_)
         if key in seen:
             rejected.append(f"{index}:duplicate_forecast")
             continue
-        seen.add(key)
         reason = str(proposal.get("reason_fa") or "").strip()[:500]
         if not reason:
             rejected.append(f"{index}:missing_reason")
             continue
+        seen.add(key)
+        level = _geometry(item)
+        level["major_evidence"] = {
+            k: major_by_id[id_].get(k) for k in
+            ("proof", "reaction_atr4h", "confluence_count", "quality_score")
+        }
         forecast.append({
             "scenario_type": kind, "direction": direction,
-            "level": _geometry(item), "target": _geometry(target) if target else None,
+            "level": level, "target": _geometry(target) if target else None,
             "condition_fa": rule[2], "invalidation_fa": rule[3],
             "reason_fa": reason,
             "paper_order": False, "watchlist_only": True,
@@ -179,6 +217,26 @@ def compile_forecasts(raw, evidence, *, observed_ms=None, limit=4):
             "valid_until_ms": observed_ms + 4 * 60 * 60 * 1000 if isinstance(observed_ms, int) else None,
         })
     return forecast, rejected
+
+
+def format_major_levels_fa(levels):
+    """Always report the defensible structural areas, even when no forecast survived."""
+    if not levels:
+        return ("سطوح اصلی: در داده‌های بستهٔ فعلی 1H/4H هیچ حمایت یا مقاومتی "
+                "با شواهد ساختاری کافی تأیید نشد؛ سطح 5m/15m جایگزین نمی‌شود.")
+    lines = ["حمایت و مقاومت اصلی 1H/4H (شناسایی ساختاری؛ نه سیگنال ورود):"]
+    for role, name in (("support", "حمایت"), ("resistance", "مقاومت")):
+        selected = [x for x in levels if x.get("role") == role][:3]
+        for item in selected:
+            reaction = item.get("reaction_atr4h")
+            proof = "سوئینگ تأییدشده" if item.get("proof") == "confirmed_unbroken_swing" else "اوردر بلاکِ شکست ساختار"
+            lines.append(
+                f"{name} {item['timeframe'].upper()}: {item['low']:,.1f} تا {item['high']:,.1f} "
+                f"| {proof} | واکنش بسته‌شده {reaction:g} برابر ATR چهار‌ساعته"
+                f" | هم‌پوشانی مستقل: {item.get('confluence_count', 0)}"
+            )
+    lines.append("اعتبار این نواحی تضمین واکنش قیمت نیست و با بسته‌شدن معتبر در سمت مخالف بازبینی می‌شود.")
+    return "\n".join(lines)
 
 
 def _fallback_forecast_reason(entry):
