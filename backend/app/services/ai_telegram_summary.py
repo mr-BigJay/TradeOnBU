@@ -83,7 +83,7 @@ def _header_lines(
         status = "عدم ورود؛ سناریوی اجرایی فعال وجود ندارد"
 
     if accepted == 0:
-        strategy = "بدون پلن اجرایی پذیرفته‌شده"
+        strategy = "بدون استراتژی پذیرفته‌شده"
     else:
         strategy = {
             "ict_reversal": "A · برگشت قیمت",
