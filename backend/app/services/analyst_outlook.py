@@ -6,6 +6,9 @@ Only compile_plan/monitor can produce Paper orders.
 """
 from __future__ import annotations
 
+import math
+import re
+
 SCENARIOS = {
     "support_bounce": ("LONG", ("support", "OB", "FVG"),
         "رسیدن قیمت به حمایت/تقاضا، واکنش و تأیید برگشت در کندل بستهٔ 5m؛ ورود روی تماس اولیه مجاز نیست.",
@@ -31,6 +34,67 @@ FA_NAMES = {
     "resistance_break": "شکست و بازآزمایی مقاومت",
     "trend_pullback": "اصلاح و ادامهٔ روند",
 }
+
+
+def safe_model_narrative_fa(value, *, limit=3000):
+    """Reject mixed-script model prose observed in production (notably Armenian fragments)."""
+    text = " ".join(str(value or "").split())
+    if not text or _ARMENIAN_RE.search(text):
+        return ""
+    return text[:limit].rstrip()
+
+
+def _finite(value):
+    try:
+        number = float(value)
+        return number if math.isfinite(number) else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _metric(value, decimals=1):
+    number = _finite(value)
+    if number is None:
+        return None
+    return f"{number:,.{decimals}f}".rstrip("0").rstrip(".")
+
+
+def format_market_features_fa(strategy_features, execution_regime):
+    """Deterministic Persian fallback from locally computed closed-candle indicators."""
+    by_tf = (strategy_features or {}).get("timeframes") or {}
+    regime_frames = (execution_regime or {}).get("timeframes") or {}
+    regime_names = {"bullish": "صعودی", "bearish": "نزولی", "range": "رنج",
+                    "ranging": "رنج", "unclear": "نامشخص"}
+    relation_names = {"above": "EMA9 بالای EMA20", "below": "EMA9 زیر EMA20",
+                      "equal": "EMA9 برابر EMA20"}
+    lines = []
+    for tf in ("4h", "1h", "15m", "5m"):
+        frame = by_tf.get(tf) or {}
+        if not isinstance(frame, dict) or frame.get("available") is not True:
+            continue
+        parts = []
+        structural = (regime_frames.get(tf) or {}).get("trend")
+        if structural in regime_names:
+            parts.append("ساختار " + regime_names[structural])
+        relation = frame.get("ema9_ema20_relation")
+        if relation in relation_names:
+            parts.append(relation_names[relation])
+        for key, label, decimals in (
+            ("rsi14", "RSI14", 1),
+            ("adx14", "ADX14", 1),
+            ("atr14", "ATR14", 1),
+            ("relative_volume20", "RVOL20", 2),
+        ):
+            value = _metric(frame.get(key), decimals)
+            if value is not None:
+                parts.append(f"{label}={value}")
+        if parts:
+            lines.append(f"{tf.upper()}: " + "؛ ".join(parts))
+    if not lines:
+        return ""
+    return "شاخص‌های محاسبه‌شده از کندل‌های بسته:\n" + "\n".join(lines)
+
+
 
 
 def _geometry(item):
@@ -116,7 +180,7 @@ def compile_forecasts(raw, evidence, *, observed_ms=None, limit=4):
 
 
 def format_forecasts_fa(forecasts):
-    """Forecast text is deliberately separate from verified entry/SL/TP contracts."""
+    """Persian watchlist text; invalid model-language fragments fall back to evidence facts."""
     if not forecasts:
         return "چشم‌انداز مشروط چهار‌ساعته: ناحیهٔ مستند کافی برای سناریوی قابل نمایش انتخاب نشده است."
     lines = ["چشم‌انداز چهار‌ساعته ـ سناریوهای مشروط (فقط تحت نظر؛ نه دستور ورود):"]
@@ -126,22 +190,33 @@ def format_forecasts_fa(forecasts):
         label = datetime.fromtimestamp(until / 1000, timezone.utc).strftime("%Y-%m-%d %H:%M")
         lines.append(f"اعتبار این سناریوها تا {label} UTC؛ پس از آن نیازمند تحلیل تازه هستند.")
     for idx, entry in enumerate(forecasts, 1):
-        zone = entry["level"]
-        low, high = zone["low"], zone["high"]
-        kind = entry["scenario_type"]
-        direction = "لانگ" if entry["direction"] == "LONG" else "شورت"
-        condition = f"{idx}) {FA_NAMES[kind]} ({direction}) | {zone['timeframe']} | ناحیه {low:g} تا {high:g}"
-        if "status" in zone:
-            condition += f" | وضعیت: {zone['status']}"
+        zone = entry.get("level") or {}
+        low, high = zone.get("low"), zone.get("high")
+        kind = entry.get("scenario_type")
+        direction = "لانگ" if entry.get("direction") == "LONG" else "شورت"
+        condition = f"{idx}) {FA_NAMES.get(kind, 'سناریوی مشروط')} ({direction}) | {zone.get('timeframe', '—')} | ناحیه {low:g} تا {high:g}"
+        if zone.get("status") is not None:
+            condition += f" | وضعیت: {_status_fa(zone.get('status'))}"
         if zone.get("touch_count") is not None:
             condition += f" | تعداد برخوردهای مجزا: {zone['touch_count']}"
-        lines.extend((condition, f"شواهد: {entry['reason_fa']}",
-                      f"شرط: {entry['condition_fa']}"))
-        if entry["target"]:
-            target = entry["target"]
-            lines.append(f"مقصد مشروط: {target['low']:g} تا {target['high']:g} ({target['timeframe']}).")
+        reason = safe_model_narrative_fa(entry.get("reason_fa"), limit=500) or _fallback_forecast_reason(entry)
+        trigger = safe_model_narrative_fa(entry.get("condition_fa"), limit=300)
+        invalidation = safe_model_narrative_fa(entry.get("invalidation_fa"), limit=300)
+        lines.extend((
+            condition,
+            f"شواهد: {reason}",
+            f"شرط: {trigger or 'ورود فقط پس از تأیید کندل بستهٔ 5m؛ لمس اولیه مجوز ورود نیست.'}",
+        ))
+        target = entry.get("target")
+        if isinstance(target, dict):
+            lines.append(
+                f"مقصد مشروط: {target['low']:g} تا {target['high']:g} ({target.get('timeframe', '—')})."
+            )
         else:
             lines.append("مقصد: بدون سطح مقصد معتبر در داده‌های انتخاب‌شده.")
-        lines.append(f"ابطال: {entry['invalidation_fa']}")
+        lines.append(
+            f"ابطال: {invalidation or 'تثبیت قیمت در سمت مخالف ناحیه، سناریو را بی‌اعتبار می‌کند.'}"
+        )
     lines.append("هیچ سناریوی تحت نظر، بدون قرارداد اجرایی مستقل و تأیید کندلی، سفارش Paper ایجاد نمی‌کند.")
     return "\n".join(lines)
+

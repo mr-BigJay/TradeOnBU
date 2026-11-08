@@ -13,6 +13,7 @@ from app.services.analyst_regime import executable_regime
 from app.services.analyst_outlook import compile_forecasts
 
 VERSION = 'multi_setup_analyst_v1'
+PROMPT_VERSION = 4
 STEPS = {'1m':60000,'5m':300000,'15m':900000,'1h':3600000,'4h':14400000}
 PROFILES = {'ict_reversal':'sweep_mss_poi', 'trend_continuation':'trend_pullback_resume', 'breakout_retest':'level_breakout_retest'}
 TRIGGERS = {
@@ -56,6 +57,7 @@ MSS must close through the latest confirmed opposite 5m pivot, fixed when the pl
 All require a later limit fill. Do not describe additional unimplemented conditions as executable requirements.
 A proposal is NOT an entry signal; only server-verified candles can mark events completed. No market-on-touch orders.
 Respect source/timeframe/venue caveats; missing optional evidence is not a directional signal. No return promises.
+LANGUAGE CONTRACT: Every field ending in _fa MUST be fluent Persian (Farsi), written in Persian script. Never use Armenian, Cyrillic, or another language. Before returning JSON, verify market_summary_fa, comparison_fa and every reason_fa are Persian. Keep technical abbreviations such as EMA, RSI, ADX, ATR, RVOL, MSS, BOS, FVG and OB in Latin script when useful.
 '''
 
 def enabled():

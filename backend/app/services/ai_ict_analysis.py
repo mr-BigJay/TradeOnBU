@@ -18,7 +18,7 @@ from app.domain.candles import Candle
 from app.services.ai_market_payload import MarketContextError, build_raw_market_payload
 from app.services.ai_market_intelligence import load_ai_market_intelligence
 from app.services.ai_setup_memory import build_ai_memory_context
-from app.services.ai_telegram_summary import build_ai_telegram_summary
+from app.services.ai_telegram_summary import build_ai_telegram_caption, build_ai_telegram_summary
 from app.services.chart_media import chart_artifact_meta, chart_path_for_run
 from app.services.chart_renderer import ChartRenderError, render_ict_chart_png
 from app.services.execution_model import ExecutionModel
@@ -234,11 +234,15 @@ async def _deliver_ai_telegram(
     if not notifier.enabled:
         return
 
-    caption = build_ai_telegram_summary(
+    full_text = build_ai_telegram_summary(
         symbol=symbol, live=live, decision=draft.decision, structured=draft.structured,
         validation=draft.validation, report_fa=draft.report_fa, analyzed_at=analyzed_at,
     )
-    telegram_meta: dict[str, Any] = {"delivery_mode": "single_summary"}
+    caption = build_ai_telegram_caption(
+        symbol=symbol, live=live, decision=draft.decision, structured=draft.structured,
+        validation=draft.validation, analyzed_at=analyzed_at,
+    )
+    telegram_meta: dict[str, Any] = {"delivery_mode": "full_text"}
 
     if chart_path is not None:
         try:
@@ -251,20 +255,22 @@ async def _deliver_ai_telegram(
         except Exception as exc:
             telegram_meta["photo_error"] = str(exc)[:500]
 
+    # A photo caption is limited to 1024 UTF-16 units. Always deliver the full
+    # four-hour outlook as a separate text message, even when the chart succeeds.
+    try:
+        text_id = await notifier.send_ai_report(full_text)
+        telegram_meta["text_message_id"] = text_id
+        telegram_meta["text_message_ids"] = [text_id] if text_id is not None else []
+        telegram_meta["text_part_count"] = 1
+        telegram_meta["full_text_sent"] = text_id is not None
+        if text_id is None:
+            telegram_meta["text_error"] = "send_message_failed"
+    except Exception as exc:
+        telegram_meta["text_error"] = str(exc)[:500]
+
+    draft.telegram_sent = draft.telegram_photo_sent or bool(telegram_meta.get("full_text_sent"))
     if draft.telegram_photo_sent:
-        draft.telegram_sent = True
-        telegram_meta["text_part_count"] = 0
-    else:
-        try:
-            text_id = await notifier.send_ai_report(caption)
-            draft.telegram_sent = text_id is not None
-            telegram_meta["text_message_id"] = text_id
-            telegram_meta["text_message_ids"] = [text_id] if text_id is not None else []
-            telegram_meta["text_part_count"] = 1
-            if text_id is None:
-                telegram_meta["text_error"] = "send_message_failed"
-        except Exception as exc:
-            telegram_meta["text_error"] = str(exc)[:500]
+        telegram_meta["delivery_mode"] = "photo_plus_full_text"
 
     draft.structured = _merge_artifacts(draft.structured, {"telegram": telegram_meta})
 
@@ -579,13 +585,23 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
             overview=structured['analyst_summary']
             reports=[structured['report_fa']]+[finalize_user_report(p,symbol=symbol,live=live) for p in structured.get('strategy_candidates',{}).values()]
             frames = overview['execution_regime']['timeframes']
-            regime_head = ("روند اجرایی بر اساس Swingهای تأییدشده: "
-                           f"1H={frames['1h']['trend']}؛ 4H={frames['4h']['trend']}.")
-            from app.services.analyst_outlook import format_forecasts_fa
+            regime_names = {'bullish': 'صعودی', 'bearish': 'نزولی',
+                             'range': 'رنج', 'ranging': 'رنج', 'unclear': 'نامشخص'}
+            regime_head = ("روند ساختاری بر اساس Swingهای تأییدشده: "
+                           f"1H={regime_names.get(frames['1h']['trend'], 'نامشخص')}؛ "
+                           f"4H={regime_names.get(frames['4h']['trend'], 'نامشخص')}.")
+            from app.services.analyst_outlook import (
+                format_forecasts_fa, format_market_features_fa, safe_model_narrative_fa,
+            )
             outlook_text = format_forecasts_fa(overview['forecast_scenarios'])
-            structured['report_fa']='\n\n'.join(
-                [regime_head, overview['market_summary_fa'], outlook_text,
-                 overview['comparison_fa'], *reports])
+            market_text = safe_model_narrative_fa(overview.get('market_summary_fa'))
+            if not market_text:
+                market_text = format_market_features_fa(features, overview.get('execution_regime') or {})
+            comparison_text = safe_model_narrative_fa(overview.get('comparison_fa'))
+            structured['report_fa'] = '\n\n'.join(
+                part for part in (regime_head, market_text, outlook_text, comparison_text, *reports)
+                if part
+            )
         safety = _paper_safety_notes(structured, live)
         draft.decision = str(structured.get("decision", "NO_TRADE")).upper()
         draft.report_fa = structured["report_fa"]
@@ -602,7 +618,7 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
         timing_review = review_recent_patterns(structured, candles_by_interval.get("5m", []))
         inference_meta = {
             "enabled_strategies": enabled_strategies,
-            "strategy_prompt_version": 3 if analyst_mode else 2,
+            "strategy_prompt_version": analyst.PROMPT_VERSION if analyst_mode else 2,
             "provider": provider,
             "requested_model": analysis.requested_model,
             "requested_reasoning_effort": analysis.requested_reasoning_effort,
