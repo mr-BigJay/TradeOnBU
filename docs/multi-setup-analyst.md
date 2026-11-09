@@ -15,6 +15,37 @@ structural invalidation plus ATR-buffered stop, and the nearest tick satisfying 
 the plan is rejected. The selected target level is a ceiling, not a promised destination.
 The stop is at least one 5m ATR away and cannot exceed three 15m ATRs.
 
+## AI-first direct Paper market entry (explicit opt-in)
+
+Set `AI_DIRECT_PAPER_ENTRY_ENABLED=1` in the deployment's `.env` and recreate
+the `tradeonbu` container to enable this independent Paper-only mode.
+The default is off, so an existing deployment cannot silently start trading.
+This uses the **same paid model call** as the four-hour analyst; no new call
+is added. The model sees the same closed 4H/1H/15m/5m candles, actual
+market context, price levels, indicators and analyst evidence and can return
+an additional `trade_now` object with a directional view, **numeric** stop,
+target and Persian thesis. It can return NO_TRADE.
+
+If the model chooses a coherent market entry, the backend fetches a fresh
+Bitunix ticker and enters a **market Paper position immediately**, not a
+conditional limit or a multi-bar Sweep/MSS/retest monitor. The exit SL/TP
+are always attached and are checked with market taker fees and slippage
+to achieve >=2.0 net R before a capped executable TP. Never force a bad
+LONG/SHORT, and never chase if the price moved more than 0.50% since the
+AI snapshot. Market entry is only allowed when the paper wallet is initialized,
+auto Paper is enabled and not paused or dry-run, the A strategy is enabled,
+and one active Paper position does not already exist. Verified risk controls
+are reused: 0.25% equity at risk per entry, 1% daily realized loss cutoff,
+max 3x and fee-aware risk-size reduction. It never places live Bitunix orders.
+
+Every attempted direct trade logs the decision and outcome in the four-hour
+analysis and Telegram, and stored positions include the originating analysis
+run ID. The original ICT confirmation monitor remains unchanged for *other*
+conditional candidate strategies. The model may still return a conditional
+watchlist, so a direct AI position and other forecasts are distinct.
+Avoid conflating "AI confidence" with validated probability or live success;
+measure forward Paper outcomes before enabling real trading elsewhere.
+
 ## Major structural levels for four-hour forecasts (watch-only)
 
 The **outlook** now uses a separate, server-validated `outlook_major_levels` shortlist. The
