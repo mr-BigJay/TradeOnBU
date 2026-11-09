@@ -16,6 +16,7 @@ def _settings():
     return SimpleNamespace(
         maker_fee_rate=0.0002, taker_fee_rate=0.0005,
         slippage_bps=1, default_tp_behavior="market",
+        default_margin_usdt=50, default_leverage=3,
     )
 
 
