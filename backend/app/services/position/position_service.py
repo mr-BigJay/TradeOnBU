@@ -316,10 +316,13 @@ class SimPositionService:
             from app.domain.paper_execution_policy import HARD_MIN_AUTO_PAPER_NET_RR
             from app.services.execution_model_sim import auto_paper_rr_from_settings
 
+            # Direct AI Paper market entries require >=2.0 net R even after
+            # the actual slippage-adjusted fill (not merely at preflight).
+            required_rr = 2.0 if (pos.extra or {}).get("ai_direct_paper") else HARD_MIN_AUTO_PAPER_NET_RR
             rr_after_fill = auto_paper_rr_from_settings(
                 settings, direction=pos.direction, entry=fill,
                 sl=pos.stop_loss, tp=cap_result.take_profit,
-                min_net_rr=HARD_MIN_AUTO_PAPER_NET_RR,
+                min_net_rr=required_rr,
                 entry_fill_price=fill,
                 order_type=pos.order_type,
             )
@@ -331,7 +334,7 @@ class SimPositionService:
                 pos.extra = {
                     **(pos.extra or {}),
                     "post_fill_net_rr": rr_after_fill.net_rr,
-                    "required_min_net_rr": HARD_MIN_AUTO_PAPER_NET_RR,
+                    "required_min_net_rr": required_rr,
                 }
                 return False
 

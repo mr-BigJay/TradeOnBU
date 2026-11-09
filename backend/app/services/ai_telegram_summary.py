@@ -83,7 +83,15 @@ def _header_lines(
     else:
         status = "عدم ورود؛ سناریوی اجرایی فعال وجود ندارد"
 
-    if accepted == 0:
+    direct = summary.get("ai_direct_paper")
+    direct = direct if isinstance(direct, dict) else {}
+    if direct.get("created"):
+        strategy = "AI · ورود مستقیم Paper"
+        status = "پوزیشن آزمایشی باز شد؛ بدون انتظار Sweep/MSS"
+    elif direct.get("enabled") and direct.get("attempted"):
+        strategy = "AI · تصمیم مستقیم"
+        status = "ورود مستقیم اجرا نشد: " + _short(direct.get("reason"), 80)
+    elif accepted == 0:
         strategy = "بدون استراتژی پذیرفته‌شده"
     else:
         strategy = {
@@ -240,7 +248,13 @@ def build_ai_telegram_caption(
     s = structured
     final = str(s.get("final_ai_decision") or decision or "NO_TRADE").upper()
     conditional = s.get("setup_mode") == "conditional" or final == "WAIT"
-    if conditional or final in ("LONG", "SHORT"):
+    direct = summary.get("ai_direct_paper")
+    if isinstance(direct, dict) and direct.get("created"):
+        lines.extend([
+            f"جهت: {direct.get('direction')} | ورود: {_price(direct.get('entry_reference'))}",
+            f"SL: {_price(direct.get('stop_loss'))} | TP: {_price(direct.get('take_profit'))}",
+        ])
+    elif conditional or final in ("LONG", "SHORT"):
         lo = s.get("conditional_entry_zone_low") or s.get("entry_zone_low")
         hi = s.get("conditional_entry_zone_high") or s.get("entry_zone_high")
         lines.extend([
@@ -306,6 +320,19 @@ def build_ai_telegram_summary(
                     sections.append("مقایسه سناریوها:\n" + comparison)
 
                 if summary:
+                    direct = summary.get("ai_direct_paper")
+                    if isinstance(direct, dict) and direct.get("created"):
+                        sections.append(
+                            "پوزیشن Paper مستقیم AI ثبت شد: " +
+                            str(direct.get("direction")) +
+                            " | ورود مرجع: " + _price(direct.get("entry_reference")) +
+                            " | SL: " + _price(direct.get("stop_loss")) +
+                            " | TP: " + _price(direct.get("take_profit")) +
+                            " | نسبت R:R خالص پیش‌بررسی: " + str(direct.get("net_rr_preflight"))
+                        )
+                    elif isinstance(direct, dict) and direct.get("enabled"):
+                        sections.append("تصمیم ورود مستقیم AI: بدون سفارش؛ " +
+                                        str(direct.get("reason") or "نامشخص"))
                     sections.append(format_major_levels_fa(summary.get("outlook_major_levels", [])))
 
                 if forecasts:
@@ -356,7 +383,11 @@ def build_ai_telegram_summary(
                     if reason:
                         sections.append("دلیل:\n" + reason)
 
-                sections.append("معامله آزمایشی؛ ورود فقط پس از تأییدهای مستقل موتور مجاز است.")
+                direct = summary.get("ai_direct_paper")
+                if isinstance(direct, dict) and direct.get("created"):
+                    sections.append("این پوزیشن فقط Paper است؛ تصمیم مستقیم مدل با کنترل حدضرر، هزینه و سقف ریسک اجرا شده است.")
+                else:
+                    sections.append("معامله آزمایشی؛ پلن‌های مشروط همچنان نیازمند تأیید موتور هستند.")
                 result = format_persian_report_for_telegram("\n\n".join(x for x in sections if x))
                 if len(result.encode("utf-16-le")) // 2 <= 4096:
                     return result
