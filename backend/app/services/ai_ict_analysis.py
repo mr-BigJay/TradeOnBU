@@ -547,10 +547,12 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
                     raise RuntimeError('analysis_run_missing_before_review')
                 review_run.structured = draft.structured
                 await review_session.commit()
+        from app.services import ai_direct_paper
+        direct_mode = bool(analyst_mode and ai_direct_paper.enabled())
         analysis: AnalysisResponse = await stream_analysis_response(
             token,
             model=model,
-            instructions=(analyst.INSTRUCTIONS if analyst_mode else verified.REVIEW_INSTRUCTIONS if verified.enabled() else shared_strategy_instructions(INSTRUCTIONS, enabled_strategies) + (structure_shadow.REVIEW if shadow_candidates else "")),
+            instructions=((analyst.INSTRUCTIONS + ai_direct_paper.DIRECT_INSTRUCTIONS if direct_mode else analyst.INSTRUCTIONS) if analyst_mode else verified.REVIEW_INSTRUCTIONS if verified.enabled() else shared_strategy_instructions(INSTRUCTIONS, enabled_strategies) + (structure_shadow.REVIEW if shadow_candidates else "")),
             user_input=user_payload,
             reasoning_effort=reasoning_effort,
             timeout=settings.ai_response_timeout_seconds,
@@ -569,10 +571,15 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
             }
         draft.structured = _merge_artifacts(draft.structured, {'inference':response_audit})
         structured = _extract_json(analysis.text)
+        direct_proposal = structured.get("trade_now") if direct_mode else None
         if analyst_mode:
             structured=analyst.compile_response(structured,evidence,candles_by_interval,costs,
                 int(datetime.now(timezone.utc).timestamp()*1000),observed_ms,enabled_strategies,
                 outlook_major_levels=outlook_major_levels)
+            if direct_mode:
+                structured["analyst_summary"]["ai_direct_proposal"] = (
+                    direct_proposal if isinstance(direct_proposal, dict) else None
+                )
             structured['analyst_review']={'slot_ms':analyst_slot,'version':analyst.VERSION,'api_attempted':True,
                 'payload_sizes':analyst_payload_audit}
             verified_review_meta['candidate_audit']={'candidate_count':structured['analyst_summary']['accepted']}
@@ -651,6 +658,42 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
             draft.completed_at = analyzed_at
             await _persist_run_draft(run_id, draft, symbol=symbol)
             draft.persisted = True
+            if direct_mode:
+                try:
+                    from app.services.ai_direct_paper import execute_direct_paper
+                    # Fresh post-inference ticker; no replaying a stale model price.
+                    execution_price, _ = await market_svc.fetch_ticker(symbol)
+                    async with SessionLocal() as direct_session:
+                        direct_result = await execute_direct_paper(
+                            direct_session,
+                            run_id=run_id,
+                            proposal=direct_proposal,
+                            reference_price=live,
+                            current_price=execution_price,
+                            symbol=symbol,
+                        )
+                        await direct_session.commit()
+                except Exception as exc:
+                    direct_result = {"enabled": True, "attempted": True,
+                                     "created": False, "reason": "direct_execution_error",
+                                     "detail": str(exc)[:160]}
+                overview = draft.structured.get("analyst_summary") or {}
+                overview["ai_direct_paper"] = direct_result
+                draft.structured["analyst_summary"] = overview
+                if direct_result.get("created"):
+                    side = "لانگ" if direct_result.get("direction") == "LONG" else "شورت"
+                    direct_line = (
+                        f"پوزیشن آزمایشی مستقیم AI باز شد: {side} | "
+                        f"ورود مرجع {direct_result['entry_reference']:,.1f} | "
+                        f"SL {direct_result['stop_loss']:,.1f} | "
+                        f"TP {direct_result['take_profit']:,.1f} | "
+                        f"R:R خالص پیش‌بررسی {direct_result['net_rr_preflight']:g}"
+                    )
+                else:
+                    direct_line = ("ورود مستقیم AI: انجام نشد؛ علت: "
+                                   + str(direct_result.get("reason") or "نامشخص"))
+                draft.report_fa = direct_line + "\n\n" + (draft.report_fa or "")
+                draft.structured["report_fa"] = draft.report_fa
         chart_path: Path | None = None
         try:
             chart_path, structured_with_art = await _generate_chart_for_run(
@@ -734,6 +777,7 @@ async def run_ai_analysis(*, trigger: str = "scheduled", model_override: str | N
         async with SessionLocal() as session:
             run = await session.get(AiAnalysisRun, run_id)
             run.structured = draft.structured
+            run.report_fa = draft.report_fa
             run.telegram_sent = draft.telegram_sent
             await session.commit()
             await session.refresh(run)
