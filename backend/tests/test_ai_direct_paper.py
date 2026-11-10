@@ -58,6 +58,59 @@ def test_no_bad_geometry_no_large_price_chase_and_no_too_small_target():
         assert result is None and reason == expected
 
 
+
+
+def test_direct_execution_context_is_sent_without_other_analyst_payload_changes():
+    import json
+    from app.services.analyst_payload import build_analyst_payload
+
+    context = direct.execution_context(_settings(), reference_price=73_365.4)
+    assert context["mode"] == "paper_market_only"
+    assert context["reference_price"] == 73_365.4
+    assert context["entry_fee_rate"] == 0.0005
+    assert context["stop_fee_rate"] == 0.0005
+    assert context["tp_fee_rate"] == 0.0005
+    assert context["minimum_net_rr"] == 2.0
+    assert context["execution_max_gross_rr"] == 2.5
+
+    kwargs = dict(
+        market={"symbol": "BTCUSDT", "timeframes": {}},
+        evidence_catalog=[], outlook_major_levels=[],
+        market_intelligence={"status": "unavailable"},
+        strategy_features={"timeframes": {}},
+        enabled_strategies={"ict_reversal": True},
+        execution_regime={"timeframes": {}},
+        instructions=direct.DIRECT_INSTRUCTIONS,
+    )
+    payload, audit = build_analyst_payload(
+        **kwargs, direct_paper_execution=context
+    )
+    data = json.loads(payload)
+    assert data["direct_paper_execution"] == context
+    assert "direct_paper_execution" in audit["sections"]
+
+    legacy, _ = build_analyst_payload(**kwargs)
+    assert "direct_paper_execution" not in json.loads(legacy)
+    assert "Never omit trade_now" in direct.DIRECT_INSTRUCTIONS
+
+
+def test_short_rejection_diagnostic_explains_gross_vs_net_instead_of_hiding_reason():
+    # From an actual failed paper analysis (price shown in AI report,
+    # not necessarily the exact post-inference market execution quote).
+    s = _settings()
+    s.slippage_bps = 5
+    proposal = {"decision": "SHORT", "stop_loss": 73647.8,
+                "take_profit": 72691.0, "reason_fa": "ساختار نزولی"}
+    diagnostics = direct.rejection_diagnostics(
+        proposal, execution_price=73365.4, settings=s
+    )
+    assert 2.3 < diagnostics["ai_target_gross_rr"] < 2.5
+    assert diagnostics["ai_target_executable_net_rr"] < diagnostics["ai_target_gross_rr"]
+    assert diagnostics["execution_tp_cap_gross_rr"] == 2.5
+    assert diagnostics["required_net_rr"] == 2.0
+    assert "net_rr_at_execution_tp_cap" in diagnostics
+
+
 @pytest.mark.asyncio
 async def test_ai_first_creates_one_market_paper_position_and_dedupes_run(session, monkeypatch):
     from app.services.market_data import MarketDataService

@@ -28,25 +28,77 @@ MIN_NET_RR = 2.0
 MAX_REFERENCE_DRIFT_PCT = 0.50
 
 DIRECT_INSTRUCTIONS = """
-OPTIONAL AI-FIRST PAPER TRADE OUTPUT (independent of forecast_scenarios and plans):
-Return an additional key named trade_now, one object with:
-{"decision":"LONG"|"SHORT"|"NO_TRADE", "stop_loss":number|null,
- "take_profit":number|null, "reason_fa":"..."}
-Analyze the supplied actual closed 4H/1H/15m/5m candles, indicators and major
-structural levels, then make ONE discretionary decision for a market PAPER entry
-near the CURRENT ticker, NOT a distant conditional pullback. Prefer trading when
-a coherent direction, structural stop and realistic 2R or better target exist.
-No sweep, MSS, FVG, OB touch, breakout/retest or EMA/RSI threshold is mandatory.
-Do not force LONG/SHORT if stop and target cannot be responsibly derived.
-Stop must be a numeric structural invalidation price on the adverse side;
-take_profit must be a numeric plausible price beyond 2R of current market.
-Use genuine supplied candle prices; do not invent levels or probabilities.
-Explain the positive thesis and a clear failure point in Persian. Do not mark
-any closed-candle confirmation as verified unless supported by input.
-A direct model proposal is not an order: the SERVER checks current price drift,
-geometry, fees, minimum 2.0 net R:R, account risk, and paper controls before entry.
-The conditional plans and 4h outlook are separate, remain optional and watch-only.
+REQUIRED AI-FIRST PAPER TRADE DECISION IN EVERY RESPONSE:
+Add a top-level trade_now object alongside the existing market_summary_fa,
+comparison_fa, forecast_scenarios, and plans. Never omit trade_now:
+{"decision":"LONG"|"SHORT"|"NO_TRADE",
+ "stop_loss":number|null,"take_profit":number|null,"reason_fa":"Persian rationale"}.
+This is an INDEPENDENT immediate MARKET Paper entry assessment, NOT one of
+the mechanically confirmed conditional 'plans'. It can select LONG/SHORT even
+if plans=[] or the 4H structural swing regime is range. The legacy plan rules
+do not impose Sweep, MSS, FVG, OB-touch, retest, EMA, RSI or a continuation
+regime gate on trade_now. Those are optional evidence, not mandatory tokens.
+
+First evaluate a LONG and a SHORT at market.live_price against all supplied
+closed 4H/1H/15m/5m candles, 1H/4H major areas, 5m/15m structure, indicators,
+and fresh market_intelligence. Decide which direction (if any) has the most
+credible entry at the CURRENT price, with a clear structural invalidation and
+room to an evidence-based target. Do not reject merely because the market has
+a range label, plans were rejected or a full ICT sequence did not appear.
+Do not sell directly into a nearby support or buy directly into resistance;
+use all supplied candlestick data to distinguish an opportunity from chase.
+Prefer an actionable trade when price location, structural stop, and
+target room align; NO_TRADE is acceptable when neither side has a responsible
+structure/target. Never fabricate a setup or promise its outcome.
+
+For LONG/SHORT, supply real numeric stop_loss (beyond invalidation) and a
+realistic numeric take_profit (beyond the required NET 2R, not just GROSS 2R).
+Use the 'direct_paper_execution' block supplied in the user JSON: Bitunix
+maker/taker fees, adverse slip assumption, maximum gross TP cap of 2.5R,
+latest entry reference price, and required 2.0 NET R:R. Account for BOTH
+entry and exit costs and the loss-side slippage. The target must be
+plausible from the supplied actual candles, ideally before a nearby major
+obstacle. An imagined extension past a known strong obstacle is not a
+valid target. If there is no valid room, say NO_TRADE and identify the
+specific obstacle/limiting price in reason_fa. If direct_paper_execution
+is absent, do not invent fee or execution settings.
+
+All trade_now reasons must be Persian and explain directional evidence
+and exact failure price. The server obtains a fresh ticker after inference
+and may veto for drift, fees, net R:R, daily risk, existing position or pause.
+This mode is Paper-only; never claim a live Bitunix trade was placed.
+The four-hour outlook and conditional plans are separate, watch-only outputs.
 """
+
+
+def execution_context(settings, *, reference_price):
+    """Costs and limits visible to the model before its market-entry proposal."""
+    from app.domain.execution_tp_cap import EXECUTION_MAX_REWARD_R_MULTIPLE
+
+    return {
+        "mode": "paper_market_only",
+        "reference_price": float(reference_price),
+        "entry_fee_rate": float(settings.taker_fee_rate),
+        "stop_fee_rate": float(settings.taker_fee_rate),
+        "tp_fee_rate": float(
+            settings.maker_fee_rate if settings.default_tp_behavior == "limit"
+            else settings.taker_fee_rate
+        ),
+        "slippage_bps": float(settings.slippage_bps),
+        "minimum_net_rr": MIN_NET_RR,
+        "execution_max_gross_rr": EXECUTION_MAX_REWARD_R_MULTIPLE,
+        "reference_drift_max_pct": MAX_REFERENCE_DRIFT_PCT,
+        "net_rr_definition": (
+            "Net profit at TP after fees / loss at SL after entry/stop fees "
+            "and adverse stop slippage; 2.0 gross is usually insufficient"
+        ),
+        "advice": (
+            "Evaluate 5m/15m and HTF location, choose a structural SL and "
+            "a credible real-candle target with at least 2.0 net R:R. "
+            "If no nearby target fits, choose NO_TRADE, not an invented extension."
+        ),
+    }
+
 
 
 def enabled():
@@ -59,6 +111,41 @@ def _num(raw):
     except (TypeError, ValueError):
         return None
     return n if math.isfinite(n) and n > 0 else None
+
+
+def rejection_diagnostics(proposal, *, execution_price, settings):
+    """Explain fee/cap rejections without changing the model's trade prices."""
+    if not isinstance(proposal, dict):
+        return {}
+    direction = proposal.get("decision")
+    entry = _num(execution_price)
+    stop = _num(proposal.get("stop_loss"))
+    target = _num(proposal.get("take_profit"))
+    if direction not in ("LONG", "SHORT") or not all((entry, stop, target)):
+        return {}
+    sign = 1 if direction == "LONG" else -1
+    if sign * (entry - stop) <= 0 or sign * (target - entry) <= 0:
+        return {}
+    from app.domain.execution_tp_cap import EXECUTION_MAX_REWARD_R_MULTIPLE
+    risk = abs(entry - stop)
+    gross_rr = sign * (target - entry) / risk
+    capped_target = entry + sign * EXECUTION_MAX_REWARD_R_MULTIPLE * risk
+    raw_result = auto_paper_rr_from_settings(
+        settings, direction=direction, entry=entry, sl=stop, tp=target,
+        min_net_rr=MIN_NET_RR, order_type="market"
+    )
+    capped_result = auto_paper_rr_from_settings(
+        settings, direction=direction, entry=entry, sl=stop, tp=capped_target,
+        min_net_rr=MIN_NET_RR, order_type="market"
+    )
+    return {
+        "reference_entry": round(entry, 2),
+        "ai_target_gross_rr": round(gross_rr, 3),
+        "ai_target_executable_net_rr": round(raw_result.net_rr, 3),
+        "net_rr_at_execution_tp_cap": round(capped_result.net_rr, 3),
+        "required_net_rr": MIN_NET_RR,
+        "execution_tp_cap_gross_rr": EXECUTION_MAX_REWARD_R_MULTIPLE,
+    }
 
 
 def preflight(proposal, *, reference_price, execution_price, settings):
@@ -148,7 +235,12 @@ async def execute_direct_paper(session, *, run_id, proposal, reference_price,
         execution_price=current_price, settings=settings
     )
     if reason:
-        return {**result, "reason": reason}
+        result["reason"] = reason
+        if reason in ("ai_target_below_two_net_r", "market_fees_prevent_two_net_r"):
+            result["risk_diagnostic"] = rejection_diagnostics(
+                proposal, execution_price=current_price, settings=settings
+            )
+        return result
     result["proposal"] = validated
 
     # A double call for the same run must never re-open after a quick SL/TP.

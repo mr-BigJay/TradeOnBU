@@ -512,7 +512,13 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
         if analyst_mode:
             from app.services.analyst_payload import build_analyst_payload
             from app.services.analyst_regime import executable_regime
+            from app.services import ai_direct_paper
 
+            direct_requested = ai_direct_paper.enabled()
+            analyst_instructions = (
+                analyst.INSTRUCTIONS + ai_direct_paper.DIRECT_INSTRUCTIONS
+                if direct_requested else analyst.INSTRUCTIONS
+            )
             user_payload, analyst_payload_audit = build_analyst_payload(
                 market=market_payload,
                 evidence_catalog=evidence,
@@ -521,7 +527,11 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
                 strategy_features=features,
                 enabled_strategies=enabled_strategies,
                 execution_regime=executable_regime(candles_by_interval),
-                instructions=analyst.INSTRUCTIONS,
+                direct_paper_execution=(
+                    ai_direct_paper.execution_context(costs, reference_price=live)
+                    if direct_requested else None
+                ),
+                instructions=analyst_instructions,
             )
         elif verified.enabled():
             # No old narratives or competing discretionary plans in the reviewer input.
@@ -552,7 +562,7 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
         analysis: AnalysisResponse = await stream_analysis_response(
             token,
             model=model,
-            instructions=((analyst.INSTRUCTIONS + ai_direct_paper.DIRECT_INSTRUCTIONS if direct_mode else analyst.INSTRUCTIONS) if analyst_mode else verified.REVIEW_INSTRUCTIONS if verified.enabled() else shared_strategy_instructions(INSTRUCTIONS, enabled_strategies) + (structure_shadow.REVIEW if shadow_candidates else "")),
+            instructions=(analyst_instructions if analyst_mode else verified.REVIEW_INSTRUCTIONS if verified.enabled() else shared_strategy_instructions(INSTRUCTIONS, enabled_strategies) + (structure_shadow.REVIEW if shadow_candidates else "")),
             user_input=user_payload,
             reasoning_effort=reasoning_effort,
             timeout=settings.ai_response_timeout_seconds,
