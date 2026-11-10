@@ -22,9 +22,15 @@ the `tradeonbu` container to enable this independent Paper-only mode.
 The default is off, so an existing deployment cannot silently start trading.
 This uses the **same paid model call** as the four-hour analyst; no new call
 is added. The model sees the same closed 4H/1H/15m/5m candles, actual
-market context, price levels, indicators and analyst evidence and can return
-an additional `trade_now` object with a directional view, **numeric** stop,
-target and Persian thesis. It can return NO_TRADE.
+market context, price levels, indicators and analyst evidence. The payload also
+supplies `direct_paper_execution`: current reference price, actual Paper
+taker/maker fee rates, assumed slippage, a 2.0 net-R requirement, and the
+2.5 gross-R execution target cap. In direct mode, the response **must**
+include a separate `trade_now` object with a directional view, **numeric**
+stop, target and Persian thesis; it can still return `NO_TRADE` when
+there is no plausible structural stop/target. Empty conditional `plans`
+or a ranging 4H label alone must not veto the independent decision.
+No extra model calls are made.
 
 If the model chooses a coherent market entry, the backend fetches a fresh
 Bitunix ticker and enters a **market Paper position immediately**, not a
