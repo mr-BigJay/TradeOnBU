@@ -54,6 +54,18 @@ def _context(s: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]], i
     return summary, forecasts, accepted if isinstance(accepted, int) else None
 
 
+_DIRECT_BLOCKERS_FA = {
+    "ai_decided_no_trade": "خود AI نقطه ورود مناسب پیدا نکرد",
+    "ai_target_below_two_net_r": "هدف پیشنهادی پس از کارمزد به ۲R خالص نمی‌رسد",
+    "market_fees_prevent_two_net_r": "هزینه اجرای Market مانع رسیدن به ۲R خالص است",
+    "missing_direct_proposal": "مدل تصمیم ورود مستقیم تولید نکرد",
+    "price_moved_since_ai_analysis": "قیمت پس از تحلیل بیش از حد مجاز جابه‌جا شد",
+    "verified_one_position_limit": "پوزیشن یا سفارش Paper فعالی وجود دارد",
+    "verified_daily_loss_limit": "سقف زیان روزانه Paper پر شده است",
+    "paper_not_enabled_or_paused": "ورود آزمایشی غیرفعال یا متوقف است",
+}
+
+
 def _header_lines(
     *,
     symbol: str,
@@ -90,7 +102,8 @@ def _header_lines(
         status = "پوزیشن آزمایشی باز شد؛ بدون انتظار Sweep/MSS"
     elif direct.get("enabled") and direct.get("attempted"):
         strategy = "AI · تصمیم مستقیم"
-        status = "ورود مستقیم اجرا نشد: " + _short(direct.get("reason"), 80)
+        reason = str(direct.get("reason") or "")
+        status = "ورود مستقیم: " + _DIRECT_BLOCKERS_FA.get(reason, _short(reason, 70))
     elif accepted == 0:
         strategy = "بدون استراتژی پذیرفته‌شده"
     else:
@@ -331,8 +344,33 @@ def build_ai_telegram_summary(
                             " | نسبت R:R خالص پیش‌بررسی: " + str(direct.get("net_rr_preflight"))
                         )
                     elif isinstance(direct, dict) and direct.get("enabled"):
-                        sections.append("تصمیم ورود مستقیم AI: بدون سفارش؛ " +
-                                        str(direct.get("reason") or "نامشخص"))
+                        code = str(direct.get("reason") or "نامشخص")
+                        proposal = summary.get("ai_direct_proposal")
+                        proposal = proposal if isinstance(proposal, dict) else {}
+                        decision = str(proposal.get("decision") or "نامشخص").upper()
+                        details = [
+                            "ارزیابی ورود مستقیم AI: " + decision,
+                            "نتیجه: " + _DIRECT_BLOCKERS_FA.get(code, code),
+                        ]
+                        if decision in ("LONG", "SHORT"):
+                            details.append(
+                                "SL پیشنهادی: " + _price(proposal.get("stop_loss")) +
+                                " | TP پیشنهادی: " + _price(proposal.get("take_profit"))
+                            )
+                        diagnostic = direct.get("risk_diagnostic")
+                        if isinstance(diagnostic, dict) and "ai_target_executable_net_rr" in diagnostic:
+                            details.append(
+                                "نسبت R:R خالص هدف پیشنهادی: " +
+                                str(diagnostic["ai_target_executable_net_rr"]) +
+                                " | حداقل لازم: " +
+                                str(diagnostic.get("required_net_rr", "2.0"))
+                            )
+                        reason_text = safe_model_narrative_fa(
+                            proposal.get("reason_fa"), limit=220
+                        )
+                        if reason_text:
+                            details.append("دلیل تحلیلگر AI: " + reason_text)
+                        sections.append("\n".join(details))
                     sections.append(format_major_levels_fa(summary.get("outlook_major_levels", [])))
 
                 if forecasts:
