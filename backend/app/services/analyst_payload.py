@@ -100,13 +100,16 @@ def _nested_sections(before, after):
 
 def build_analyst_payload(*, market, evidence_catalog, market_intelligence,
                           strategy_features, enabled_strategies, execution_regime,
-                          outlook_major_levels=None, instructions=""):
+                          outlook_major_levels=None, direct_paper_execution=None,
+                          instructions=""):
     before = {
         "market": market, "evidence_catalog": evidence_catalog,
         "market_intelligence": market_intelligence, "strategy_features": strategy_features,
         "enabled_strategies": enabled_strategies, "execution_regime": execution_regime,
         "outlook_major_levels": outlook_major_levels or [],
     }
+    if direct_paper_execution is not None:
+        before["direct_paper_execution"] = direct_paper_execution
     after = {**before, "market": pack_market(market)}
     section_sizes = {
         key: {"before_chars": _size(value), "after_chars": _size(after[key]),
