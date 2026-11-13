@@ -418,9 +418,10 @@ def test_execution_card_first_net_two_r_tick(direction, stop, far, near):
                           taker_fee_rate=.0005, slippage_bps=1, default_tp_behavior="market")
     tp = target_at_two_r(sim, direction, 1000, stop, far)
     assert tp is not None
+    from app.domain.paper_execution_policy import HARD_MIN_AUTO_PAPER_NET_RR
     def qualifies(price):
         return auto_paper_rr_from_settings(sim, direction=direction, entry=1000,
-                                           sl=stop, tp=price, min_net_rr=1.4).acceptable
+                                           sl=stop, tp=price, min_net_rr=HARD_MIN_AUTO_PAPER_NET_RR).acceptable
     assert qualifies(tp)
     assert not qualifies(tp - (.1 if direction == "LONG" else -.1))
     assert target_at_two_r(sim, direction, 1000, stop, near) is None
