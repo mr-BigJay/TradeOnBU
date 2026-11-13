@@ -130,7 +130,7 @@ def catalog(series, now_ms):
 async def review_allowed(session, now):
     """One normal call plus at most one bounded transient-error retry per slot."""
     from app.models import AiAnalysisRun
-    slot=int(now.timestamp()*1000)//14400000*14400000
+    slot=int(now.timestamp()*1000)//3600000*3600000  # One paid review per hour
     rows=(await session.execute(select(AiAnalysisRun).where(AiAnalysisRun.created_at>=now-timedelta(days=1)))).scalars().all()
     attempts=[r for r in rows if ((r.structured or {}).get('analyst_review') or {}).get('slot_ms')==slot]
     if not attempts:return True,slot
