@@ -23,7 +23,7 @@ TRIGGERS = {
  'breakout_retest':'عبور قیمت بسته‌شدن 5m از سطح، سپس بازآزمایی و بسته‌شدن در سمت شکست؛ سفارش محدود برای بازگشت بعدی.',
 }
 INSTRUCTIONS = '''You are a multi-scenario BTCUSDT analyst, not a reviewer of preselected reversal candidates.
-Compare trend continuation, reversal, and breakout/retest using 4H/1H context and 15m/5m execution.
+Compare trend continuation, reversal, and breakout/retest using 4H/1H context and 15m/5m execution. Prefer trend-continuation pullbacks, then breakout opportunities, then countertrend reversals where evidence supports them; NEVER manufacture a setup to meet a quota.
 Use the provided closed candles, evidence_catalog, strategy_features, execution_regime and freshness-filtered market_intelligence.
 The market.timeframes[*].candles rows use the explicit candles_columns order [time_ms,open,high,low,close,volume], with UTC epoch milliseconds. All 5m/15m/1h/4h bars are present; 1m includes the latest 45 closed minutes for sequencing only. time_iso is derivable from time_ms.
 EMA9/20, RSI14, ATR, ADX and relative volume are descriptive context for comparing scenarios,
@@ -56,7 +56,7 @@ plans is 0 to 3 *independently executable conditional proposals* ranked best fir
 Each plan: strategy_id (ict_reversal|trend_continuation|breakout_retest), direction (LONG|SHORT),
 zone_id, invalidation_id, target_id (exact supplied catalog IDs), reason_fa.
 At most one plan per strategy. Only enabled strategies. Empty plans is a valid outcome.
-Select meaningful candle-backed areas; NEVER invent price levels, IDs, confidence probabilities or confirmations.
+Select meaningful candle-backed areas; NEVER invent price levels, IDs, confidence probabilities or confirmations. Executable support/resistance and OB source zones MUST come from 1H or 4H; 5m/15m evidence is for FVG execution precision and candle confirmation, never an arbitrary micro support/resistance trade. Prefer stops supported by structural invalidation, not micro swings.
 For continuation, use ONLY execution_regime.timeframes.1h.trend and .4h.trend as the executable trend: bullish/bearish are defined by two confirmed swing highs AND lows, NOT EMA slope or narrative bias. LONG requires 1h bullish and 4h not bearish; SHORT requires 1h bearish and 4h not bullish. If EMA or your visual impression disagrees, explicitly explain the discrepancy and do not propose a continuation that fails the swing rule. Breakout uses resistance for LONG or support for SHORT.
 Explain why each selected scenario is preferable and why alternatives were not selected.
 Server derives midpoint limit entry, ATR-buffered structural stop and cost-adjusted target before the nearest obstacle.
@@ -159,6 +159,10 @@ def compile_plan(proposal, evidence, series, costs, now_ms, observed_ms):
     aligned='bullish' if sign==1 else 'bearish';opposed='bearish' if sign==1 else 'bullish'
     if sid=='trend_continuation' and (regime!=aligned or higher==opposed):raise ValueError('continuation_trend_conflict')
     if sid=='breakout_retest' and z['kind']!=('resistance' if sign==1 else 'support'):raise ValueError('breakout_requires_level')
+    # Do not promote arbitrary lower-timeframe pivots or OBs to primary trade levels.
+    # LTF FVGs may still refine entry when the 1H trend and structural stop support it.
+    if z['kind'] in ('support', 'resistance', 'OB') and z['timeframe'] not in ('1h', '4h'):
+        raise ValueError('execution_requires_major_structure')
     if z.get('direction') and z['direction']!=direction:raise ValueError('zone_direction_conflict')
     entry=round((z['low']+z['high'])/2,1)
     invalidation=inv['low'] if sign==1 else inv['high']
@@ -168,7 +172,8 @@ def compile_plan(proposal, evidence, series, costs, now_ms, observed_ms):
     vol=atr(series['5m'])
     stop=_tick(invalidation-sign*max(.25*vol,.1),sign)
     if sign*(entry-stop)<vol:stop=_tick(entry-sign*vol,sign)
-    if not 0<sign*(entry-stop)<=3*atr(series['15m']):raise ValueError('stop_too_wide')
+    stop_limit=max(3*atr(series['15m']), atr(series['1h']))
+    if not 0<sign*(entry-stop)<=stop_limit:raise ValueError('stop_too_wide')
     obstacle=target['price']-sign*.1*vol
     if sign*(obstacle-entry)<=0:raise ValueError('target_wrong_side')
     obstacles=[x['price']-sign*.1*vol for x in evidence if x['timeframe'] in ('15m','1h','4h')
@@ -185,7 +190,7 @@ def compile_plan(proposal, evidence, series, costs, now_ms, observed_ms):
            entry=entry,zone=[z['low'],z['high']],stop=stop,target=tp,invalidation=invalidation,
            formed_ms=observed_ms,expires_ms=expiry,breakout_level=z['price'] if sid=='breakout_retest' else None,
            evidence={'zone':z,'invalidation':inv,'target':target,'atr14':vol,'obstacle':obstacle,
-                     'stop_distance_limit':3*atr(series['15m']),
+                     'stop_distance_limit':stop_limit,
                      'hourly_regime':regime,'four_hour_regime':higher,'confirmed':False})
     if sid=='ict_reversal':
         from app.services.ict_structure import find_swings
