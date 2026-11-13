@@ -47,7 +47,7 @@ def test_three_independent_conditional_contracts_and_cost_floor():
         assert p['decision']=='NO_TRADE' and p['final_ai_decision']=='WAIT'
         assert not p['structural_confirmation_clear']
         assert p['stop_loss']<p['structural_invalidation_level']<p['entry_zone_low']
-        rr=auto_paper_rr_from_settings(c,direction='LONG',entry=p['entry_price'],sl=p['stop_loss'],tp=p['take_profit'],min_net_rr=1.4)
+        rr=auto_paper_rr_from_settings(c,direction='LONG',entry=p['entry_price'],sl=p['stop_loss'],tp=p['take_profit'],min_net_rr=1.5)
         assert rr.acceptable
         assert p['take_profit']<1061
 
@@ -253,7 +253,7 @@ async def test_real_monitor_confirms_then_places_limit_and_fills_later(session,m
         assert pos.extra['execution_plan']['proposal_stop']==p['stop_loss']
         from app.services.execution_model_sim import auto_paper_rr_from_settings
         assert auto_paper_rr_from_settings(settings,direction='LONG',entry=pos.entry_price,
-            sl=pos.stop_loss,tp=pos.take_profit,min_net_rr=1.4).acceptable
+            sl=pos.stop_loss,tp=pos.take_profit,min_net_rr=1.5).acceptable
         quantity=pos.margin_usdt*pos.leverage/pos.entry_price
         adverse_exit=pos.stop_loss*(1-settings.slippage_bps/10000)
         stop_cost=quantity*(pos.entry_price-adverse_exit+pos.entry_price*settings.maker_fee_rate+adverse_exit*settings.taker_fee_rate)
