@@ -112,12 +112,6 @@ def parse_conditional_plan(structured: dict[str, Any]) -> tuple[dict[str, Any] |
 
     entry_mid = (lo + hi) / 2.0
     verified = structured.get('verified_trade_plan')
-    if verified and verified.get('seed_confirmations'):
-        seed=verified['seed_confirmations']
-        stamps=seed['confirmation_timestamps']
-        row.confirmation_state.update(seed)
-        row.confirmation_state.update(completed=[t for t in sequence if t in stamps],
-                                      missing=[t for t in sequence if t not in stamps])
     if verified:
         from app.services.verified_trade_plan import plan_error
         error = plan_error(structured, int(datetime.now(timezone.utc).timestamp()*1000))
@@ -225,6 +219,31 @@ def apply_conditional_plan_to_setup_row(
                 'bar_high': ev['sweep_ohlc' if token == 'liquidity_sweep' else 'break_ohlc'][1],
                 'candidate_id': verified['candidate_id']} for token, stamp in stamps.items()},
         })
+    # The analyst can prove a complete, ordered pre-entry confirmation pair
+    # from recent *closed* 5m bars. Seed only that pair, never a fictitious
+    # entry-zone touch, and only after the signed plan was validated in parser.
+    seed = (verified or {}).get("seed_confirmations") or {}
+    stamps = seed.get("confirmation_timestamps") if isinstance(seed, dict) else None
+    evidence = seed.get("confirmation_evidence") if isinstance(seed, dict) else None
+    pre_entry = [token for token in sequence if token != "entry_zone_touch"]
+    if isinstance(stamps, dict) and isinstance(evidence, dict) and pre_entry:
+        from app.services.ict_confirmation_engine import sequence_order_valid
+        times = [stamps.get(token) for token in pre_entry]
+        registered_ms = int(created_at.timestamp() * 1000)
+        valid = (
+            all(type(ms) is int and 0 <= ms < registered_ms and ms % 300_000 == 0 for ms in times)
+            and all(isinstance(evidence.get(token), dict) for token in pre_entry)
+            and len(set(times)) == len(times)
+            and sequence_order_valid(pre_entry, stamps)
+        )
+        if valid:
+            row.confirmation_state.update({
+                "completed": list(pre_entry),
+                "missing": [token for token in sequence if token not in pre_entry],
+                "confirmation_timestamps": {token: stamps[token] for token in pre_entry},
+                "confirmation_evidence": {token: evidence[token] for token in pre_entry},
+            })
+
     row.run_id = run_id
     row.structured_snapshot = structured
 
