@@ -303,3 +303,40 @@ def test_daily_interval_is_supported_for_outlook_generation():
     from app.domain.candle_utils import interval_ms
     assert interval_ms("1d") == 86_400_000
     assert interval_ms("4h") == 14_400_000
+
+
+def test_preconfirmed_closed_candles_can_seed_paper_setup_without_nameerror(monkeypatch):
+    """A complete proven pre-entry pair survives parsing and is never treated as a fill."""
+    from app.services import analyst_confirmation
+    from app.services.conditional_setup import (
+        apply_conditional_plan_to_setup_row, parse_conditional_plan,
+    )
+
+    series, costs, evidence, now = fixture()
+    boundary = now // 300_000 * 300_000
+    stamps = {
+        "trend_pullback": boundary - 600_000,
+        "trend_resume": boundary - 300_000,
+    }
+    seed = {
+        "confirmation_timestamps": stamps,
+        "confirmation_evidence": {
+            token: {"bar_low": 1019., "bar_high": 1024., "bar_ms": ms}
+            for token, ms in stamps.items()
+        },
+    }
+    monkeypatch.setattr(analyst_confirmation, "recent_confirmations", lambda *_args: seed)
+    structured = a.compile_plan(proposal("trend_continuation"), evidence, series, costs, now, now)
+    assert structured["verified_trade_plan"]["seed_confirmations"] == seed
+
+    plan, error = parse_conditional_plan(structured)
+    assert error is None and plan is not None
+    row = SimpleNamespace()
+    apply_conditional_plan_to_setup_row(
+        row, plan=plan, run_id=1, structured=structured,
+        created_at=datetime.fromtimestamp((boundary + 300_000) / 1000, timezone.utc),
+    )
+    assert row.confirmation_state["confirmation_timestamps"] == stamps
+    assert row.confirmation_state["completed"] == ["trend_pullback", "trend_resume"]
+    assert row.confirmation_state["missing"] == ["entry_zone_touch"]
+    assert row.lifecycle_state.startswith("WAIT")
