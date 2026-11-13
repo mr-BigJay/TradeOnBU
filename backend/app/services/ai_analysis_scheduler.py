@@ -30,7 +30,7 @@ def _ensure_utc(dt: datetime) -> datetime:
 
 def _effective_interval_minutes(cfg: AiAnalysisSettings) -> int:
     from app.services.multi_setup_analyst import enabled as analyst_enabled
-    if analyst_enabled():return 240
+    if analyst_enabled():return 60
     from app.services.verified_trade_plan import enabled
     if enabled():
         return 5
