@@ -141,7 +141,7 @@ def test_payload_measures_all_sections_instruction_cost_and_micro_history():
     assert audit["sections"]["market_intelligence"]["after_chars"] > 0
     assert audit["breakdown"]["market_intelligence_by_source"]["funding"]["json_chars"] > 0
     assert audit["breakdown"]["strategy_features_by_tf"]["4h"]["json_chars"] > 0
-    assert audit["breakdown"]["evidence_catalog_by_kind_tf"]["resistance:1h"]["count"] == 1
+    assert audit["breakdown"]["evidence_catalog_by_kind_tf"]["resistance:1h"]["count"] == 2
     assert audit["candle_counts"]["1m"] == 48
     assert audit["sent_candle_counts"]["1m"] == 45
     assert audit["sent_candle_counts"]["5m"] == 48
