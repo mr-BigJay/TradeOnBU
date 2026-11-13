@@ -514,7 +514,7 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
             from app.services.analyst_regime import executable_regime
             from app.services import ai_direct_paper
 
-            direct_requested = ai_direct_paper.enabled()
+            direct_requested = False  # A/B/C strategies, not independent AI-direct trades
             analyst_instructions = (
                 analyst.INSTRUCTIONS + ai_direct_paper.DIRECT_INSTRUCTIONS
                 if direct_requested else analyst.INSTRUCTIONS
@@ -558,7 +558,7 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
                 review_run.structured = draft.structured
                 await review_session.commit()
         from app.services import ai_direct_paper
-        direct_mode = bool(analyst_mode and ai_direct_paper.enabled())
+        direct_mode = False  # A/B/C alone may submit paper positions
         analysis: AnalysisResponse = await stream_analysis_response(
             token,
             model=model,
