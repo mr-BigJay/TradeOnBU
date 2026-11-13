@@ -289,3 +289,17 @@ async def test_new_strategy_switches_do_not_destroy_legacy_preferences(session,m
     await save_strategy_settings(session,{sid:sid!='ict_reversal' for sid in a.PROFILES})
     monkeypatch.setenv('MULTI_SETUP_ANALYST_ENABLED','0')
     assert await strategy_settings(session)==legacy
+
+
+def test_execution_rejects_micro_pivot_as_primary_level():
+    """Five-minute pivots are not standalone 1H/4H trading support/resistance."""
+    series, costs, evidence, now = fixture()
+    evidence[0]["timeframe"] = "5m"
+    with pytest.raises(ValueError, match="execution_requires_major_structure"):
+        a.compile_plan(proposal("breakout_retest"), evidence, series, costs, now, now)
+
+
+def test_daily_interval_is_supported_for_outlook_generation():
+    from app.domain.candle_utils import interval_ms
+    assert interval_ms("1d") == 86_400_000
+    assert interval_ms("4h") == 14_400_000
