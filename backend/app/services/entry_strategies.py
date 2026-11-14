@@ -63,6 +63,9 @@ def validate_strategy_plan(data: dict[str, Any]) -> str | None:
     if sid == A:
         if (isinstance(profile, str) and profile in SEQUENCES) or data.get("confirmation_sequence") in list(SEQUENCES.values()):
             return "strategy_profile_mismatch"
+        if (data.get("confirmation_sequence") in list(ANALYST_SEQUENCES.values())
+                and profile != ANALYST_PROFILES[A]):
+            return "strategy_profile_mismatch"
         if profile == ANALYST_PROFILES[A]:
             from app.services.multi_setup_analyst import VERSION
             from app.services.verified_trade_plan import plan_error
