@@ -176,3 +176,28 @@ place orders or guarantee an entry in every market. Archived null plans remain
 readable but display entry_assessment_missing, not a claim that no opportunity
 existed. Revalidating an old response cannot generate a missing entry proposal;
 a new authorized inference is needed to assess current market conditions.
+
+### Conditional entry policy v2
+
+New daily contexts identify swing_entry_policy=conditional_entry_v2.
+A long/short proposal supplies execution (one future 4h/1d close followed by
+a limit at the grounded entry on a later retest) and first_obstacle.
+The displayed trigger is generated from these fields; original trigger prose
+is retained. No second close or guaranteed fill at a historical price is implied.
+Confirmation/fills remain unobserved, and the existing report-time entry expiry
+is unchanged. These advisory fields never reach the order/position engine.
+
+The analyst identifies the first significant opposing structural obstacle and
+explains its relevance; not every nearby OHLC level is a gate. none_in_path
+requires an explanation and does not prove absence of obstacles. Identified
+obstacles must be grounded and between entry and the final target. Existing
+conservative execution costs are used for R:R both to targets and to the
+obstacle; any ratio below 1.5 rejects only the proposal, not the daily report.
+No entry/stop/target is automatically moved. Rejected proposals retain their
+original fields and numeric diagnostic details for inspection.
+
+Archived plans with no v2 metadata remain readable and marked as unassessed by
+this policy. No saved DB report is rewritten and no inference is retried.
+The market significance/completeness of the selected obstacle still depends on
+the analyst; this validation cannot independently prove that the AI found every
+important obstacle.

@@ -116,6 +116,9 @@ async def build_daily_context(symbol: str, market: MarketDataService | None = No
         "news_and_calendar": "unavailable_no_external_news_feed",
     }
 
+    if extended:
+        context["swing_entry_policy"] = "conditional_entry_v2"
+
     context["history_coverage"] = {
         "requested_days": history_days,
         "daily_count": len(context["candles"]["1d"]),
