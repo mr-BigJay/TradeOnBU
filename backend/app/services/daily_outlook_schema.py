@@ -18,9 +18,11 @@ class Scenario(StrictModel):
     invalidation_fa: str = Field(min_length=10, max_length=220)
     activation_level_ids: list[str] = Field(min_length=1, max_length=3)
     invalidation_level_ids: list[str] = Field(min_length=1, max_length=3)
-    target_level_ids: list[str] = Field(min_length=1, max_length=3)
+    target_level_ids: list[str] = Field(default_factory=list, max_length=3)
     path_fa: list[Annotated[str, Field(min_length=1, max_length=180)]] = Field(min_length=2, max_length=2)
     path_level_ids: list[str] = Field(default_factory=list, max_length=6)
+    retest_level_ids: list[str] = Field(default_factory=list, max_length=3)
+    target_unavailable_reason_fa: str | None = Field(default=None, max_length=400)
     target_zone_level_ids: list[str] = Field(default_factory=list, max_length=2)
 
 
@@ -91,9 +93,9 @@ class Outlook(StrictModel):
     daily_structure_fa: str = Field(min_length=10, max_length=250)
     dominant: Scenario
     alternative: Scenario
-    uncertainty_fa: str = Field(min_length=10, max_length=250)
+    uncertainty_fa: str = Field(min_length=10, max_length=600)
     watch_next_fa: list[Annotated[str, Field(min_length=1, max_length=180)]] = Field(min_length=1, max_length=2)
-    change_since_previous_fa: str = Field(min_length=5, max_length=200)
+    change_since_previous_fa: str = Field(min_length=5, max_length=500)
 
     @model_validator(mode="after")
     def different_scenarios(self):
@@ -133,11 +135,17 @@ def parse_outlook(text: str, context: dict, *, execution_plan: dict | None = Non
         levels.append({**selected.model_dump(), "price": actual, "source": "ai_selected_closed_candle"})
     allowed = {level["id"] for level in levels}
     for scenario in (result.dominant, result.alternative):
-        ids = scenario.activation_level_ids + scenario.invalidation_level_ids + scenario.target_level_ids + scenario.path_level_ids + scenario.target_zone_level_ids
-        if scenario.path_level_ids and (len(scenario.path_level_ids) < 2 or scenario.path_level_ids[-1] not in scenario.target_level_ids):
+        ids = scenario.activation_level_ids + scenario.invalidation_level_ids + scenario.target_level_ids + scenario.path_level_ids + scenario.target_zone_level_ids + scenario.retest_level_ids
+        if scenario.target_level_ids and scenario.path_level_ids and (len(scenario.path_level_ids) < 2 or scenario.path_level_ids[-1] not in scenario.target_level_ids):
             raise ValueError("invalid_chart_path")
         if not set(ids) <= allowed:
             raise ValueError("unknown_evidence_level")
+        if not independent and not scenario.target_level_ids:
+            raise ValueError("missing_scenario_target")
+        if not scenario.target_level_ids and (scenario.path_level_ids or scenario.target_zone_level_ids):
+            raise ValueError("targetless_scenario_has_target_path")
+        if independent and not scenario.target_level_ids and not scenario.target_unavailable_reason_fa:
+            raise ValueError("missing_target_unavailable_reason")
         if scenario.target_zone_level_ids:
             prices = {level["id"]: level["price"] for level in levels}
             bounds = [prices[key] for key in scenario.target_zone_level_ids]
@@ -147,6 +155,25 @@ def parse_outlook(text: str, context: dict, *, execution_plan: dict | None = Non
         if any(not stage.strip() or len(stage) > 180 for stage in scenario.path_fa):
             raise ValueError("invalid_scenario_stage")
     output = result.model_dump()
+    if independent:
+        prices = {level["id"]: level["price"] for level in levels}
+        quote = context.get("live_price")
+        for key in ("dominant", "alternative"):
+            scenario = output[key]
+            sign = {"bullish": 1, "bearish": -1}.get(scenario["direction"], 0)
+            refs = scenario["path_level_ids"][:-1] or scenario["activation_level_ids"]
+            reference = prices[refs[-1]] if refs else quote
+            targets = [prices[k] for k in scenario["target_level_ids"]]
+            bounds = [prices[k] for k in scenario["target_zone_level_ids"]]
+            if sign and targets and (
+                not isinstance(quote, (int, float)) or not math.isfinite(quote)
+                or any(sign * (p - quote) <= 0 or sign * (p - reference) <= 0 for p in targets + bounds)
+            ):
+                # Preserve the narrative and raw response; never invent a replacement price.
+                scenario.update(target_level_ids=[], target_zone_level_ids=[], path_level_ids=[],
+                    target_unavailable_reason_fa="هدف پیشنهادی با جهت سناریو و قیمت مرجع سازگار نبود؛ هدف معتبر مشخص نشده است.",
+                    target_validation="rejected_geometry")
+
     supplied = (context.get("market_intelligence") or {}).get("sources") or {}
     entries = {item.source: item.model_dump() for item in result.supplemental_evidence}
     if len(entries) != len(result.supplemental_evidence) or not set(entries) <= set(supplied):
@@ -291,7 +318,7 @@ Use 4h only to explain the current development. Analyse the candles yourself; no
 engine candidate, WAIT state, trend filter, POI list or channel should determine your conclusion.
 The report updates daily; its conditional horizon is several days to roughly two weeks,
 not a promise to reach a price tomorrow. State the available history's limitations:
-about 80 daily bars and 12 completed weeks cannot establish a multi-year cycle top/bottom.
+Read actual market.history_coverage counts; even one year cannot establish a multi-year cycle top/bottom.
 Explain weekly direction and daily structure separately. Distinguish a correction within
 a larger trend, continuation, range, and possible reversal. Never claim a trend has ended
 merely because price touches support or momentum slows. In trend_assessment explain:
@@ -301,7 +328,14 @@ expected_path_fa: ordered conditional destinations with dollar prices and a comp
 horizon_fa: approximate scenario horizon, explicitly not a target-arrival deadline.
 Choose a dominant scenario and a different alternative, with clear activation and invalidation
 conditions referencing actual levels. Each path_fa has exactly two concise conditional stages.
-path_level_ids has 2-6 IDs ending at a target ID. No fabricated probabilities or win rates.
+Separate retest_level_ids (pullback/retest areas) from target_level_ids (destinations).
+For directional scenarios, targets must lie beyond both the live quote and the last
+activation/path reference in the stated direction. Never put a retest above spot into
+a bearish target just to fill a field (or the inverse for bullish).
+When a grounded destination is unavailable, use empty target_level_ids,
+path_level_ids and target_zone_level_ids, and explain briefly in target_unavailable_reason_fa.
+You can still state the directional thesis and retest levels; this is NOT a WAIT gate.
+Otherwise path_level_ids has 2-6 IDs ending at a target ID. No fabricated probabilities or win rates.
 For each scenario, target_zone_level_ids may contain exactly two grounded level IDs,
 lower then upper, bounding the FINAL path destination. Use a narrow structurally justified
 reaction area, not the entire distance between successive targets. Explain the area in the
@@ -351,7 +385,12 @@ The legacy trade_plan must use action=wait,
 null entry_level_id and stop_level_id, empty target_level_ids, and explain that entry
 requires a separate fresh assessment. No execution engine snapshot is attached.
 Use readable Persian throughout, explicit dollar levels, and no raw IDs in prose.
-Keep the report about 350-500 Persian words with no repetitive introductions. Return only
+Keep all narrative text together about 200-300 Persian words. Summary: at most 60 words.
+Each remaining field should be one short sentence; avoid repeating the summary.
+State the current directional assessment first, then a simple condition that changes it.
+Do not require close + reclaim + retest simultaneously just to express an outlook.
+Keep uncertainty_fa and change_since_previous_fa to one concise sentence each;
+the schema character limits are safety ceilings, not targets for verbosity. Return only
 one JSON object matching the schema. trend_assessment is REQUIRED in this mode.
 """ + json.dumps(Outlook.model_json_schema(), ensure_ascii=False)
 

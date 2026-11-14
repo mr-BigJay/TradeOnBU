@@ -67,11 +67,12 @@ def level_context(daily: list[Candle], weekly: list[Candle], four_hour: list[Can
     return [{"id": key, "label_fa": label, "price": price} for key, label, price in candidates]
 
 
-async def build_daily_context(symbol: str, market: MarketDataService | None = None) -> dict:
+async def build_daily_context(symbol: str, market: MarketDataService | None = None, *, extended: bool = False) -> dict:
     market = market or MarketDataService()
     now_ms = market._now_ms()
-    start = (now_ms // DAY) * DAY - 90 * DAY
-    bundle = await market.fetch_historical_closed(symbol, "4h", from_ms=start, max_bars=600)
+    history_days = 370 if extended else 90
+    start = (now_ms // DAY) * DAY - history_days * DAY
+    bundle = await market.fetch_historical_closed(symbol, "4h", from_ms=start, max_bars=2400 if extended else 600)
     if not bundle.data_complete:
         raise ValueError("incomplete_4h_history")
     bars = sorted(bundle.closed, key=lambda b: b.time_ms)
@@ -109,12 +110,18 @@ async def build_daily_context(symbol: str, market: MarketDataService | None = No
         "source": "Bitunix futures; 1D/1W aggregated from complete 4h candles, UTC Monday weeks",
         "data_quality_warnings": warnings, "horizon_days": [3, 7], "live_price": quote.price,
         "columns": ["open_time_ms", "open", "high", "low", "close", "volume"],
-        "candles": {"1w": compact(weekly[-12:]), "1d": compact(daily[-80:]), "4h": compact(bars[-120:])},
+        "candles": {"1w": compact(weekly[-52:] if extended else weekly[-12:]), "1d": compact(daily[-365:] if extended else daily[-80:]), "4h": compact(bars[-120:])},
         "levels": level_context(daily, weekly, bars),
         "daily_atr14": sum(trs) / len(trs),
         "news_and_calendar": "unavailable_no_external_news_feed",
     }
 
+    context["history_coverage"] = {
+        "requested_days": history_days,
+        "daily_count": len(context["candles"]["1d"]),
+        "weekly_count": len(context["candles"]["1w"]),
+        "four_hour_count": len(context["candles"]["4h"]),
+    }
     # Compute exactly the same geometry used by the report image, before inference.
     from app.services.daily_outlook_image import chart_snapshot
     from app.services.daily_outlook_geometry import channel_context

@@ -44,9 +44,15 @@ def chart_snapshot(context: dict, report: dict) -> dict:
               if isinstance(l.get("price"), (int, float)) and math.isfinite(l["price"]) and l["price"] > 0}
     paths = []
     target_zones = []
+    retests = []
     referenced = set()
     for key in ("dominant", "alternative"):
         s = report.get(key) or {}
+        for level_id in s.get("retest_level_ids") or []:
+            if level_id in levels:
+                retests.append({"kind": key, "price": levels[level_id]["price"]})
+        if not s.get("target_level_ids"):
+            continue
         for field in ("activation_level_ids", "target_level_ids", "invalidation_level_ids"):
             referenced.update(s.get(field) or [])
         ids = s.get("path_level_ids") or ((s.get("activation_level_ids") or []) + (s.get("target_level_ids") or []))
@@ -68,7 +74,7 @@ def chart_snapshot(context: dict, report: dict) -> dict:
     nearby = nearby_levels(list(levels.values()), quote)
     referenced.update(l["id"] for side in nearby.values() for l in side)
     return {"nearby": nearby, "channel": ({"available": False, "reason": "independent_daily_chart"} if independent else context["chart_channel"] if "chart_channel" in context else pivot_channel(rows, anchor, step, quote)), "anchor": anchor, "quote": quote, "bars": rows, "step": step,
-            "paths": paths, "target_zones": target_zones, "independent": independent, "levels": [l for key, l in levels.items() if key in referenced]}
+            "paths": paths, "target_zones": target_zones, "retests": retests, "independent": independent, "levels": [l for key, l in levels.items() if key in referenced]}
 
 
 @lru_cache(maxsize=8)
@@ -119,6 +125,14 @@ def render_report_image(snapshot_json: str) -> bytes:
                 [channel["upper"]+slope*channel["start_day"],channel["upper"]+slope*channel["end_day"]],color="#80aaff",alpha=.04)
         codes = {l["id"]:l["code"] for side in data["nearby"].values() for l in side}
         colors = {"dominant": "#5ce1bb", "alternative": "#e9b56d"}
+        for retest in data["retests"]:
+            all_prices.append(retest["price"])
+            ax.hlines(retest["price"], 0, 7.3, color="#a9b8d1", linestyle=":", linewidth=1)
+            ax.text(.15, retest["price"], f"Retest ({retest['kind']}): {retest['price']:,.2f}",
+                    color="#a9b8d1", fontsize=8, va="bottom")
+        if not any(p["kind"] == "dominant" for p in data["paths"]):
+            ax.text(.98, .98, "Main scenario: no validated target", transform=ax.transAxes,
+                    ha="right", va="top", color="#e9b56d", fontsize=10)
         for zone in data["target_zones"]:
             color = colors[zone["kind"]]
             all_prices.extend([zone["low"], zone["high"]])

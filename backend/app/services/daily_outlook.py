@@ -184,7 +184,7 @@ async def _work(run_id: int) -> None:
         symbol = row.symbol
         slot_ms = row.slot_close_ms
     # Data acquisition/validation precedes the only paid inference call.
-    context = await build_daily_context(symbol)
+    context = await build_daily_context(symbol, extended=not bool(slot_ms))
     if slot_ms:
         from app.domain.candles import Candle
         from app.services.poi_context import market_zones

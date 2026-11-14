@@ -9,7 +9,7 @@ type Scenario = {
   title_fa: string; direction: "bullish" | "bearish" | "range";
   thesis_fa: string; activation_fa: string; invalidation_fa: string;
   activation_level_ids: string[]; invalidation_level_ids: string[]; target_level_ids: string[];
-  path_fa: string[]; path_level_ids?: string[];
+  path_fa: string[]; path_level_ids?: string[]; retest_level_ids?: string[]; target_unavailable_reason_fa?: string | null;
 };
 type TradePlan = {
   source?: string; setup_id?: string;
@@ -74,7 +74,8 @@ function ScenarioCard({ scenario: s, levels, primary }: { scenario: Scenario; le
     <LevelList ids={s.activation_level_ids} levels={levels} />
     <h4>مسیر احتمالی، در صورت تحقق شروط</h4>
     <ol className="outlook-path">{s.path_fa.map((step, i) => <li key={i}>{step}</li>)}</ol>
-    <h4>نواحی هدف احتمالی</h4><LevelList ids={s.target_level_ids} levels={levels} />
+    {!!s.retest_level_ids?.length && <><h4>نواحی بازآزمایی؛ نه هدف</h4><LevelList ids={s.retest_level_ids} levels={levels} /></>}
+    <h4>نواحی هدف احتمالی</h4>{s.target_level_ids.length ? <LevelList ids={s.target_level_ids} levels={levels} /> : <p>{s.target_unavailable_reason_fa || "هدف معتبر مشخص نشده است."}</p>}
     <div className="outlook-invalidation"><h4>چه چیزی سناریو را باطل می‌کند؟</h4><p>{s.invalidation_fa}</p>
       <LevelList ids={s.invalidation_level_ids} levels={levels} /></div>
   </article>;

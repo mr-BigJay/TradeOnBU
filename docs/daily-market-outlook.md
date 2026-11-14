@@ -142,3 +142,23 @@ without two meaningful bounds it labels the target price without inventing a ban
 The model is instructed to choose a reaction area, not the span of successive targets.
 Saved historical images remain immutable. Both the dashboard and Telegram use
 the same renderer; no extra inference or market-data request is added.
+
+## Target semantics and concise daily reports
+
+Daily generation requests 370 days of 4h history (bounded to 2400 bars), sending
+up to 365 complete daily bars, 52 complete weeks and the latest 120 4h bars.
+Actual counts are recorded in history_coverage; missing history remains explicit.
+Four-hour reports keep their existing history window.
+
+Retest IDs are distinct from destination IDs. Independent scenarios can omit
+targets with an explanation. A directional target and its zone must be beyond
+both the live quote and the last activation/path reference in the scenario's
+direction. Inconsistent numeric targets are removed and flagged, without
+inventing replacements or blocking the narrative. This conservative rule can
+exclude countertrend paths; it is not an entry gate. Charts, panel and Telegram
+distinguish retests and unavailable targets. Archived responses are unchanged.
+
+The daily prompt requests about 200–300 Persian words total, one short sentence
+per secondary field. Uncertainty/change fields accept 600/500 characters so
+minor length overruns do not discard a paid response; text is not truncated
+during validation. No new indicator, entry gate or automatic order is added.
