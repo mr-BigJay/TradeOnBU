@@ -21,7 +21,7 @@ def test_stop_tracks_observed_extreme_and_does_not_inflate_risk(short):
         contract['evidence']['obstacle']=2000-contract['evidence']['obstacle']
         contract['direction']='SHORT';bars=[Candle(979,986,976,979,stamp)]
     row=NS(direction=contract['direction'],structured_snapshot={'verified_trade_plan':contract},
-           confirmation_state={'confirmation_timestamps':{'liquidity_sweep':stamp}})
+           confirmation_state={'confirmation_timestamps':{'htf_sweep_reclaim':stamp}})
     plan,error=execution_plan(row,c,bars,n)
     assert error is None
     assert plan['stop']>986 if short else plan['stop']<1014
@@ -92,17 +92,22 @@ def test_catalog_preserves_ob_status_and_touch_metadata(monkeypatch):
 
 def test_recent_proof_needs_known_reference_and_cannot_replay_a_fill():
     step=300000;end=30*step
-    area=dict(time_ms=0,timeframe='5m',confirmed_ms=step)
-    contract=dict(strategy_id='ict_reversal',direction='LONG',zone=[99,101],entry=100,
+    area=dict(time_ms=0,timeframe='1h',confirmed_ms=step)
+    contract=dict(strategy_id='ict_reversal',confirmation_type='htf_sweep_reclaim',
+        direction='LONG',zone=[99,101],entry=100,
         invalidation=90,breakout_level=None,evidence={'zone':area,'invalidation':area},
-        confirmation_reference={'liquidity_price':95,'break_price':105,'break_confirmed_ms':2*step})
-    bars=[Candle(100,101,94,99,27*step),Candle(99,107,99,106,28*step),Candle(106,108,105,107,29*step)]
+        confirmation_reference={'liquidity_price':95})
+    # The trigger is a closed reclaim of a named HTF level; a later entry
+    # touch must never be replayed as if a new limit order had been present.
+    bars=[Candle(98,102,94,99,27*step),
+          Candle(106,108,105,107,28*step),
+          Candle(107,109,106,108,29*step)]
     seed=recent_confirmations(contract,bars,end)
-    assert seed['confirmation_timestamps']=={'liquidity_sweep':27*step,'mss':28*step}
+    assert seed['confirmation_timestamps']=={'htf_sweep_reclaim':27*step}
     assert 'entry_zone_touch' not in seed['confirmation_timestamps']
-    bars[-1]=Candle(106,108,99,107,29*step)
+    bars[-1]=Candle(107,109,99,108,29*step)
     assert not recent_confirmations(contract,bars,end)
-    contract['confirmation_reference']['break_confirmed_ms']=end
+    contract['evidence']['zone']['confirmed_ms']=end
     assert not recent_confirmations(contract,bars[:2],end)
 
 
