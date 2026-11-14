@@ -14,13 +14,13 @@ from app.services.analyst_outlook import compile_forecasts
 from app.services.analyst_major_levels import select_major_levels, minimum_forecast_gap
 
 VERSION = 'multi_setup_analyst_v1'
-PROMPT_VERSION = 5
+PROMPT_VERSION = 6
 STEPS = {'1m':60000,'5m':300000,'15m':900000,'1h':3600000,'4h':14400000}
-PROFILES = {'ict_reversal':'sweep_mss_poi', 'trend_continuation':'trend_pullback_resume', 'breakout_retest':'level_breakout_retest'}
+PROFILES = {'ict_reversal':'htf_sweep_reclaim', 'trend_continuation':'htf_pullback_rejection', 'breakout_retest':'htf_breakout_close'}
 TRIGGERS = {
- 'ict_reversal':'Sweep و سپس MSS روی کندل بستهٔ 5m؛ سفارش محدود برای بازگشت بعدی به ناحیه.',
- 'trend_continuation':'اصلاح به ناحیه و سپس بسته‌شدن کندل 5m در جهت روند، فراتر از سقف/کف کندل قبل؛ سفارش محدود برای بازگشت بعدی.',
- 'breakout_retest':'عبور قیمت بسته‌شدن 5m از سطح، سپس بازآزمایی و بسته‌شدن در سمت شکست؛ سفارش محدود برای بازگشت بعدی.',
+ 'ict_reversal':'Sweep و بازپس‌گیری سطح معتبر 1H/4H با یک کندل بستهٔ 5m؛ سفارش Limit برای بازگشت بعدی.',
+ 'trend_continuation':'کندل بستهٔ 5m با واکنش جهت‌دار به حمایت/مقاومت معتبر 1H/4H در جهت روند؛ سفارش Limit برای بازگشت بعدی.',
+ 'breakout_retest':'شکست قطعی حمایت/مقاومت 1H/4H با بسته‌شدن کندل 5m؛ سفارش Limit منتظر بازآزمایی بعدی.',
 }
 INSTRUCTIONS = '''You are a multi-scenario BTCUSDT analyst, not a reviewer of preselected reversal candidates.
 Compare trend continuation, reversal, and breakout/retest using 4H/1H context and 15m/5m execution. Prefer trend-continuation pullbacks, then breakout opportunities, then countertrend reversals where evidence supports them; NEVER manufacture a setup to meet a quota.
@@ -60,11 +60,7 @@ Select meaningful candle-backed areas; NEVER invent price levels, IDs, confidenc
 For continuation, use ONLY execution_regime.timeframes.1h.trend and .4h.trend as the executable trend: bullish/bearish are defined by two confirmed swing highs AND lows, NOT EMA slope or narrative bias. LONG requires 1h bullish and 4h not bearish; SHORT requires 1h bearish and 4h not bullish. If EMA or your visual impression disagrees, explicitly explain the discrepancy and do not propose a continuation that fails the swing rule. Breakout uses resistance for LONG or support for SHORT.
 Explain why each selected scenario is preferable and why alternatives were not selected.
 Server derives midpoint limit entry, ATR-buffered structural stop and cost-adjusted target before the nearest obstacle.
-Server verifies these EXACT conditions from the most recent 15 minutes of closed evidence or forward after registration: reversal=sweep then MSS; continuation=zone pullback
-then a directional close beyond prior 5m high/low; breakout=5m close crossing the level then a retest holding it.
-For reversal, sweep the selected invalidation area's reference price and reclaim it;
-MSS must close through the latest confirmed opposite 5m pivot, fixed when the plan is compiled.
-All require a later limit fill. Do not describe additional unimplemented conditions as executable requirements.
+Server checks one objective closed-5m trigger per new analyst setup: reversal=HTF liquidity sweep and strong reclaim; continuation=directional rejection on the selected HTF pullback area; breakout=5m close crossing a HTF level. All require a separate later limit-order fill. Do not claim an additional MSS, retest confirmation or 5m micro support is mandatory for the new analyst contract. Legacy setups retain their own historical confirmation policies.
 A proposal is NOT an entry signal; only server-verified candles can mark events completed. No market-on-touch orders.
 Respect source/timeframe/venue caveats; missing optional evidence is not a directional signal. No return promises.
 LANGUAGE CONTRACT: Every field ending in _fa MUST be fluent Persian (Farsi), written in Persian script. Never use Armenian, Cyrillic, or another language. Before returning JSON, verify market_summary_fa, comparison_fa and every reason_fa are Persian. Keep technical abbreviations such as EMA, RSI, ADX, ATR, RVOL, MSS, BOS, FVG and OB in Latin script when useful.
@@ -159,16 +155,21 @@ def compile_plan(proposal, evidence, series, costs, now_ms, observed_ms):
     aligned='bullish' if sign==1 else 'bearish';opposed='bearish' if sign==1 else 'bullish'
     if sid=='trend_continuation' and (regime!=aligned or higher==opposed):raise ValueError('continuation_trend_conflict')
     if sid=='breakout_retest' and z['kind']!=('resistance' if sign==1 else 'support'):raise ValueError('breakout_requires_level')
+    if sid in ('ict_reversal','trend_continuation') and z['kind'] not in (('support' if sign==1 else 'resistance'),'OB'):raise ValueError('reversal_continuation_requires_support_resistance')
     # Do not promote arbitrary lower-timeframe pivots or OBs to primary trade levels.
     # LTF FVGs may still refine entry when the 1H trend and structural stop support it.
     if z['kind'] in ('support', 'resistance', 'OB') and z['timeframe'] not in ('1h', '4h'):
         raise ValueError('execution_requires_major_structure')
+    if z['timeframe'] not in ('1h', '4h') or z['kind'] not in ('support', 'resistance', 'OB'):
+        raise ValueError('execution_requires_major_structure')
+    if inv['timeframe'] not in ('1h', '4h') or inv['kind'] not in ('support', 'resistance', 'OB'):
+        raise ValueError('stop_requires_major_structure')
     if z.get('direction') and z['direction']!=direction:raise ValueError('zone_direction_conflict')
     entry=round((z['low']+z['high'])/2,1)
     invalidation=inv['low'] if sign==1 else inv['high']
     if sign*((z['low'] if sign==1 else z['high'])-invalidation)<=0:raise ValueError('invalidation_inside_zone')
     if sign*(series['1m'][-1].close-invalidation)<=0:raise ValueError('already_invalidated')
-    if target['kind']!=('resistance' if sign==1 else 'support'):raise ValueError('target_requires_structural_level')
+    if target['kind']!=('resistance' if sign==1 else 'support') or target['timeframe'] not in ('1h','4h'):raise ValueError('target_requires_structural_level')
     vol=atr(series['5m'])
     stop=_tick(invalidation-sign*max(.25*vol,.1),sign)
     if sign*(entry-stop)<vol:stop=_tick(entry-sign*vol,sign)
@@ -176,7 +177,7 @@ def compile_plan(proposal, evidence, series, costs, now_ms, observed_ms):
     if not 0<sign*(entry-stop)<=stop_limit:raise ValueError('stop_too_wide')
     obstacle=target['price']-sign*.1*vol
     if sign*(obstacle-entry)<=0:raise ValueError('target_wrong_side')
-    obstacles=[x['price']-sign*.1*vol for x in evidence if x['timeframe'] in ('15m','1h','4h')
+    obstacles=[x['price']-sign*.1*vol for x in evidence if x['timeframe'] in ('1h','4h')
                and x['kind']==('resistance' if sign==1 else 'support') and sign*(x['price']-entry)>.1*vol]
     if obstacles:obstacle=min([obstacle,*obstacles]) if sign==1 else max([obstacle,*obstacles])
     tp=target_at_net_rr(costs,direction,entry,stop,obstacle)
@@ -193,13 +194,10 @@ def compile_plan(proposal, evidence, series, costs, now_ms, observed_ms):
                      'stop_distance_limit':stop_limit,
                      'hourly_regime':regime,'four_hour_regime':higher,'confirmed':False})
     if sid=='ict_reversal':
-        from app.services.ict_structure import find_swings
-        pivots=[p for p in find_swings(series['5m']) if p.kind==('HIGH' if sign==1 else 'LOW')]
-        if not pivots:raise ValueError('missing_reference_swing')
-        pivot=pivots[-1]
+        # A single *closed* sweep/reclaim of the server-supplied major
+        # invalidation level replaces the old mandatory sweep-plus-MSS chain.
         c['confirmation_reference']={'liquidity_price':inv['price'], 'liquidity_id':inv['id'],
-            'liquidity_timeframe':inv['timeframe'], 'break_price':pivot.price,
-            'break_pivot_ms':pivot.time_ms,'break_confirmed_ms':series['5m'][pivot.index+2].time_ms+STEPS['5m']}
+            'liquidity_timeframe':inv['timeframe']}
     from app.services.analyst_confirmation import recent_confirmations
     c['seed_confirmations']=recent_confirmations(c,series['5m'],observed_ms)
     c['opportunity_id']=f"{VERSION}:{sid}:{direction}:{z['id']}:{observed_ms//14400000}"
@@ -208,7 +206,7 @@ def compile_plan(proposal, evidence, series, costs, now_ms, observed_ms):
     trigger=TRIGGERS[sid]
     if sid=='ict_reversal':
         ref=c['confirmation_reference']
-        trigger=f"Sweep و بازپس‌گیری سطح {ref['liquidity_price']:g}، سپس عبور بسته‌شدن 5m از پیوت مرجع {ref['break_price']:g}؛ ورود با سفارش محدود پس از تأیید کندلی."
+        trigger=f"Sweep و بازپس‌گیری معتبر سطح {ref['liquidity_price']:g} با کندل بستهٔ 5m؛ ثبت سفارش Limit برای پولبک بعدی."
     return dict(strategy_id=sid,decision='NO_TRADE',final_ai_decision='WAIT',setup_mode='conditional',
         potential_direction=direction,entry_price=entry,entry_zone_low=z['low'],entry_zone_high=z['high'],
         conditional_entry_zone_low=z['low'],conditional_entry_zone_high=z['high'],stop_loss=stop,take_profit=tp,
