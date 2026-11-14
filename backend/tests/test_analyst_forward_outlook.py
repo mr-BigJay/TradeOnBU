@@ -13,7 +13,9 @@ from tests.test_multi_setup_analyst import fixture
 
 def test_bounce_and_break_scenarios_survive_zero_executable_plans():
     series, costs, evidence, now = fixture()
-    evidence = deepcopy(evidence)
+    # This forecast fixture tests three isolated major areas, not the
+    # extra support-zone introduced for the executable B strategy fixture.
+    evidence = [item for item in deepcopy(evidence) if item["id"] != "support_zone"]
     evidence[0].update(timeframe="1h", low=1040., high=1042., price=1041.,
                        status="fresh", touch_count=0)
     evidence[1].update(timeframe="4h", status="retested", touch_count=3)
