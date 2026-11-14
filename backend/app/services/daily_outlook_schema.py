@@ -161,8 +161,10 @@ def parse_outlook(text: str, context: dict, *, execution_plan: dict | None = Non
         for key in ("dominant", "alternative"):
             scenario = output[key]
             sign = {"bullish": 1, "bearish": -1}.get(scenario["direction"], 0)
-            refs = scenario["path_level_ids"][:-1] or scenario["activation_level_ids"]
-            reference = prices[refs[-1]] if refs else quote
+            # Path waypoints may themselves be targets. Compare destinations with
+            # activation levels, never with an intermediate destination.
+            refs = scenario["activation_level_ids"]
+            reference = max((prices[k] for k in refs), key=lambda p: sign * p) if refs else quote
             targets = [prices[k] for k in scenario["target_level_ids"]]
             bounds = [prices[k] for k in scenario["target_zone_level_ids"]]
             if sign and targets and (
