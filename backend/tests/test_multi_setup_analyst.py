@@ -437,3 +437,28 @@ def test_weekend_policy_is_tehran_local_and_blocks_only_new_entries():
     assert not new_entries_allowed(datetime(2026,11,13,20,30,tzinfo=timezone.utc))
     assert not new_entries_allowed(datetime(2026,11,15,20,29,tzinfo=timezone.utc))
     assert new_entries_allowed(datetime(2026,11,15,20,30,tzinfo=timezone.utc))
+
+
+@pytest.mark.asyncio
+async def test_tehran_weekend_suppresses_scheduled_analyst_and_new_paper_order(session,monkeypatch):
+    from app.domain import trading_calendar
+    from app.services.ai_analysis_scheduler import should_run_scheduled
+    from app.services import daily_outlook
+    from app.services.paper_auto_trading import maybe_auto_open_paper_position
+    monkeypatch.setenv("MULTI_SETUP_ANALYST_ENABLED","1")
+    monkeypatch.setattr(trading_calendar, "new_entries_allowed", lambda _now: False)
+    # No model API charge and no scheduled outlook on weekend.
+    assert await should_run_scheduled(session) is False
+    reserve=AsyncMock()
+    monkeypatch.setattr(daily_outlook,"reserve_run",reserve)
+    await daily_outlook.daily_outlook_tick()
+    reserve.assert_not_awaited()
+
+    series,costs,evidence,now=fixture()
+    plan=a.compile_plan(proposal("trend_continuation"),evidence,series,costs,now,now)
+    setup=SimpleNamespace(structured_snapshot=plan)
+    result=await maybe_auto_open_paper_position(
+        session,run_id=1,setup=setup,validation={},structured=plan,symbol="BTCUSDT"
+    )
+    assert result["created"] is False
+    assert result["reason"]=="weekend_new_entries_disabled"
