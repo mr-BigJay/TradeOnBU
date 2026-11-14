@@ -398,3 +398,30 @@ def test_fast_analyst_requires_correct_htf_role_and_fully_confirmed_levels():
     wrong=deepcopy(e);wrong[0]['confirmed_ms']=n+300000
     with pytest.raises(ValueError,match='major_structure_not_yet_confirmed'):
         a.compile_plan(proposal("breakout_retest"),wrong,s,c,n,n)
+
+
+@pytest.mark.asyncio
+async def test_new_analyst_paper_position_exits_at_48h_only_after_closed_bar():
+    from app.services.position.position_monitor import SimPositionMonitorService
+    from app.services.multi_setup_analyst import VERSION
+    entry_ms=300_000
+    details={"verified_trade_plan":{"version":VERSION,"confirmation_type":"htf_pullback_rejection"},
+             "entry_fill_bar_ms":entry_ms}
+    pos=SimpleNamespace(direction="LONG",fill_price=1000.,entry_price=1000.,
+        leverage=3,stop_loss=900.,take_profit=1100.,extra=details)
+    svc=SimPositionMonitorService()
+    svc.positions._close_position=AsyncMock()
+    early=Candle(1000,1001,999,1000,entry_ms+24*60*60*1000)
+    assert not await svc._handle_open_bar(None,pos,None,early)
+    svc.positions._close_position.assert_not_awaited()
+    final=Candle(1000,1001,999,1000,entry_ms+48*60*60*1000-60_000)
+    assert await svc._handle_open_bar(None,pos,None,final)
+    assert svc.positions._close_position.await_args.kwargs["reason"]=="time_exit"
+    svc.positions._close_position.reset_mock()
+    stop_first=Candle(950,1001,890,895,final.time_ms)
+    assert await svc._handle_open_bar(None,pos,None,stop_first)
+    assert svc.positions._close_position.await_args.kwargs["reason"]=="sl_hit"
+    svc.positions._close_position.reset_mock()
+    pos.extra={"verified_trade_plan":{"version":"legacy"},"entry_fill_bar_ms":entry_ms}
+    assert not await svc._handle_open_bar(None,pos,None,final)
+    svc.positions._close_position.assert_not_awaited()
