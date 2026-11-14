@@ -361,6 +361,10 @@ async def execute_reserved(run_id: int, owner: str) -> None:
 
 async def daily_outlook_tick() -> None:
     from app.services.multi_setup_analyst import enabled as analyst_enabled
+    if analyst_enabled():
+        from app.domain.trading_calendar import new_entries_allowed
+        if not new_entries_allowed(datetime.now(timezone.utc)):
+            return
     for cadence in (("4h", "daily") if four_hour_enabled() and not analyst_enabled() else ("daily",)):
         run_id, owner, _ = await reserve_run("scheduled", cadence)
         if owner and run_id:
