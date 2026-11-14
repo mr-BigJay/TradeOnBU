@@ -200,6 +200,8 @@ async def test_api_discovers_plans_without_old_candidate_and_persists_before_del
 @pytest.mark.asyncio
 @pytest.mark.parametrize('sid,deep_sweep',[(sid,False) for sid in a.PROFILES]+[('ict_reversal',True)])
 async def test_real_monitor_confirms_then_places_limit_and_fills_later(session,monkeypatch,sid,deep_sweep):
+    from app.domain import trading_calendar
+    monkeypatch.setattr(trading_calendar, "new_entries_allowed", lambda _now: True)
     from app.models import AiAnalysisRun,SimPosition
     from app.services.strategy_candidates import persist_strategy_candidates
     from app.services.position.settings_service import get_or_create_settings
@@ -277,6 +279,8 @@ async def test_real_monitor_confirms_then_places_limit_and_fills_later(session,m
 
 @pytest.mark.asyncio
 async def test_daily_outlook_remains_daily_without_duplicate_four_hour_calls(monkeypatch):
+    from app.domain import trading_calendar
+    monkeypatch.setattr(trading_calendar, "new_entries_allowed", lambda _now: True)
     from app.services import daily_outlook
     monkeypatch.setenv('MULTI_SETUP_ANALYST_ENABLED','1')
     monkeypatch.setenv('OUTLOOK_FOUR_HOUR_ENABLED','1')
@@ -425,3 +429,11 @@ async def test_new_analyst_paper_position_exits_at_48h_only_after_closed_bar():
     pos.extra={"verified_trade_plan":{"version":"legacy"},"entry_fill_bar_ms":entry_ms}
     assert not await svc._handle_open_bar(None,pos,None,final)
     svc.positions._close_position.assert_not_awaited()
+
+
+def test_weekend_policy_is_tehran_local_and_blocks_only_new_entries():
+    from app.domain.trading_calendar import new_entries_allowed
+    assert new_entries_allowed(datetime(2026,11,13,20,29,tzinfo=timezone.utc))
+    assert not new_entries_allowed(datetime(2026,11,13,20,30,tzinfo=timezone.utc))
+    assert not new_entries_allowed(datetime(2026,11,15,20,29,tzinfo=timezone.utc))
+    assert new_entries_allowed(datetime(2026,11,15,20,30,tzinfo=timezone.utc))
