@@ -137,3 +137,41 @@ async def test_daily_pipeline_remembers_history_without_calling_entry_engine(mon
         assert saved.status=='completed'
         assert saved.report['previous_plan_review']['prior_report_id']==old_id
         assert saved.context['response_archive']['execution_plan'] is None
+
+
+def test_generation_contract_requires_non_null_entry_assessment():
+    from app.services.daily_outlook_schema import IndependentOutlook, INDEPENDENT_INSTRUCTIONS
+    from pydantic import ValidationError
+    schema = IndependentOutlook.model_json_schema()
+    assert "swing_plan" in schema["required"]
+    data = report()
+    for value in (None,):
+        data["swing_plan"] = value
+        with pytest.raises(ValidationError):
+            IndependentOutlook.model_validate(data)
+    data["swing_plan"] = proposal().model_dump()
+    assert IndependentOutlook.model_validate(data).swing_plan.action == "long"
+    assert "pending confirmation" in INDEPENDENT_INSTRUCTIONS
+    assert "Optionally provide swing_plan" not in INDEPENDENT_INSTRUCTIONS
+
+
+def test_legacy_missing_assessment_is_not_misrepresented_as_no_opportunity():
+    data = report()
+    data["swing_plan"] = None
+    parsed = parse_outlook(json.dumps(data), market())
+    plan = parsed["swing_plan"]
+    assert plan["validation_reason"] == "entry_assessment_missing"
+    assert "ارزیابی نکرده" in plan["rationale_fa"]
+    assert "entry_price" not in plan
+
+
+def test_pending_confirmation_preserves_valid_entry_prices_in_daily_report():
+    data = report()
+    data["swing_plan"] = proposal().model_dump()
+    ctx = market()
+    parsed = parse_outlook(json.dumps(data), ctx)
+    assert parsed["trade_plan"]["action"] == "wait"  # legacy field only
+    assert parsed["swing_plan"]["action"] == "long"
+    assert parsed["swing_plan"]["entry_price"] == 100
+    assert parsed["swing_plan"]["stop_loss"] == 90
+    assert parsed["swing_plan"]["take_profits"] == [120]

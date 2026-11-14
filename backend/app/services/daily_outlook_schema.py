@@ -104,6 +104,13 @@ class Outlook(StrictModel):
         return self
 
 
+
+class IndependentOutlook(Outlook):
+    # Generation contract: every new daily report must assess an entry.
+    # The legacy parser remains compatible with archived null proposals.
+    swing_plan: SwingPlan
+
+
 def parse_outlook(text: str, context: dict, *, execution_plan: dict | None = None) -> dict:
     raw = text.strip()
     if raw.startswith("```json") and raw.endswith("```"):
@@ -195,6 +202,15 @@ def parse_outlook(text: str, context: dict, *, execution_plan: dict | None = Non
             raise ValueError("unknown_previous_outlook")
         try:
             output["swing_plan"] = validate_swing_plan(result.swing_plan, levels, context)
+            if output["swing_plan"] is None:
+                output["swing_plan"] = {
+                    "source": "independent_swing", "action": "wait",
+                    "execution_status": "not_tracked",
+                    "validation_reason": "entry_assessment_missing",
+                    "rationale_fa": "مدل برنامهٔ ورود را ارزیابی نکرده است؛ این به معنی نبود فرصت معاملاتی نیست.",
+                    "trigger_fa": "برای ارائهٔ ورود، ارزیابی تازهٔ برنامهٔ معاملاتی لازم است.",
+                    "entry_level_id": None, "stop_level_id": None, "target_level_ids": [],
+                }
         except ValueError as exc:
             reasons = {
                 "unknown_swing_level": "سطح پیشنهادی در داده‌های معتبر یافت نشد.",
@@ -365,15 +381,23 @@ Do not equate sampled liquidation/order-book data with complete or durable marke
 Mention supplied data_quality_warnings and material missing data in uncertainty_fa.
 Compare with previous_report: say what changed, persisted, or was invalidated; do not claim
 verified forecasting accuracy from a previous narrative alone.
-Optionally provide swing_plan when a convincing multi-day opportunity exists; otherwise
-use null or action=wait. It is advisory and must NEVER open an order. Use one simple 4h
+You MUST assess a conditional entry in every report and return a non-null swing_plan.
+First evaluate a structurally grounded continuation, pullback or reversal entry consistent
+with the supplied market context. If a valid future entry exists, return action=long/short
+with explicit entry_level_id, stop_level_id, target_level_ids, trigger_fa and entry_valid_hours.
+A pending confirmation is a condition of that plan, NOT by itself a reason for action=wait.
+Do not equate "do not chase the current price" with "no future entry can be planned".
+Do not substitute a scenario activation price for entry without explaining the entry logic.
+If no valid plan exists, return action=wait with a concrete rationale identifying the
+missing structure or failed risk constraint, and trigger_fa explaining what must change.
+Never return null or omit the entry assessment. Do not fabricate prices to satisfy this requirement. It is advisory and must NEVER open an order. Use one simple 4h
 or daily confirmation, not multiple mandatory ICT gates or 5m triggers. Holding horizon
 is 2-14 days, typically 7; entry_valid_hours is separate, at most 48 hours. Do not force
 one trade per report. Entry, stop and target IDs must be grounded levels. Explain structural
 invalidation and the first significant obstacle. Minimum stop distance is 0.5 daily ATR;
 this is only a noise floor, never a reason to fabricate/widen a stop. Estimated NET R:R
 must be >=1.5 after supplied fees, spread/slippage; future funding is unknown and excluded.
-If structure does not permit those constraints, omit the swing proposal instead of forcing it.
+If structure does not permit those constraints, return an explicit reasoned action=wait plan.
 market.previous_outlooks contains dated past reports and their saved levels/plans. Review the
 most relevant prior outlook (even if it had no trade) with previous_plan_review.prior_report_id, explaining
 whether its thesis still holds and its next conditional destination. Say 'اگر وارد شده‌اید':
@@ -389,7 +413,7 @@ Never silently revise the old entry/stop/targets; any new swing_plan is a separa
 Entry expiry is not a position holding deadline. No previous outlook means review=null; when history exists, include a review of its scenario.
 The legacy trade_plan must use action=wait,
 null entry_level_id and stop_level_id, empty target_level_ids, and explain that entry
-requires a separate fresh assessment. No execution engine snapshot is attached.
+is provided separately in swing_plan. The legacy field is not the entry assessment. No execution engine snapshot is attached.
 Use readable Persian throughout, explicit dollar levels, and no raw IDs in prose.
 Keep all narrative text together about 200-300 Persian words. Summary: at most 60 words.
 Each remaining field should be one short sentence; avoid repeating the summary.
@@ -398,7 +422,7 @@ Do not require close + reclaim + retest simultaneously just to express an outloo
 Keep uncertainty_fa and change_since_previous_fa to one concise sentence each;
 the schema character limits are safety ceilings, not targets for verbosity. Return only
 one JSON object matching the schema. trend_assessment is REQUIRED in this mode.
-""" + json.dumps(Outlook.model_json_schema(), ensure_ascii=False)
+""" + json.dumps(IndependentOutlook.model_json_schema(), ensure_ascii=False)
 
 
 

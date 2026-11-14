@@ -163,6 +163,6 @@ it('shows the continuous outlook and an expired advisory swing separately from e
  expect(screen.getByRole('link',{name:'گزارش مرجع'})).toHaveAttribute('href','#/outlook/reports/7');
  expect(screen.getByText('اصلاح در روند بزرگ‌تر')).toBeInTheDocument();
  expect(screen.getByText(/مهلت ورود این پیشنهاد گذشته/)).toBeInTheDocument();
- expect(screen.getByText(/پیشنهاد مشروط سوئینگ/)).toBeInTheDocument();
+ expect(screen.getByText(/برنامهٔ ورود مشروط/)).toBeInTheDocument();
  expect(screen.queryByText('سفارش آزمایشی')).not.toBeInTheDocument();
 });
