@@ -22,8 +22,19 @@ def execution_plan(setup, settings, bars, now_ms):
     if contract.get('version') != VERSION:
         return None, None
     stamps = (setup.confirmation_state or {}).get('confirmation_timestamps') or {}
-    token = {'ict_reversal': 'liquidity_sweep', 'trend_continuation': 'trend_pullback',
-             'breakout_retest': 'breakout_retest'}[contract['strategy_id']]
+    legacy_tokens = {
+        'ict_reversal': 'liquidity_sweep',
+        'trend_continuation': 'trend_pullback',
+        'breakout_retest': 'breakout_retest',
+    }
+    analyst_tokens = {
+        'htf_sweep_reclaim': 'htf_sweep_reclaim',
+        'htf_pullback_rejection': 'htf_pullback_rejection',
+        'htf_breakout_close': 'breakout_close',
+    }
+    # The verified, persisted profile specifies which evidence created the
+    # resting limit; earlier contracts retain their original token mapping.
+    token = analyst_tokens.get(contract.get('confirmation_type')) or legacy_tokens[contract['strategy_id']]
     stamp = stamps.get(token)
     if not isinstance(stamp, int) or stamp + 300000 > now_ms:
         return None, 'execution_structure_unconfirmed'
