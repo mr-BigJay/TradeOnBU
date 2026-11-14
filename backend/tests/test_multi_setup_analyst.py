@@ -19,14 +19,15 @@ def fixture():
         prices=[1000+i*.7+5*math.sin(i*math.pi/4) for i in range(48)]
         series[tf]=[Candle(p,p+2,p-2,p,boundary-(48-i)*step) for i,p in enumerate(prices)]
     costs=SimpleNamespace(default_margin_usdt=50,default_leverage=3,maker_fee_rate=.0002,taker_fee_rate=.0005,slippage_bps=1,default_tp_behavior='market')
-    evidence=[dict(id='zone',kind='resistance',timeframe='1h',time_ms=now-300000,low=1020.,high=1022.,price=1021.,direction=None),
-              dict(id='stop',kind='support',timeframe='15m',time_ms=now-900000,low=1017.,high=1019.,price=1018.,direction=None),
-              dict(id='target',kind='resistance',timeframe='1h',time_ms=now-3600000,low=1060.,high=1062.,price=1061.,direction=None)]
+    evidence=[dict(id='zone',kind='resistance',timeframe='1h',time_ms=now-3600000,low=1020.,high=1022.,price=1021.,direction=None),
+              dict(id='stop',kind='support',timeframe='1h',time_ms=now-7200000,low=1017.,high=1019.,price=1018.,direction=None),
+              dict(id='support_zone',kind='support',timeframe='1h',time_ms=now-10800000,low=1020.,high=1022.,price=1021.,direction=None),
+              dict(id='target',kind='resistance',timeframe='1h',time_ms=now-14400000,low=1060.,high=1062.,price=1061.,direction=None)]
     return series,costs,evidence,now
 
 
 def proposal(sid):
-    return dict(strategy_id=sid,direction='LONG',zone_id='zone',invalidation_id='stop',target_id='target',reason_fa='واکنش به سطح معتبر و فضای کافی تا مقاومت')
+    return dict(strategy_id=sid,direction='LONG',zone_id='zone' if sid=='breakout_retest' else 'support_zone',invalidation_id='stop',target_id='target',reason_fa='واکنش به سطح معتبر و فضای کافی تا مقاومت')
 
 
 def response():
@@ -258,7 +259,7 @@ async def test_real_monitor_confirms_then_places_limit_and_fills_later(session,m
         adverse_exit=pos.stop_loss*(1-settings.slippage_bps/10000)
         stop_cost=quantity*(pos.entry_price-adverse_exit+pos.entry_price*settings.maker_fee_rate+adverse_exit*settings.taker_fee_rate)
         assert stop_cost<=pos.extra['verified_risk_budget']['equity']*.0025
-    assert set(row.confirmation_state['confirmation_timestamps'].values())=={boundary,boundary+300000}
+    assert set(row.confirmation_state['confirmation_timestamps'].values())==({boundary+300000} if sid=='trend_continuation' else {boundary})
     assert pos.extra['verified_risk_budget']['risk_fraction']==.0025
     touch_ms=max(now_ms,(pos.monitor_from_ms//60000+1)*60000)
     now_ms=touch_ms+60000;refresh_minutes()
@@ -337,6 +338,6 @@ def test_preconfirmed_closed_candles_can_seed_paper_setup_without_nameerror(monk
         created_at=datetime.fromtimestamp((boundary + 300_000) / 1000, timezone.utc),
     )
     assert row.confirmation_state["confirmation_timestamps"] == stamps
-    assert row.confirmation_state["completed"] == ["trend_pullback", "trend_resume"]
+    assert row.confirmation_state["completed"] == ["htf_pullback_rejection"]
     assert row.confirmation_state["missing"] == ["entry_zone_touch"]
     assert row.lifecycle_state.startswith("WAIT")
