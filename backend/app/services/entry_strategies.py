@@ -15,6 +15,16 @@ SEQUENCES = {
     "trend_pullback_resume": ["trend_pullback", "trend_resume", "entry_zone_touch"],
     "level_breakout_retest": ["breakout_close", "breakout_retest", "entry_zone_touch"],
 }
+ANALYST_PROFILES = {
+    A: "htf_sweep_reclaim",
+    B: "htf_pullback_rejection",
+    C: "htf_breakout_close",
+}
+ANALYST_SEQUENCES = {
+    "htf_sweep_reclaim": ["htf_sweep_reclaim", "entry_zone_touch"],
+    "htf_pullback_rejection": ["htf_pullback_rejection", "entry_zone_touch"],
+    "htf_breakout_close": ["breakout_close", "entry_zone_touch"],
+}
 
 
 def strategy_id(data: dict) -> str:
@@ -62,9 +72,19 @@ def validate_strategy_plan(data: dict[str, Any]) -> str | None:
     direction = data.get("potential_direction")
     if direction not in ("LONG", "SHORT"):
         return "missing_potential_direction"
-    if profile != PROFILES[sid]:
+    analyst_verified = False
+    if profile == ANALYST_PROFILES[sid]:
+        # Never accept a shortened sequence from ordinary/unsigned AI output.
+        from app.services.multi_setup_analyst import VERSION
+        from app.services.verified_trade_plan import plan_error
+        contract = data.get("verified_trade_plan") or {}
+        analyst_verified = contract.get("version") == VERSION and plan_error(data) is None
+        if not analyst_verified:
+            return "strategy_profile_mismatch"
+    elif profile != PROFILES[sid]:
         return "strategy_profile_mismatch"
-    if "confirmation_sequence" in data and data["confirmation_sequence"] != SEQUENCES[profile]:
+    expected_sequence = ANALYST_SEQUENCES[profile] if analyst_verified else SEQUENCES[profile]
+    if "confirmation_sequence" in data and data["confirmation_sequence"] != expected_sequence:
         return "strategy_profile_mismatch"
     regime = data.get("market_regime")
     expected = "bullish" if direction == "LONG" else "bearish"
