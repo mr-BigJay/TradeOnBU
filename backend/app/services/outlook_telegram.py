@@ -4,6 +4,8 @@ import math
 
 def format_outlook_message(row, close, public_url):
     report = row.report or {}
+    if report.get("analysis_mode") == "independent_htf_v1":
+        return format_independent_outlook(row, close, public_url)
     plan = report.get('trade_plan') or {}
     scenario = report.get('dominant') or {}
     def number(value):
@@ -46,3 +48,47 @@ def format_outlook_message(row, close, public_url):
     if public_url.startswith('https://'):
         lines.append(public_url.rstrip('/')+f'/#/{"analysis" if row.slot_close_ms else "outlook"}/reports/{row.id}')
     return '\n\n'.join(lines)
+
+
+
+def format_independent_outlook(row, close, public_url):
+    report = row.report or {}
+    trend = report.get("trend_assessment") or {}
+    scenario = report.get("dominant") or {}
+    review = report.get("previous_plan_review") or {}
+    plan = report.get("swing_plan") or {}
+    def brief(value, limit=180):
+        value = str(value or "")
+        return value if len(value) <= limit else value[:limit-1]+"…"
+    def price(value):
+        return f"{float(value):,.1f}"
+    lines = [f"{row.symbol} | چشم‌انداز روزانه با افق چندروزه",
+             f"زمان تهران: {close:%Y-%m-%d %H:%M}", brief(report.get("summary_fa"), 300)]
+    if review:
+        lines += ["پیگیری سناریوی قبلی: "+brief(review.get("assessment_fa"), 230),
+                  "ورود تازه: "+brief(review.get("late_entry_fa"), 200)]
+    lines += ["هفتگی: "+brief(report.get("weekly_context_fa")),
+              "روزانه: "+brief(report.get("daily_structure_fa")),
+              "مرحله روند: "+brief(trend.get("phase_fa")),
+              "مسیر محتمل: "+brief(trend.get("expected_path_fa"), 300),
+              "ناحیه حساس: "+brief(trend.get("reversal_watch_fa"), 200),
+              "شرط سناریو: "+brief(scenario.get("activation_fa")),
+              "ابطال: "+brief(scenario.get("invalidation_fa"))]
+    if plan.get("source") == "independent_swing" and plan.get("action") in ("long", "short"):
+        from datetime import datetime
+        expires = datetime.fromisoformat(plan["entry_expires_at"])
+        lines += ["پیشنهاد مشروط سوئینگ: "+("لانگ" if plan["action"] == "long" else "شورت"),
+                  "شرط ورود: "+brief(plan.get("trigger_fa"), 200),
+                  f"ورود: {price(plan['entry_price'])} | حدضرر: {price(plan['stop_loss'])}",
+                  "اهداف: "+" / ".join(price(t) for t in plan['take_profits']),
+                  "سود به زیان تخمینی پس از هزینه‌ها: "+" / ".join(f"1:{r:.2f}" for r in plan['risk_reward']),
+                  f"افق نگهداری: حدود {plan['holding_days']} روز | اعتبار ورود تا {expires.astimezone(close.tzinfo):%Y-%m-%d %H:%M} تهران",
+                  "فاندینگ آینده لحاظ نشده؛ این پیشنهاد سفارش خودکار نیست."]
+    else:
+        lines += ["پیشنهاد سوئینگ: "+brief(plan.get("rationale_fa") or "فرصت مناسبی ارائه نشده است.")]
+    lines += ["تغییر نسبت به قبل: "+brief(report.get("change_since_previous_fa")),
+              "محدودیت‌ها: "+brief(report.get("uncertainty_fa")),
+              "پیگیری سناریو به معنی تأیید ورود واقعی یا سود معامله نیست. جزئیات کامل در پنل."]
+    if public_url.startswith("https://"):
+        lines.append(public_url.rstrip('/')+f'/#/outlook/reports/{row.id}')
+    return "\n\n".join(lines)

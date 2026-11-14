@@ -21,7 +21,7 @@ from app.services.ai_api_reasoning import effective_luna_api_effort
 from app.services.ai_market_intelligence import load_ai_market_intelligence
 from app.services.daily_execution_plan import snapshot_plan
 from app.services.daily_outlook_data import build_daily_context
-from app.services.daily_outlook_schema import INSTRUCTIONS, parse_outlook, Outlook, Scenario, TradePlan, SupplementalEvidence
+from app.services.daily_outlook_schema import INSTRUCTIONS, INDEPENDENT_INSTRUCTIONS, parse_outlook, Outlook, Scenario, TradePlan, SupplementalEvidence
 from app.services.settings_store import get_plain, get_secret
 from app.services.siwc.credentials import get_access_token
 from app.services.siwc.model_profiles import resolve_model_selection
@@ -185,13 +185,20 @@ async def _work(run_id: int) -> None:
         slot_ms = row.slot_close_ms
     # Data acquisition/validation precedes the only paid inference call.
     context = await build_daily_context(symbol)
-    from app.domain.candles import Candle
-    from app.services.poi_context import market_zones
-    context['poi_context'] = market_zones({'4h':[Candle(r[1],r[2],r[3],r[4],r[0])
-        for r in (context.get('candles') or {}).get('4h',[])]})
-    from app.services.strategy_features import strategy_features
-    context['strategy_features'] = strategy_features({tf: [Candle(r[1],r[2],r[3],r[4],r[0],r[5] if len(r)>5 else None)
-        for r in (context.get('candles') or {}).get(tf, [])] for tf in ('4h','1d')}, timeframes=('4h','1d'))
+    if slot_ms:
+        from app.domain.candles import Candle
+        from app.services.poi_context import market_zones
+        context['poi_context'] = market_zones({'4h':[Candle(r[1],r[2],r[3],r[4],r[0])
+            for r in (context.get('candles') or {}).get('4h',[])]})
+        from app.services.strategy_features import strategy_features
+        context['strategy_features'] = strategy_features({tf: [Candle(r[1],r[2],r[3],r[4],r[0],r[5] if len(r)>5 else None)
+            for r in (context.get('candles') or {}).get(tf, [])] for tf in ('4h','1d')}, timeframes=('4h','1d'))
+    else:
+        context["analysis_mode"] = "independent_htf_v1"
+        context["horizon_days"] = [3, 14]
+        # These are chart overlays, not evidence imposed on the independent analyst.
+        context.pop("chart_channel", None)
+        context.pop("channel_context", None)
     if slot_ms:
         bars = (context.get("candles") or {}).get("4h") or []
         if not bars or bars[-1][0] + 14_400_000 != slot_ms:
@@ -199,7 +206,7 @@ async def _work(run_id: int) -> None:
         context["report_cadence"] = "4h"
         context["slot_close_ms"] = slot_ms
     async with SessionLocal() as session:
-        execution_plan = await snapshot_plan(session, symbol, context)
+        execution_plan = await snapshot_plan(session, symbol, context) if slot_ms else None
         context["market_intelligence"] = await load_ai_market_intelligence(session, symbol=symbol)
         previous = (await session.execute(select(DailyOutlookRun).where(
             DailyOutlookRun.symbol == symbol, DailyOutlookRun.status == "completed",
@@ -207,7 +214,27 @@ async def _work(run_id: int) -> None:
             DailyOutlookRun.slot_close_ms > 0 if slot_ms else DailyOutlookRun.slot_close_ms == 0,
         ).order_by(DailyOutlookRun.id.desc()).limit(1))).scalar_one_or_none()
         prior = {"date": previous.report_date, "summary": previous.report.get("summary_fa"),
-                 "dominant": previous.report.get("dominant")} if previous else None
+                 "dominant": previous.report.get("dominant"),
+                 "trend_assessment": previous.report.get("trend_assessment")} if previous else None
+    if not slot_ms:
+        from app.config import get_effective_settings as current_settings
+        cfg = current_settings()
+        context["swing_cost_assumptions"] = {key: getattr(cfg, key) for key in
+            ("maker_fee_rate", "taker_fee_rate", "spread_bps", "slippage_bps")}
+        async with SessionLocal() as session:
+            older = (await session.scalars(select(DailyOutlookRun).where(
+                DailyOutlookRun.symbol == symbol, DailyOutlookRun.status == "completed",
+                DailyOutlookRun.id < run_id, DailyOutlookRun.slot_close_ms == 0,
+                DailyOutlookRun.started_at >= datetime.now(timezone.utc)-timedelta(days=14),
+            ).order_by(DailyOutlookRun.id.desc()).limit(14))).all()
+            context["previous_outlooks"] = [{"id": r.id, "date": r.report_date,
+                "as_of": (r.context or {}).get("as_of"), "summary": r.report.get("summary_fa"),
+                "dominant": r.report.get("dominant"), "swing_plan": r.report.get("swing_plan"),
+                "levels": (r.context or {}).get("levels", []),
+                "execution_status": "not_tracked"} for r in older]
+        from app.services.outlook_continuity import price_progress
+        for old in context["previous_outlooks"]:
+            old["price_progress"] = price_progress(old, context)
     token, model, effort = await provider_credentials()
     async with SessionLocal() as session:
         row = await session.get(DailyOutlookRun, run_id)
@@ -218,7 +245,7 @@ async def _work(run_id: int) -> None:
         row.model_slug = model
         await session.commit()
     response = await stream_analysis_response(
-        token, model=model, instructions=INSTRUCTIONS + ("\nThis is the four-hour refresh after a closed 4h candle. Keep the multi-day context but clearly explain changes since the previous report." if slot_ms else ""),
+        token, model=model, instructions=(INSTRUCTIONS if slot_ms else INDEPENDENT_INSTRUCTIONS) + ("\nThis is the four-hour refresh after a closed 4h candle. Keep the multi-day context but clearly explain changes since the previous report." if slot_ms else ""),
         user_input=json.dumps({"market": context, "previous_report": prior}, ensure_ascii=False),
         reasoning_effort=effort, timeout=600, max_output_tokens=OUTLOOK_MAX_OUTPUT_TOKENS,
     )
@@ -234,6 +261,7 @@ async def _work(run_id: int) -> None:
     report = parse_outlook(response.text, context, execution_plan=execution_plan)
     async with SessionLocal() as session:
         row = await session.get(DailyOutlookRun, run_id)
+        row.context = {**row.context, "levels": context["levels"]}
         row.report = report
         row.status = "completed"
         row.completed_at = datetime.now(timezone.utc)
@@ -312,6 +340,10 @@ async def execute_reserved(run_id: int, owner: str) -> None:
         elif isinstance(exc, json.JSONDecodeError):
             code = "outlook_response_json_invalid"
         elif isinstance(exc, ValueError) and str(exc) in {
+            "unknown_previous_outlook", "unknown_swing_level", "invalid_swing_geometry",
+            "swing_stop_too_tight", "swing_already_invalidated", "swing_net_rr_below_minimum",
+            "missing_trend_assessment", "unexpected_analyst_levels", "duplicate_analyst_level",
+            "unknown_analyst_candle", "ungrounded_analyst_price",
             "invalid_supplemental_evidence_source", "unknown_evidence_level", "invalid_chart_path", "invalid_scenario_stage",
             "unknown_trade_plan_level", "invalid_trade_plan_price", "invalid_trade_plan_geometry",
             "invalid_trade_plan_target_order", "trade_plan_rr_below_two",

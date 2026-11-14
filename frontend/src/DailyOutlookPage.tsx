@@ -19,7 +19,16 @@ type TradePlan = {
 const evidenceNames: Record<string,string> = {funding:"Funding Rate",open_interest:"Open Interest",trade_flow:"Trade Flow",order_book:"Order Book",liquidations:"Liquidations"};
 const evidenceEffects: Record<string,string> = {supports:"همسو با سناریوی غالب",opposes:"مخالف سناریوی غالب",neutral:"خنثی",not_assessed:"توضیح داده نشده"};
 const missingReasons: Record<string,string> = {not_recorded:"داده ثبت نشده",stale_or_future:"زمان داده خارج از محدوده مجاز",collector_disabled:"جمع‌آوری غیرفعال",collector_unavailable:"منبع در دسترس نبود",collector_stale:"دادهٔ جمع‌آوری‌شده قدیمی بود",collector_error:"خطای جمع‌آوری",invalid_source_or_quality:"منبع یا کیفیت داده پذیرفته نشد",micro_not_recorded:"دادهٔ لحظه‌ای ثبت نشده",micro_source_mismatch:"منبع دادهٔ لحظه‌ای نامعتبر",micro_stale_or_future:"زمان دادهٔ لحظه‌ای خارج از محدوده مجاز",micro_invalid_values:"مقادیر دادهٔ لحظه‌ای نامعتبر",snapshot_gate_prevented_micro_read:"به‌علت نامعتبر بودن دادهٔ پایه بررسی نشد",snapshot_invalid_or_missing:"دادهٔ پایه نامعتبر یا ثبت‌نشده",snapshot_stale_or_future:"دادهٔ پایه قدیمی یا دارای زمان نامعتبر",snapshot_symbol_mismatch:"نماد دادهٔ پایه نامعتبر",no_public_snapshot:"دادهٔ پایه ثبت نشده",snapshot_read_failed:"خواندن داده ناموفق",context_size_limit:"حجم داده بیش از حد مجاز"};
+type SwingPlan = TradePlan & {
+  structural_reason_fa?: string; holding_days?: number; entry_expires_at?: string;
+  funding_included?: boolean; validation_reason?: string;
+};
 type Report = {
+  analysis_mode?: string;
+  trend_assessment?: { phase: string; phase_fa: string; reversal_watch_fa: string; expected_path_fa: string; horizon_fa: string };
+  previous_plan_review?: { prior_report_id: number; assessment_fa: string; late_entry_fa: string };
+  swing_plan?: SwingPlan | null;
+  analyst_levels?: (Level & {reason_fa: string; timeframe: string})[];
   supplemental_evidence?: {source:string;effect:string;explanation_fa:string}[];
   trade_plan?: TradePlan;
   summary_fa: string; weekly_context_fa: string; daily_structure_fa: string;
@@ -223,7 +232,20 @@ export function DailyOutlookPage({ cadence = "daily" }: { cadence?: "daily" | "4
         <div className="outlook-meta"><span>زمان داده: {displayTehranTime(null, run.context?.as_of)}</span>
           <span>قیمت هنگام تحلیل: <bdi>{run.context?.live_price ? price(run.context.live_price) : "—"}</bdi></span></div>
       </div>
-      <details className="card"><summary>جزئیات تحلیل و سناریوها</summary>
+      {report.previous_plan_review && <section className="card">
+        <h3>پیگیری سناریوی قبلی</h3>
+        <a href={`#/outlook/reports/${report.previous_plan_review.prior_report_id}`}>گزارش مرجع</a>
+        <p>{report.previous_plan_review.assessment_fa}</p>
+        <h4>اگر قبلاً وارد نشده‌اید</h4><p>{report.previous_plan_review.late_entry_fa}</p>
+        <p className="hint">ورود واقعی و سود یا زیان معامله در این بخش ثبت یا تأیید نمی‌شود.</p>
+      </section>}
+      {report.trend_assessment && <section className="card">
+        <h3>مرحلهٔ روند و مسیر پیش‌رو</h3><p>{report.trend_assessment.phase_fa}</p>
+        <p>{report.trend_assessment.expected_path_fa}</p>
+        <h4>ناحیهٔ حساس و احتمال تغییر مسیر</h4><p>{report.trend_assessment.reversal_watch_fa}</p>
+        <p className="hint">{report.trend_assessment.horizon_fa}</p>
+      </section>}
+      <details className="card" open={!!report.trend_assessment}><summary>جزئیات تحلیل و سناریوها</summary>
       <IndicatorContext features={run.context?.strategy_features} />
       <div className="outlook-grid"><article className="card"><h3>ساختار هفتگی</h3><p>{report.weekly_context_fa}</p></article>
         <article className="card"><h3>ساختار روزانه</h3><p>{report.daily_structure_fa}</p></article></div>
@@ -245,7 +267,12 @@ export function DailyOutlookPage({ cadence = "daily" }: { cadence?: "daily" | "4
         <p>منبع اخبار و تقویم اقتصادی متصل نیست. این بخش سفارش معاملاتی ایجاد نمی‌کند.</p>
         <p>مدل: <bdi>{run.model || "—"}</bdi> · توکن ورودی: <bdi>{run.usage?.input_tokens ?? "—"}</bdi> · توکن خروجی: <bdi>{run.usage?.output_tokens ?? "—"}</bdi></p>
       </details>
-      <TradePlanCard plan={report.trade_plan} date={run.report_date} />
+      {report.analysis_mode === "independent_htf_v1"
+        ? <SwingPlanCard plan={report.swing_plan} />
+        : <TradePlanCard plan={report.trade_plan} date={run.report_date} />}
+      {!!report.analyst_levels?.length && <details className="card"><summary>سطوح انتخاب‌شده توسط تحلیلگر</summary>
+        {report.analyst_levels.map(level => <p key={level.id}><strong>{level.label_fa} · <bdi>{price(level.price)}</bdi> دلار:</strong> {level.reason_fa}</p>)}
+      </details>}
     </>}
     {!reportId && !!history.length && <div className="outlook-timeline" aria-label="تایم‌لاین گزارش‌های روزانه">
       {history.map(r => <article className="outlook-timeline-entry" key={r.id}>
@@ -264,5 +291,25 @@ export function DailyOutlookPage({ cadence = "daily" }: { cadence?: "daily" | "4
         setOlder(v => [...v, ...result.items]); setCursor(result.next_cursor);
       })}>گزارش‌های قدیمی‌تر</button>}
     </div>}
+  </section>;
+}
+
+
+function SwingPlanCard({plan}: {plan?: SwingPlan | null}) {
+  if (!plan || plan.action === "wait") return <section className="card"><h3>پیشنهاد سوئینگ</h3>
+    <p>{plan?.rationale_fa || "در این گزارش فرصت مناسبی برای پیشنهاد سوئینگ ارائه نشده است."}</p></section>;
+  const expired = !!plan.entry_expires_at && Date.parse(plan.entry_expires_at) <= Date.now();
+  return <section className="card">
+    <h3>پیشنهاد مشروط سوئینگ — {plan.action === "long" ? "لانگ" : "شورت"}</h3>
+    <p className="hint">صرفاً پیشنهاد تحلیلی؛ سفارش یا پوزیشن خودکار ثبت نمی‌شود.</p>
+    {expired && <p className="outlook-stale">مهلت ورود این پیشنهاد گذشته است؛ ورود تازه نیاز به ارزیابی مجدد دارد.</p>}
+    <p>{plan.rationale_fa}</p><p>شرط ورود: {plan.trigger_fa}</p>
+    <p>ورود: <bdi>{price(plan.entry_price!)}</bdi> دلار · حدضرر: <bdi>{price(plan.stop_loss!)}</bdi> دلار</p>
+    <p>اهداف: {(plan.take_profits || []).map(t => price(t)).join(" / ")} دلار</p>
+    <p>{plan.structural_reason_fa}</p>
+    <p>افق نگهداری از زمان ورود: حدود {plan.holding_days} روز؛ تضمین زمان رسیدن نیست.</p>
+    <p>اعتبار ورود تا: {displayTehranTime(null, plan.entry_expires_at)}</p>
+    <p>سود به زیان پس از هزینه‌های تخمینی: {(plan.risk_reward || []).map(r => `1:${r.toFixed(2)}`).join(" / ")}</p>
+    <p className="hint">فاندینگ آینده در این برآورد لحاظ نشده است. انقضای ورود به معنی خروج پوزیشن باز نیست.</p>
   </section>;
 }
