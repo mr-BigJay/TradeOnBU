@@ -21,6 +21,7 @@ class Scenario(StrictModel):
     target_level_ids: list[str] = Field(min_length=1, max_length=3)
     path_fa: list[Annotated[str, Field(min_length=1, max_length=180)]] = Field(min_length=2, max_length=2)
     path_level_ids: list[str] = Field(default_factory=list, max_length=6)
+    target_zone_level_ids: list[str] = Field(default_factory=list, max_length=2)
 
 
 class TradePlan(StrictModel):
@@ -132,11 +133,17 @@ def parse_outlook(text: str, context: dict, *, execution_plan: dict | None = Non
         levels.append({**selected.model_dump(), "price": actual, "source": "ai_selected_closed_candle"})
     allowed = {level["id"] for level in levels}
     for scenario in (result.dominant, result.alternative):
-        ids = scenario.activation_level_ids + scenario.invalidation_level_ids + scenario.target_level_ids + scenario.path_level_ids
+        ids = scenario.activation_level_ids + scenario.invalidation_level_ids + scenario.target_level_ids + scenario.path_level_ids + scenario.target_zone_level_ids
         if scenario.path_level_ids and (len(scenario.path_level_ids) < 2 or scenario.path_level_ids[-1] not in scenario.target_level_ids):
             raise ValueError("invalid_chart_path")
         if not set(ids) <= allowed:
             raise ValueError("unknown_evidence_level")
+        if scenario.target_zone_level_ids:
+            prices = {level["id"]: level["price"] for level in levels}
+            bounds = [prices[key] for key in scenario.target_zone_level_ids]
+            destination = prices[(scenario.path_level_ids or scenario.target_level_ids)[-1]]
+            if len(bounds) != 2 or bounds[0] >= bounds[1] or not bounds[0] <= destination <= bounds[1]:
+                raise ValueError("invalid_target_zone")
         if any(not stage.strip() or len(stage) > 180 for stage in scenario.path_fa):
             raise ValueError("invalid_scenario_stage")
     output = result.model_dump()
@@ -295,6 +302,11 @@ horizon_fa: approximate scenario horizon, explicitly not a target-arrival deadli
 Choose a dominant scenario and a different alternative, with clear activation and invalidation
 conditions referencing actual levels. Each path_fa has exactly two concise conditional stages.
 path_level_ids has 2-6 IDs ending at a target ID. No fabricated probabilities or win rates.
+For each scenario, target_zone_level_ids may contain exactly two grounded level IDs,
+lower then upper, bounding the FINAL path destination. Use a narrow structurally justified
+reaction area, not the entire distance between successive targets. Explain the area in the
+scenario thesis. If two meaningful bounds are unavailable, use [] and a precise target
+level; never invent a width for display. The plotted path is schematic, not arrival timing.
 Existing market.levels are reference values, not an exhaustive list or directional verdict.
 You may identify up to eight additional important levels yourself in analyst_levels, each
 copied EXACTLY from a supplied daily/weekly candle high, low or close. Supply the candle's

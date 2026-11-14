@@ -23,7 +23,8 @@ def chart_snapshot(context: dict, report: dict) -> dict:
     if not math.isfinite(quote) or quote <= 0:
         raise ValueError("invalid_snapshot_quote")
     candles = context.get("candles") or {}
-    four_hour = bool(candles.get("4h"))
+    independent = context.get("analysis_mode") == "independent_htf_v1"
+    four_hour = bool(candles.get("4h")) and not independent
     step = 14400 if four_hour else DAY
     raw = (candles.get("4h") if four_hour else candles.get("1d")) or []
     bars = {}
@@ -42,6 +43,7 @@ def chart_snapshot(context: dict, report: dict) -> dict:
     levels = {l["id"]: l for l in context.get("levels", [])
               if isinstance(l.get("price"), (int, float)) and math.isfinite(l["price"]) and l["price"] > 0}
     paths = []
+    target_zones = []
     referenced = set()
     for key in ("dominant", "alternative"):
         s = report.get(key) or {}
@@ -54,13 +56,19 @@ def chart_snapshot(context: dict, report: dict) -> dict:
         for i in ids:
             if not values or values[-1] != levels[i]["price"]:
                 values.append(levels[i]["price"])
+        zone_ids = s.get("target_zone_level_ids") or []
+        if len(zone_ids) == 2 and all(i in levels for i in zone_ids):
+            low, high = [levels[i]["price"] for i in zone_ids]
+            if low < high and low <= values[-1] <= high:
+                target_zones.append({"kind": key, "low": low, "high": high})
+                referenced.update(zone_ids)
         points = [(0.0, quote)] + [(7 * (i + 1) / len(values), v) for i, v in enumerate(values)]
         paths.append({"kind": key, "direction": s.get("direction", "range"), "points": points})
         referenced.update(ids)
     nearby = nearby_levels(list(levels.values()), quote)
     referenced.update(l["id"] for side in nearby.values() for l in side)
-    return {"nearby": nearby, "channel": (context["chart_channel"] if "chart_channel" in context else pivot_channel(rows, anchor, step, quote)), "anchor": anchor, "quote": quote, "bars": rows, "step": step,
-            "paths": paths, "levels": [l for key, l in levels.items() if key in referenced]}
+    return {"nearby": nearby, "channel": ({"available": False, "reason": "independent_daily_chart"} if independent else context["chart_channel"] if "chart_channel" in context else pivot_channel(rows, anchor, step, quote)), "anchor": anchor, "quote": quote, "bars": rows, "step": step,
+            "paths": paths, "target_zones": target_zones, "independent": independent, "levels": [l for key, l in levels.items() if key in referenced]}
 
 
 @lru_cache(maxsize=8)
@@ -111,13 +119,24 @@ def render_report_image(snapshot_json: str) -> bytes:
                 [channel["upper"]+slope*channel["start_day"],channel["upper"]+slope*channel["end_day"]],color="#80aaff",alpha=.04)
         codes = {l["id"]:l["code"] for side in data["nearby"].values() for l in side}
         colors = {"dominant": "#5ce1bb", "alternative": "#e9b56d"}
+        for zone in data["target_zones"]:
+            color = colors[zone["kind"]]
+            all_prices.extend([zone["low"], zone["high"]])
+            name = "Main" if zone["kind"] == "dominant" else "Alternative"
+            ax.add_patch(Rectangle((0, zone["low"]), 7.3, zone["high"]-zone["low"],
+                                   facecolor=color, edgecolor=color, alpha=.16, zorder=2,
+                                   label=f"{name} target zone: {zone['low']:,.2f} - {zone['high']:,.2f}"))
         for path in data["paths"]:
             color = colors[path["kind"]]
             xs, ys = zip(*path["points"])
             all_prices.extend(ys)
-            name = "A: Dominant" if path["kind"] == "dominant" else "B: Alternative"
+            name = "Main scenario" if path["kind"] == "dominant" else "Alternative scenario"
             ax.plot(xs, ys, color=color, linestyle="--", linewidth=2.2, marker="o", markersize=3,
                     label=f"{name} ({path['direction']})", zorder=5)
+            ax.annotate(f"{'Main' if path['kind'] == 'dominant' else 'Alternative'} target: {ys[-1]:,.2f}", xy=path["points"][-1],
+                        xytext=(-8, 18 if path["kind"] == "dominant" else -24),
+                        textcoords="offset points", ha="right", color=color, fontsize=9,
+                        bbox={"facecolor": "#101b2d", "edgecolor": color, "alpha": .9})
             ax.annotate("", xy=path["points"][-1], xytext=path["points"][-2],
                         arrowprops={"arrowstyle": "-|>", "color": color, "lw": 1.3, "linestyle": "--"})
         seen = set()
@@ -139,7 +158,7 @@ def render_report_image(snapshot_json: str) -> bytes:
         ax.set_xlim(start-.4, 8)
         ticks = [start+(0-start)*i/4 for i in range(4)] + [0, 2, 4, 7]
         ax.set_xticks(ticks)
-        ax.set_xticklabels([(anchor+timedelta(days=d)).strftime("%d %b") if d else "REPORT\n"+anchor.strftime("%d %b") for d in ticks])
+        ax.set_xticklabels([(("PATH" if d == 7 else "") if d > 0 and data["independent"] else (anchor+timedelta(days=d)).strftime("%d %b") if d else "REPORT\n"+anchor.strftime("%d %b")) for i, d in enumerate(ticks)])
         ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:,.0f}"))
         ax.yaxis.tick_right()
         ax.tick_params(colors="#abbdd7", labelsize=9)
@@ -153,8 +172,8 @@ def render_report_image(snapshot_json: str) -> bytes:
         symbol = str(payload.get("symbol") or "BTCUSDT")
         fig.text(.055, .94, f"{symbol}  /  {'4H' if payload['context'].get('report_cadence') == '4h' else 'DAILY'} MARKET OUTLOOK", color="white", fontsize=20, weight="bold")
         fig.text(.055, .892, f"Report #{payload['id']}  |  {payload['date']}  |  Bitunix {'4H' if data['step']==14400 else '1D'} closed candles", color="#b4c5df", fontsize=11)
-        fig.text(.055, .855, f"Snapshot: {anchor.strftime('%Y-%m-%d %H:%M UTC')}  |  Price: {data['quote']:,.2f}  |  Horizon: 7 days", color="#b4c5df", fontsize=10)
-        fig.text(.055, .10, "S: candidate support | R: candidate resistance | Blue: pivot channel; future extension is conditional", color="#c8d7ee", fontsize=10)
+        fig.text(.055, .855, f"Snapshot: {anchor.strftime('%Y-%m-%d %H:%M UTC')}  |  Price: {data['quote']:,.2f}  |  Schematic path (not arrival dates)", color="#b4c5df", fontsize=10)
+        fig.text(.055, .10, "Green: main scenario | Amber: alternative | Shading: grounded target zone (when available)" if data["independent"] else "S: candidate support | R: candidate resistance | Blue: pivot channel; future extension is conditional", color="#c8d7ee", fontsize=10)
         fig.text(.055, .065, "Waypoint spacing is schematic, not predicted arrival times. No future candles are generated.", color="#e9b56d", fontsize=10)
         warning = bool(payload["context"].get("data_quality_warnings"))
         fig.text(.055, .03, "Historical source anomaly disclosed in report." if warning else "Frozen report snapshot. Opening this chart does not refresh market data or call AI.", color="#91a5c2", fontsize=9)

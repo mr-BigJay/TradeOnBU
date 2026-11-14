@@ -127,3 +127,18 @@ four-hour report and A/B/C paper execution retain their previous behavior.
 No database migration is needed. Historical reports retain their original UI.
 The change requires deploying the new application image; it does not update an
 already generated report or cause an extra paid generation automatically.
+
+## Daily target chart
+
+Independent daily reports render the last 30 closed daily candles, even when the
+snapshot also contains 4h candles. The saved main/alternative paths start at the
+snapshot quote, with arrows and labelled final destinations. Future spacing is
+schematic and has no forecast arrival-date labels. These are scenario paths,
+not A/B execution strategies.
+
+An optional `target_zone_level_ids` pair references grounded lower/upper levels
+and must contain the final path destination. The image shades those exact bounds;
+without two meaningful bounds it labels the target price without inventing a band.
+The model is instructed to choose a reaction area, not the span of successive targets.
+Saved historical images remain immutable. Both the dashboard and Telegram use
+the same renderer; no extra inference or market-data request is added.
