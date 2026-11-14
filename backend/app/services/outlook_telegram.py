@@ -83,7 +83,7 @@ def format_independent_outlook(row, close, public_url):
     if plan.get("source") == "independent_swing" and plan.get("action") in ("long", "short"):
         from datetime import datetime
         expires = datetime.fromisoformat(plan["entry_expires_at"])
-        lines += ["پیشنهاد مشروط سوئینگ: "+("لانگ" if plan["action"] == "long" else "شورت"),
+        lines += ["برنامهٔ ورود مشروط: "+("لانگ" if plan["action"] == "long" else "شورت"),
                   "شرط ورود: "+brief(plan.get("trigger_fa"), 200),
                   f"ورود: {price(plan['entry_price'])} | حدضرر: {price(plan['stop_loss'])}",
                   "اهداف: "+" / ".join(price(t) for t in plan['take_profits']),
@@ -91,7 +91,7 @@ def format_independent_outlook(row, close, public_url):
                   f"افق نگهداری: حدود {plan['holding_days']} روز | اعتبار ورود تا {expires.astimezone(close.tzinfo):%Y-%m-%d %H:%M} تهران",
                   "فاندینگ آینده لحاظ نشده؛ این پیشنهاد سفارش خودکار نیست."]
     else:
-        lines += ["پیشنهاد سوئینگ: "+brief(plan.get("rationale_fa") or "فرصت مناسبی ارائه نشده است.")]
+        lines += ["برنامهٔ ورود: "+brief(plan.get("rationale_fa") or "در این گزارش برنامهٔ ورود ارزیابی نشده است.")]
     lines += ["تغییر نسبت به قبل: "+brief(report.get("change_since_previous_fa")),
               "محدودیت‌ها: "+brief(report.get("uncertainty_fa")),
               "پیگیری سناریو به معنی تأیید ورود واقعی یا سود معامله نیست. جزئیات کامل در پنل."]

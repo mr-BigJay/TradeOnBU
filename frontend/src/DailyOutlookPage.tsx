@@ -297,11 +297,11 @@ export function DailyOutlookPage({ cadence = "daily" }: { cadence?: "daily" | "4
 
 
 function SwingPlanCard({plan}: {plan?: SwingPlan | null}) {
-  if (!plan || plan.action === "wait") return <section className="card"><h3>پیشنهاد سوئینگ</h3>
-    <p>{plan?.rationale_fa || "در این گزارش فرصت مناسبی برای پیشنهاد سوئینگ ارائه نشده است."}</p></section>;
+  if (!plan || plan.action === "wait") return <section className="card"><h3>برنامهٔ ورود مشروط</h3>
+    <p>{plan?.rationale_fa || "این گزارش قدیمی برنامهٔ ورود مشخصی ندارد؛ نبود برنامه به معنی نبود فرصت نیست."}</p></section>;
   const expired = !!plan.entry_expires_at && Date.parse(plan.entry_expires_at) <= Date.now();
   return <section className="card">
-    <h3>پیشنهاد مشروط سوئینگ — {plan.action === "long" ? "لانگ" : "شورت"}</h3>
+    <h3>برنامهٔ ورود مشروط — {plan.action === "long" ? "لانگ" : "شورت"}</h3>
     <p className="hint">صرفاً پیشنهاد تحلیلی؛ سفارش یا پوزیشن خودکار ثبت نمی‌شود.</p>
     {expired && <p className="outlook-stale">مهلت ورود این پیشنهاد گذشته است؛ ورود تازه نیاز به ارزیابی مجدد دارد.</p>}
     <p>{plan.rationale_fa}</p><p>شرط ورود: {plan.trigger_fa}</p>

@@ -162,3 +162,17 @@ The daily prompt requests about 200–300 Persian words total, one short sentenc
 per secondary field. Uncertainty/change fields accept 600/500 characters so
 minor length overruns do not discard a paid response; text is not truncated
 during validation. No new indicator, entry gate or automatic order is added.
+
+### Required entry assessment
+
+New independent daily prompts require a non-null swing_plan: a conditional
+long/short proposal with grounded entry, structural stop, targets and entry expiry,
+or an explicit wait assessment explaining the failed structural/risk constraint.
+Pending confirmation alone is not a reason to omit a future entry plan.
+The legacy trade_plan remains non-executing and is not the daily entry decision.
+
+Existing structural/ATR and net R:R >= 1.5 validation is unchanged. This does not
+place orders or guarantee an entry in every market. Archived null plans remain
+readable but display entry_assessment_missing, not a claim that no opportunity
+existed. Revalidating an old response cannot generate a missing entry proposal;
+a new authorized inference is needed to assess current market conditions.
