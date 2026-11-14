@@ -32,6 +32,10 @@ CONFIRMATION_PROFILES: dict[str, list[str]] = {
     "sweep_bos_poi": ["liquidity_sweep", "bos", "entry_zone_touch"],
     "bos_fvg_retest": ["liquidity_sweep", "bos", "fvg_retest", "entry_zone_touch"],
     "mss_fvg_retest": ["liquidity_sweep", "mss", "fvg_retest", "entry_zone_touch"],
+    # Versioned fast monitor contracts for independently verified A/B/C analyst plans.
+    "htf_sweep_reclaim": ["htf_sweep_reclaim", "entry_zone_touch"],
+    "htf_pullback_rejection": ["htf_pullback_rejection", "entry_zone_touch"],
+    "htf_breakout_close": ["breakout_close", "entry_zone_touch"],
 }
 
 
