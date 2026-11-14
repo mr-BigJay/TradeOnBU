@@ -231,6 +231,28 @@ class SimPositionMonitorService:
                 bar_ms=bar.time_ms,
             )
             return True
+
+        # Intraday A/B/C analyst positions have a bounded 48h life once
+        # actually filled. SL / TP above always take precedence. Never close
+        # on wall-clock guesses: use the next verified CLOSED 1m candle.
+        from app.services.multi_setup_analyst import VERSION as ANALYST_VERSION
+        details = pos.extra or {}
+        contract = details.get("verified_trade_plan") or {}
+        fill_bar_ms = details.get("entry_fill_bar_ms")
+        if (
+            contract.get("version") == ANALYST_VERSION
+            and contract.get("confirmation_type") in (
+                "htf_sweep_reclaim", "htf_pullback_rejection", "htf_breakout_close"
+            )
+            and type(fill_bar_ms) is int and fill_bar_ms > 0
+            and bar.time_ms + 60_000 >= fill_bar_ms + 48 * 60 * 60 * 1000
+        ):
+            await self.positions._close_position(
+                session, pos, settings,
+                raw_exit=bar.close, reason="time_exit",
+                exit_adverse=True, bar_ms=bar.time_ms,
+            )
+            return True
         return False
 
     async def monitor_session(self, session: AsyncSession) -> int:
