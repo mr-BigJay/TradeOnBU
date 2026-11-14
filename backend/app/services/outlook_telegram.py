@@ -92,6 +92,15 @@ def format_independent_outlook(row, close, public_url):
                   "فاندینگ آینده لحاظ نشده؛ این پیشنهاد سفارش خودکار نیست."]
     else:
         lines += ["برنامهٔ ورود: "+brief(plan.get("rationale_fa") or "در این گزارش برنامهٔ ورود ارزیابی نشده است.")]
+    if plan.get("action") in ("long", "short"):
+        lines += [plan.get("entry_policy_note_fa") or "روش ورود و مانع اول این گزارش قدیمی با بررسی جدید ارزیابی نشده‌اند."]
+        if plan.get("obstacle_price") is not None:
+            lines += [f"مانع مهم اول: {price(plan['obstacle_price'])} | R:R خالص تا مانع: 1:{plan['obstacle_net_rr']:.2f}"]
+        if plan.get("first_obstacle"):
+            lines += [brief(plan["first_obstacle"].get("reason_fa"))]
+    elif (plan.get("validation_details") or {}).get("obstacle_price") is not None:
+        details = plan["validation_details"]
+        lines += [f"مانع بررسی‌شده: {price(details['obstacle_price'])} | R:R خالص تا مانع: 1:{details['obstacle_net_rr']:.2f}"]
     lines += ["تغییر نسبت به قبل: "+brief(report.get("change_since_previous_fa")),
               "محدودیت‌ها: "+brief(report.get("uncertainty_fa")),
               "پیگیری سناریو به معنی تأیید ورود واقعی یا سود معامله نیست. جزئیات کامل در پنل."]

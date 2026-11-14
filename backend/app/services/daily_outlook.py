@@ -195,6 +195,7 @@ async def _work(run_id: int) -> None:
             for r in (context.get('candles') or {}).get(tf, [])] for tf in ('4h','1d')}, timeframes=('4h','1d'))
     else:
         context["analysis_mode"] = "independent_htf_v1"
+        context["swing_entry_policy"] = "conditional_entry_v2"
         context["horizon_days"] = [3, 14]
         # These are chart overlays, not evidence imposed on the independent analyst.
         context.pop("chart_channel", None)

@@ -22,6 +22,10 @@ const missingReasons: Record<string,string> = {not_recorded:"داده ثبت ن�
 type SwingPlan = TradePlan & {
   structural_reason_fa?: string; holding_days?: number; entry_expires_at?: string;
   funding_included?: boolean; validation_reason?: string;
+  entry_policy_status?: string; entry_policy_note_fa?: string;
+  obstacle_price?: number | null; obstacle_net_rr?: number | null;
+  first_obstacle?: {assessment: string; reason_fa: string} | null;
+  validation_details?: {obstacle_price?: number; obstacle_net_rr?: number};
 };
 type Report = {
   analysis_mode?: string;
@@ -298,7 +302,11 @@ export function DailyOutlookPage({ cadence = "daily" }: { cadence?: "daily" | "4
 
 function SwingPlanCard({plan}: {plan?: SwingPlan | null}) {
   if (!plan || plan.action === "wait") return <section className="card"><h3>برنامهٔ ورود مشروط</h3>
-    <p>{plan?.rationale_fa || "این گزارش قدیمی برنامهٔ ورود مشخصی ندارد؛ نبود برنامه به معنی نبود فرصت نیست."}</p></section>;
+    <p>{plan?.rationale_fa || "این گزارش قدیمی برنامهٔ ورود مشخصی ندارد؛ نبود برنامه به معنی نبود فرصت نیست."}</p>
+    {plan?.validation_details?.obstacle_price != null && <p>
+      مانع بررسی‌شده: {price(plan.validation_details.obstacle_price)} دلار؛
+      سود به زیان خالص تا مانع: 1:{plan.validation_details.obstacle_net_rr?.toFixed(2)}
+    </p>}</section>;
   const expired = !!plan.entry_expires_at && Date.parse(plan.entry_expires_at) <= Date.now();
   return <section className="card">
     <h3>برنامهٔ ورود مشروط — {plan.action === "long" ? "لانگ" : "شورت"}</h3>
@@ -308,6 +316,10 @@ function SwingPlanCard({plan}: {plan?: SwingPlan | null}) {
     <p>ورود: <bdi>{price(plan.entry_price!)}</bdi> دلار · حدضرر: <bdi>{price(plan.stop_loss!)}</bdi> دلار</p>
     <p>اهداف: {(plan.take_profits || []).map(t => price(t)).join(" / ")} دلار</p>
     <p>{plan.structural_reason_fa}</p>
+    <p className="hint">{plan.entry_policy_note_fa || "روش ورود و مانع اول این گزارش قدیمی با بررسی جدید ارزیابی نشده‌اند."}</p>
+    {plan.obstacle_price != null && <p>مانع مهم اول: {price(plan.obstacle_price)} دلار؛
+      سود به زیان خالص تا مانع: 1:{plan.obstacle_net_rr?.toFixed(2)}</p>}
+    {plan.first_obstacle && <p>{plan.first_obstacle.reason_fa}</p>}
     <p>افق نگهداری از زمان ورود: حدود {plan.holding_days} روز؛ تضمین زمان رسیدن نیست.</p>
     <p>اعتبار ورود تا: {displayTehranTime(null, plan.entry_expires_at)}</p>
     <p>سود به زیان پس از هزینه‌های تخمینی: {(plan.risk_reward || []).map(r => `1:${r.toFixed(2)}`).join(" / ")}</p>

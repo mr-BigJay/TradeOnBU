@@ -69,7 +69,22 @@ class TrendAssessment(StrictModel):
     horizon_fa: str = Field(min_length=10, max_length=180)
 
 
+class ConditionalEntry(StrictModel):
+    method: Literal["limit_after_close"]
+    timeframe: Literal["4h", "1d"]
+    close_side: Literal["above", "below"]
+    confirmation_level_id: str
+
+
+class FirstObstacle(StrictModel):
+    assessment: Literal["identified", "none_in_path"]
+    level_id: str | None
+    reason_fa: str = Field(min_length=15, max_length=300)
+
+
 class SwingPlan(TradePlan):
+    execution: ConditionalEntry | None = None
+    first_obstacle: FirstObstacle | None = None
     entry_valid_hours: int = Field(default=24, ge=1, le=48)
     holding_days: int = Field(default=7, ge=2, le=14)
     structural_reason_fa: str = Field(min_length=10, max_length=300)
@@ -105,10 +120,15 @@ class Outlook(StrictModel):
 
 
 
+class AssessedSwingPlan(SwingPlan):
+    execution: ConditionalEntry | None
+    first_obstacle: FirstObstacle | None
+
+
 class IndependentOutlook(Outlook):
     # Generation contract: every new daily report must assess an entry.
     # The legacy parser remains compatible with archived null proposals.
-    swing_plan: SwingPlan
+    swing_plan: AssessedSwingPlan
 
 
 def parse_outlook(text: str, context: dict, *, execution_plan: dict | None = None) -> dict:
@@ -213,6 +233,10 @@ def parse_outlook(text: str, context: dict, *, execution_plan: dict | None = Non
                 }
         except ValueError as exc:
             reasons = {
+                "swing_execution_missing": "روش ورود مشروط یا ارزیابی مانع اول مشخص نشده است.",
+                "swing_execution_geometry": "سطح یا جهت تأیید با سفارش ورود سازگار نیست.",
+                "swing_obstacle_invalid": "مرجع مانع اول یا جایگاه آن در مسیر معتبر نیست.",
+                "swing_obstacle_rr_below_minimum": "نسبت سود به زیان خالص تا مانع مهم اول کمتر از ۱٫۵ است؛ هدف دورتر این محدودیت را رفع نمی‌کند.",
                 "unknown_swing_level": "سطح پیشنهادی در داده‌های معتبر یافت نشد.",
                 "invalid_swing_geometry": "ترتیب ورود، حدضرر و اهداف معتبر نبود.",
                 "swing_stop_too_tight": "فاصلهٔ حدضرر نسبت به نوسان روزانه کافی نیست یا دادهٔ نوسان موجود نیست.",
@@ -225,6 +249,8 @@ def parse_outlook(text: str, context: dict, *, execution_plan: dict | None = Non
                 "execution_status": "not_tracked", "validation_reason": str(exc),
                 "rationale_fa": reasons[str(exc)], "trigger_fa": "در گزارش بعدی دوباره ارزیابی می‌شود.",
                 "entry_level_id": None, "stop_level_id": None, "target_level_ids": []}
+            output["swing_plan"]["validation_details"] = getattr(exc, "details", {})
+            output["swing_plan"]["rejected_proposal"] = result.swing_plan.model_dump()
         output["analysis_mode"] = "independent_htf_v1"
         output["trade_plan"] = dict(action="wait", source="outlook_only",
             rationale_fa="این گزارش مسیر چندروزه بازار را بررسی می‌کند و سیگنال اجرایی نیست.",
@@ -397,6 +423,26 @@ one trade per report. Entry, stop and target IDs must be grounded levels. Explai
 invalidation and the first significant obstacle. Minimum stop distance is 0.5 daily ATR;
 this is only a noise floor, never a reason to fabricate/widen a stop. Estimated NET R:R
 must be >=1.5 after supplied fees, spread/slippage; future funding is unknown and excluded.
+For a long/short plan, execution and first_obstacle are REQUIRED objects.
+Use execution.method=limit_after_close: one future closed 4h or 1d candle above
+the confirmation level for long, below for short; only AFTER that close, propose
+a LIMIT order at entry_level_id for a later pullback/retest. There is no second
+close at entry and no assumed market fill at the earlier level. A touch before
+confirmation is not an entry. Do not claim confirmation or a fill already occurred.
+The confirmation level must be at or beyond entry in the trade direction, before
+the first target. Do not move levels just to satisfy this geometry.
+For wait plans execution and first_obstacle may be null.
+Identify the FIRST significant opposing structural obstacle between entry and the
+final target, using first_obstacle.assessment=identified, a grounded level_id and
+reason_fa explaining actual visible reactions. For an obstacle zone choose the
+near edge encountered first. Include obstacles mentioned in the scenario or rationale.
+Do not treat every OHLC value, nearby line or supplemental source as an obstacle.
+If there is no significant obstacle on that path use assessment=none_in_path,
+level_id=null and a concrete structural explanation; do not use this to bypass
+an obstacle already described in the report.
+Evaluate NET R:R to that first obstacle as well as targets; require >=1.5.
+If it fails, first assess a different grounded pullback entry or setup; do not
+fabricate/move stops, erase obstacles or choose a distant target to conceal it.
 If structure does not permit those constraints, return an explicit reasoned action=wait plan.
 market.previous_outlooks contains dated past reports and their saved levels/plans. Review the
 most relevant prior outlook (even if it had no trade) with previous_plan_review.prior_report_id, explaining
@@ -461,6 +507,8 @@ def validate_swing_plan(plan: SwingPlan | None, levels: list[dict], context: dic
           for target in targets]
     if any(not r.acceptable or not math.isfinite(r.net_rr) for r in rr):
         raise ValueError("swing_net_rr_below_minimum")
+    from app.services.swing_entry_policy import assess_entry_policy
+    output.update(assess_entry_policy(plan, prices, context, model, entry, stop, targets))
     stamp = datetime.fromisoformat(context["as_of"].replace("Z", "+00:00"))
     output.update(entry_price=entry, stop_loss=stop, take_profits=targets,
         risk_reward=[r.net_rr for r in rr],

@@ -166,3 +166,17 @@ it('shows the continuous outlook and an expired advisory swing separately from e
  expect(screen.getByText(/برنامهٔ ورود مشروط/)).toBeInTheDocument();
  expect(screen.queryByText('سفارش آزمایشی')).not.toBeInTheDocument();
 });
+
+it('shows the first-obstacle rejection without presenting a new entry', async()=>{
+ window.location.hash='#/outlook/reports/1';
+ const blocked={...run,report:{...run.report,analysis_mode:'independent_htf_v1',
+  swing_plan:{action:'wait',source:'independent_swing',
+   rationale_fa:'نسبت سود به زیان تا مانع اول کافی نیست.',
+   validation_details:{obstacle_price:62499.9,obstacle_net_rr:1.01}},
+  trade_plan:{source:'outlook_only',action:'wait'}}};
+ apiFetch.mockImplementation((url:string)=>Promise.resolve(url.endsWith('/chart-image')?{data_url:'data:image/png;base64,abc',filename:'report.png'}:url.endsWith('/runs/1')?blocked:empty()));
+ render(<DailyOutlookPage/>);
+ expect(await screen.findByText('نسبت سود به زیان تا مانع اول کافی نیست.')).toBeInTheDocument();
+ expect(screen.getByText(/مانع بررسی‌شده/)).toHaveTextContent('1:1.01');
+ expect(screen.queryByText(/برنامهٔ ورود مشروط —/)).not.toBeInTheDocument();
+});
