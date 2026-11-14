@@ -97,6 +97,9 @@ async def test_persists_three_setups_without_fabricating_confirmations(session,m
     from app.services.strategy_candidates import persist_strategy_candidates
     from app.services.conditional_revision import objective_confirmations_satisfied_for_order
     monkeypatch.setenv('MULTI_SETUP_ANALYST_ENABLED','1')
+    # Synthetic bars have no independently audited reaction event.
+    from app.services import analyst_confirmation
+    monkeypatch.setattr(analyst_confirmation, 'recent_confirmations', lambda *_: {})
     p=response();run=AiAnalysisRun(trigger='manual',status='completed',structured=p)
     session.add(run);await session.flush()
     rows,meta=await persist_strategy_candidates(session,run_id=run.id,symbol='BTCUSDT',structured=p)
@@ -223,7 +226,7 @@ async def test_real_monitor_confirms_then_places_limit_and_fills_later(session,m
     previous=1020 if sid=='breakout_retest' else 1023
     five=[Candle(previous,1024,1019.5,previous,boundary-(60-i)*300000) for i in range(60)]
     if sid=='ict_reversal':
-        events=[Candle(1023,1024,1014 if deep_sweep else 1017,1021,boundary),Candle(1021,1026,1012 if deep_sweep else 1021,1025,boundary+300000)]
+        events=[Candle(1023,1024,1012 if deep_sweep else 1017,1021,boundary),Candle(1021,1026,1021,1025,boundary+300000)]
     elif sid=='trend_continuation':
         events=[Candle(1023,1024,1020,1021,boundary),Candle(1021,1026,1021,1025,boundary+300000)]
     else:
@@ -240,8 +243,11 @@ async def test_real_monitor_confirms_then_places_limit_and_fills_later(session,m
     monkeypatch.setattr(auto,'_utc_now',lambda:datetime.fromtimestamp(now_ms/1000,timezone.utc))
     svc=monitor.OpportunityMonitorService(MarketDataService())
     await svc.monitor_setups(session)
-    assert not (await session.execute(select(SimPosition))).scalars().all()
-    # Second distinct closed 5m bar completes structural conditions, not a 1m surrogate.
+    first_positions=(await session.execute(select(SimPosition))).scalars().all()
+    # A sweep/reclaim or C breakout can place a *resting* limit after one
+    # closed candle; B's first red candle is not a valid bullish rejection.
+    assert len(first_positions)==(0 if sid=='trend_continuation' else 1)
+    assert all(p.status=='pending_entry' for p in first_positions)
     five.append(events[1]);now_ms=boundary+600000;refresh_minutes()
     await svc.monitor_setups(session)
     positions=(await session.execute(select(SimPosition))).scalars().all()
@@ -307,7 +313,7 @@ def test_daily_interval_is_supported_for_outlook_generation():
 
 
 def test_preconfirmed_closed_candles_can_seed_paper_setup_without_nameerror(monkeypatch):
-    """A complete proven pre-entry pair survives parsing and is never treated as a fill."""
+    """A proven closed 5m HTF reaction survives parsing without inventing a fill."""
     from app.services import analyst_confirmation
     from app.services.conditional_setup import (
         apply_conditional_plan_to_setup_row, parse_conditional_plan,
@@ -316,8 +322,7 @@ def test_preconfirmed_closed_candles_can_seed_paper_setup_without_nameerror(monk
     series, costs, evidence, now = fixture()
     boundary = now // 300_000 * 300_000
     stamps = {
-        "trend_pullback": boundary - 600_000,
-        "trend_resume": boundary - 300_000,
+        "htf_pullback_rejection": boundary - 300_000,
     }
     seed = {
         "confirmation_timestamps": stamps,
