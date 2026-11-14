@@ -55,7 +55,7 @@ def test_three_independent_conditional_contracts_and_cost_floor():
 
 @pytest.mark.parametrize('key,value,reason',[
     ('zone_id','invented','unknown_evidence_id'),('strategy_id',[], 'invalid_strategy_direction'),
-    ('target_id','stop','target_requires_structural_level'),('invalidation_id','zone','invalidation_inside_zone'),
+    ('target_id','stop','target_requires_structural_level'),('invalidation_id','support_zone','invalidation_inside_zone'),
     ('direction','UP','invalid_strategy_direction')])
 def test_bad_ai_proposal_is_rejected_without_losing_siblings(key,value,reason):
     s,c,e,n=fixture();bad=proposal('ict_reversal');bad[key]=value
@@ -346,3 +346,55 @@ def test_preconfirmed_closed_candles_can_seed_paper_setup_without_nameerror(monk
     assert row.confirmation_state["completed"] == ["htf_pullback_rejection"]
     assert row.confirmation_state["missing"] == ["entry_zone_touch"]
     assert row.lifecycle_state.startswith("WAIT")
+
+
+@pytest.mark.parametrize("sid", list(a.PROFILES))
+def test_fast_analyst_confirmation_never_accepts_unsigned_ai_plan(sid):
+    from app.services.conditional_setup import parse_conditional_plan
+    series,costs,evidence,now=fixture()
+    signed=a.compile_plan(proposal(sid),evidence,series,costs,now,now)
+    assert parse_conditional_plan(signed)[1] is None
+    unsigned=dict(signed)
+    unsigned.pop("verified_trade_plan",None)
+    assert parse_conditional_plan(unsigned)[1]=="strategy_profile_mismatch"
+
+
+def test_fast_triggers_are_closed_bar_price_reactions_not_ai_flags():
+    from app.services.ict_confirmation_engine import _token_on_bar
+    sweep={'verified_trade_plan':{'confirmation_reference':{'liquidity_price':1018}}}
+    assert _token_on_bar("htf_sweep_reclaim", direction="LONG",
+        window=[Candle(1023,1024,1017,1021,300000)],
+        zone_lo=1020,zone_hi=1022,structured=sweep)
+    assert not _token_on_bar("htf_sweep_reclaim",direction="LONG",
+        window=[Candle(1023,1024,1017,1017.5,300000)],
+        zone_lo=1020,zone_hi=1022,structured=sweep)
+    assert _token_on_bar("htf_pullback_rejection",direction="LONG",
+        window=[Candle(1021,1026,1020,1025,300000)],
+        zone_lo=1020,zone_hi=1022,structured={})
+    assert not _token_on_bar("htf_pullback_rejection",direction="LONG",
+        window=[Candle(1023,1025,1020,1021,300000)],
+        zone_lo=1020,zone_hi=1022,structured={})
+    breakout={'breakout_level':1021}
+    prior=Candle(1020,1021,1019,1020,0)
+    assert _token_on_bar("breakout_close",direction="LONG",
+        window=[prior,Candle(1020,1025,1020,1024,300000)],
+        zone_lo=1020,zone_hi=1022,structured=breakout)
+    assert not _token_on_bar("breakout_close",direction="LONG",
+        window=[prior,Candle(1020,1025,1020,1020.5,300000)],
+        zone_lo=1020,zone_hi=1022,structured=breakout)
+
+
+def test_fast_analyst_requires_correct_htf_role_and_fully_confirmed_levels():
+    s,c,e,n=fixture()
+    wrong=deepcopy(e);wrong[2]['kind']='resistance'
+    with pytest.raises(ValueError,match='reversal_continuation_requires_support_resistance'):
+        a.compile_plan(proposal("trend_continuation"),wrong,s,c,n,n)
+    wrong=deepcopy(e);wrong[1]['timeframe']='15m'
+    with pytest.raises(ValueError,match='stop_requires_major_structure'):
+        a.compile_plan(proposal("ict_reversal"),wrong,s,c,n,n)
+    wrong=deepcopy(e);wrong[-1]['timeframe']='15m'
+    with pytest.raises(ValueError,match='target_requires_structural_level'):
+        a.compile_plan(proposal("ict_reversal"),wrong,s,c,n,n)
+    wrong=deepcopy(e);wrong[0]['confirmed_ms']=n+300000
+    with pytest.raises(ValueError,match='major_structure_not_yet_confirmed'):
+        a.compile_plan(proposal("breakout_retest"),wrong,s,c,n,n)
