@@ -164,6 +164,15 @@ def compile_plan(proposal, evidence, series, costs, now_ms, observed_ms):
         raise ValueError('execution_requires_major_structure')
     if inv['timeframe'] not in ('1h', '4h') or inv['kind'] not in ('support', 'resistance', 'OB'):
         raise ValueError('stop_requires_major_structure')
+    if inv['kind'] in ('support','resistance') and inv['kind'] != ('support' if sign==1 else 'resistance'):
+        raise ValueError('invalidation_level_wrong_side')
+    # A level is not eligible until its confirming candles have closed.
+    for item in (z, inv, target):
+        confirmed = item.get('confirmed_ms')
+        if confirmed is None and item.get('kind') in ('support','resistance'):
+            confirmed = item['time_ms'] + 3 * STEPS[item['timeframe']]
+        if confirmed is not None and (not isinstance(confirmed, int) or confirmed > observed_ms):
+            raise ValueError('major_structure_not_yet_confirmed')
     if z.get('direction') and z['direction']!=direction:raise ValueError('zone_direction_conflict')
     entry=round((z['low']+z['high'])/2,1)
     invalidation=inv['low'] if sign==1 else inv['high']
