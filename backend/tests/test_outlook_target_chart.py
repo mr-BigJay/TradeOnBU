@@ -12,6 +12,7 @@ def snapshot():
     ctx['candles']['1d'] = [[end-(30-i)*DAY, 100, 112, 89, 105] for i in range(30)]
     ctx['levels'].append({'id': 'upper', 'price': 112})
     data = report()
+    data['dominant']['activation_level_ids'] = ['low']
     data['dominant']['target_zone_level_ids'] = ['high', 'upper']
     return ctx, data
 

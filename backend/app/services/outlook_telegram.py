@@ -74,6 +74,12 @@ def format_independent_outlook(row, close, public_url):
               "ناحیه حساس: "+brief(trend.get("reversal_watch_fa"), 200),
               "شرط سناریو: "+brief(scenario.get("activation_fa")),
               "ابطال: "+brief(scenario.get("invalidation_fa"))]
+    levels = {l["id"]: l["price"] for l in (row.context or {}).get("levels", [])}
+    retests = [levels[k] for k in scenario.get("retest_level_ids", []) if k in levels]
+    if retests:
+        lines += ["بازآزمایی، نه هدف: "+" / ".join(price(p) for p in retests)]
+    if not scenario.get("target_level_ids"):
+        lines += ["هدف: "+(scenario.get("target_unavailable_reason_fa") or "هدف معتبر مشخص نشده است.")]
     if plan.get("source") == "independent_swing" and plan.get("action") in ("long", "short"):
         from datetime import datetime
         expires = datetime.fromisoformat(plan["entry_expires_at"])
