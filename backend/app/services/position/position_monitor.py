@@ -283,6 +283,20 @@ class SimPositionMonitorService:
         processed = 0
 
         for pos in positions:
+            # Cancel unfilled new-generation analyst limits at the Tehran
+            # weekend boundary. Do NOT pause monitoring of OPEN positions:
+            # their SL/TP and 48h exits remain protected.
+            from app.services.multi_setup_analyst import VERSION as ANALYST_VERSION
+            from app.domain.trading_calendar import new_entries_allowed
+            contract = (pos.extra or {}).get("verified_trade_plan") or {}
+            if (
+                pos.status == "pending_entry"
+                and contract.get("version") == ANALYST_VERSION
+                and not new_entries_allowed(_utc_now())
+            ):
+                await self.positions.cancel_pending(session, pos.public_id, commit=False)
+                pos.extra = {**(pos.extra or {}), "auto_paper_cancel_reason": "weekend_new_entries_disabled"}
+                continue
             cursor = pos.last_processed_candle_ms or 0
             monitor_from = pos.monitor_from_ms or 0
             eligible = eligible_bars_after_cursor(closed, cursor, monitor_from)
