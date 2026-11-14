@@ -102,18 +102,15 @@ def test_all_activation_levels_constrain_targets():
     assert parsed["dominant"]["target_validation"] == "rejected_geometry"
 
 
-def test_condition_price_conflict_is_disclosed_without_rewriting():
+def test_unique_condition_price_conflict_is_corrected_with_audit():
     ctx, r = snapshot()
     ctx["levels"].append({"id": "invalidation", "price": 66427.6})
     original = "بسته‌شدن روزانه زیر ۶۴٬۴۲۷٫۶ دلار این مسیر را باطل می‌کند."
     r["alternative"]["invalidation_fa"] = original
     r["alternative"]["invalidation_level_ids"] = ["invalidation"]
     parsed = parse_outlook(json.dumps(r), ctx)
-    assert parsed["alternative"]["invalidation_fa"] == original
-    assert parsed["text_validation_warnings"] == [{
-        "field": "alternative.invalidation_fa",
-        "code": "condition_price_mismatch",
-        "referenced_prices": [66427.6],
-    }]
+    assert parsed["alternative"]["invalidation_fa"] == original.replace("۶۴", "۶۶")
+    assert "text_validation_warnings" not in parsed
+    assert parsed["text_price_corrections"][0]["original_text"] == original
     r["alternative"]["invalidation_fa"] = original.replace("۶۴", "۶۶")
     assert "text_validation_warnings" not in parse_outlook(json.dumps(r), ctx)
