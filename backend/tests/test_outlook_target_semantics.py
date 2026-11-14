@@ -63,3 +63,40 @@ async def test_extended_daily_history_and_actual_counts():
     assert len(ctx['candles']['4h']) == 120
     assert ctx['history_coverage']['daily_count'] == 365
     assert market.fetch_historical_closed.call_args.kwargs['max_bars'] == 2400
+
+
+@pytest.mark.parametrize("direction,activation,targets,bounds", [
+    ("bearish", 66427.6, [62241.0, 59090.0], [57773.0, 59090.0]),
+    ("bullish", 67455.5, [71490.7, 73338.0], [73338.0, 73403.9]),
+])
+def test_multiple_targets_can_also_be_path_waypoints(direction, activation, targets, bounds):
+    ctx, r = snapshot()
+    ctx["live_price"] = 65868.0
+    r["alternative"]["direction"] = "bullish" if direction == "bearish" else "bearish"
+    ctx["levels"].extend([
+        {"id": "activation", "price": activation},
+        {"id": "first_target", "price": targets[0]},
+        {"id": "final_target", "price": targets[1]},
+        {"id": "zone_low", "price": bounds[0]},
+        {"id": "zone_high", "price": bounds[1]},
+    ])
+    r["dominant"].update(
+        direction=direction, activation_level_ids=["activation"],
+        target_level_ids=["first_target", "final_target"],
+        path_level_ids=["first_target", "final_target"],
+        target_zone_level_ids=["zone_low", "zone_high"],
+    )
+    parsed = parse_outlook(json.dumps(r), ctx)
+    scenario = parsed["dominant"]
+    assert scenario["target_level_ids"] == ["first_target", "final_target"]
+    assert scenario["target_zone_level_ids"] == ["zone_low", "zone_high"]
+    chart = chart_snapshot(ctx, parsed)
+    path = next(p for p in chart["paths"] if p["kind"] == "dominant")
+    assert [point[1] for point in path["points"]][-2:] == targets
+
+
+def test_all_activation_levels_constrain_targets():
+    ctx, r = snapshot()
+    r["dominant"]["activation_level_ids"] = ["upper", "low"]
+    parsed = parse_outlook(json.dumps(r), ctx)
+    assert parsed["dominant"]["target_validation"] == "rejected_geometry"
