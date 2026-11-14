@@ -63,6 +63,15 @@ def validate_strategy_plan(data: dict[str, Any]) -> str | None:
     if sid == A:
         if (isinstance(profile, str) and profile in SEQUENCES) or data.get("confirmation_sequence") in list(SEQUENCES.values()):
             return "strategy_profile_mismatch"
+        if profile == ANALYST_PROFILES[A]:
+            from app.services.multi_setup_analyst import VERSION
+            from app.services.verified_trade_plan import plan_error
+            contract = data.get("verified_trade_plan") or {}
+            if contract.get("version") != VERSION or plan_error(data):
+                return "strategy_profile_mismatch"
+            if ("confirmation_sequence" in data
+                    and data["confirmation_sequence"] != ANALYST_SEQUENCES[profile]):
+                return "strategy_profile_mismatch"
         return None
     # Flat NO_TRADE has no entry plan to validate.
     if data.get("setup_mode") == "flat" and data.get("decision") == "NO_TRADE":
