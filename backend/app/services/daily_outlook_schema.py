@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -155,6 +156,27 @@ def parse_outlook(text: str, context: dict, *, execution_plan: dict | None = Non
         if any(not stage.strip() or len(stage) > 180 for stage in scenario.path_fa):
             raise ValueError("invalid_scenario_stage")
     output = result.model_dump()
+    if independent:
+        # Diagnose explicit condition-price conflicts without silently rewriting
+        # paid model output or discarding otherwise grounded chart destinations.
+        warnings = []
+        prices_by_id = {level["id"]: level["price"] for level in levels}
+        digits = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
+        for key in ("dominant", "alternative"):
+            for field, refs in (("activation_fa", "activation_level_ids"),
+                                ("invalidation_fa", "invalidation_level_ids")):
+                text = output[key][field].translate(digits).replace("٬", ",").replace("٫", ".")
+                numbers = [float(v.replace(",", "")) for v in
+                           re.findall(r"(?<![\d.])[0-9]+(?:,[0-9]{3})*(?:\.[0-9]+)?", text)]
+                expected = [prices_by_id[i] for i in output[key][refs]]
+                if any(n >= 1000 and not any(math.isclose(n, p, rel_tol=0, abs_tol=.01)
+                                            for p in expected) for n in numbers):
+                    warnings.append({"field": f"{key}.{field}",
+                                     "code": "condition_price_mismatch",
+                                     "referenced_prices": expected})
+        if warnings:
+            output["text_validation_warnings"] = warnings
+
     if independent:
         prices = {level["id"]: level["price"] for level in levels}
         quote = context.get("live_price")

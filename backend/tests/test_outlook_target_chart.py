@@ -51,3 +51,26 @@ def test_no_invented_band_for_legacy_report_or_single_target():
     assert chart_snapshot(ctx, data)['target_zones'] == []
     ctx.pop('analysis_mode')
     assert chart_snapshot(ctx, data)['step'] == 14400
+
+
+def test_daily_activation_is_explicit_and_complex_rules_are_not_inferred():
+    ctx, data = snapshot()
+    data["dominant"]["activation_fa"] = "بسته‌شدن روزانه بالای سطح مشخص‌شده."
+    chart = chart_snapshot(ctx, data)
+    assert chart["conditions"][0]["text"] == "Conditional: daily close above 90.00"
+    data["dominant"]["activation_fa"] += " سپس بازآزمایی"
+    assert chart_snapshot(ctx, data)["conditions"][0]["text"] == "Conditional: see report activation rules"
+
+
+def test_zone_boundary_does_not_replace_path_destination():
+    ctx, data = snapshot()
+    chart = chart_snapshot(ctx, data)
+    assert chart["target_zones"][0]["high"] == 112
+    assert chart["paths"][0]["points"][-1][1] == 110
+
+
+def test_conflicting_activation_is_not_presented_as_a_confirmed_rule():
+    ctx, data = snapshot()
+    data["dominant"]["activation_fa"] = "بسته‌شدن روزانه بالای سطح مشخص‌شده."
+    data["text_validation_warnings"] = [{"field": "dominant.activation_fa"}]
+    assert chart_snapshot(ctx, data)["conditions"][0]["text"] == "Activation text conflict: review report"

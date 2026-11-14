@@ -45,9 +45,24 @@ def chart_snapshot(context: dict, report: dict) -> dict:
     paths = []
     target_zones = []
     retests = []
+    conditions = []
     referenced = set()
     for key in ("dominant", "alternative"):
         s = report.get(key) or {}
+        activation = [levels[i]["price"] for i in s.get("activation_level_ids", []) if i in levels]
+        text = s.get("activation_fa", "")
+        # Only summarize an explicit, simple daily-close condition; never infer
+        # a timeframe or confirmation rule from the scenario direction.
+        condition = "Conditional: see report activation rules"
+        if len(activation) == 1 and "بسته" in text and "روزانه" in text and not any(
+            word in text for word in ("بازآزمایی", "سپس", "یا", "۴ساعته", "هفتگی")):
+            side = "below" if "زیر" in text else "above" if "بالای" in text else None
+            if side:
+                condition = f"Conditional: daily close {side} {activation[0]:,.2f}"
+        if any(w.get("field") == f"{key}.activation_fa"
+               for w in report.get("text_validation_warnings", [])):
+            condition = "Activation text conflict: review report"
+        conditions.append({"kind": key, "text": condition, "direction": s.get("direction", "range")})
         for level_id in s.get("retest_level_ids") or []:
             if level_id in levels:
                 retests.append({"kind": key, "price": levels[level_id]["price"]})
@@ -74,7 +89,7 @@ def chart_snapshot(context: dict, report: dict) -> dict:
     nearby = nearby_levels(list(levels.values()), quote)
     referenced.update(l["id"] for side in nearby.values() for l in side)
     return {"nearby": nearby, "channel": ({"available": False, "reason": "independent_daily_chart"} if independent else context["chart_channel"] if "chart_channel" in context else pivot_channel(rows, anchor, step, quote)), "anchor": anchor, "quote": quote, "bars": rows, "step": step,
-            "paths": paths, "target_zones": target_zones, "retests": retests, "independent": independent, "levels": [l for key, l in levels.items() if key in referenced]}
+            "conditions": conditions, "paths": paths, "target_zones": target_zones, "retests": retests, "independent": independent, "levels": [l for key, l in levels.items() if key in referenced]}
 
 
 @lru_cache(maxsize=8)
@@ -87,9 +102,9 @@ def render_report_image(snapshot_json: str) -> bytes:
         from matplotlib.backends.backend_agg import FigureCanvasAgg
         from matplotlib.patches import Rectangle
         from matplotlib.ticker import FuncFormatter
-        fig = Figure(figsize=(15, 8.5), dpi=120, facecolor="#0b1220")
+        fig = Figure(figsize=(18, 9.5), dpi=120, facecolor="#0b1220")
         FigureCanvasAgg(fig)
-        ax = fig.add_axes([.055, .17, .87, .65], facecolor="#101b2d")
+        ax = fig.add_axes([.055, .20, .66, .62], facecolor="#101b2d")
         anchor = data["anchor"]
         start = (data["bars"][0][0] / 1000 - anchor.timestamp()) / DAY
         width = data["step"] / DAY * .65
@@ -128,8 +143,6 @@ def render_report_image(snapshot_json: str) -> bytes:
         for retest in data["retests"]:
             all_prices.append(retest["price"])
             ax.hlines(retest["price"], 0, 7.3, color="#a9b8d1", linestyle=":", linewidth=1)
-            ax.text(.15, retest["price"], f"Retest ({retest['kind']}): {retest['price']:,.2f}",
-                    color="#a9b8d1", fontsize=8, va="bottom")
         if not any(p["kind"] == "dominant" for p in data["paths"]):
             ax.text(.98, .98, "Main scenario: no validated target", transform=ax.transAxes,
                     ha="right", va="top", color="#e9b56d", fontsize=10)
@@ -147,10 +160,7 @@ def render_report_image(snapshot_json: str) -> bytes:
             name = "Main scenario" if path["kind"] == "dominant" else "Alternative scenario"
             ax.plot(xs, ys, color=color, linestyle="--", linewidth=2.2, marker="o", markersize=3,
                     label=f"{name} ({path['direction']})", zorder=5)
-            ax.annotate(f"{'Main' if path['kind'] == 'dominant' else 'Alternative'} target: {ys[-1]:,.2f}", xy=path["points"][-1],
-                        xytext=(-8, 18 if path["kind"] == "dominant" else -24),
-                        textcoords="offset points", ha="right", color=color, fontsize=9,
-                        bbox={"facecolor": "#101b2d", "edgecolor": color, "alpha": .9})
+            # The endpoint marker is authoritative; text lives in the side panel.
             ax.annotate("", xy=path["points"][-1], xytext=path["points"][-2],
                         arrowprops={"arrowstyle": "-|>", "color": color, "lw": 1.3, "linestyle": "--"})
         seen = set()
@@ -163,9 +173,34 @@ def render_report_image(snapshot_json: str) -> bytes:
             code = codes.get(level["id"], "")
             color = "#62c9bb" if code.startswith("S") else "#f18d9f" if code.startswith("R") else "#7890ad"
             ax.axhline(price, color=color, linestyle=":", linewidth=.8, alpha=.65)
-            # Prices printed on the right avoid a stack of long labels across candles.
-            ax.annotate(f"{code} {price:,.2f}".strip(), xy=(7.15, price), fontsize=7, color="#adc0d9", va="bottom", ha="right",
-                        bbox={"facecolor":"#101b2d", "edgecolor":"none", "alpha":.8, "pad":1})
+        # Fixed side-panel rows keep labels away from candles and path arrows.
+        for index, condition in enumerate(data["conditions"]):
+            kind = condition["kind"]
+            color = colors[kind]
+            y = .79 - index * .25
+            name = "MAIN" if kind == "dominant" else "ALTERNATIVE"
+            fig.text(.77, y, f"{name} / {condition['direction'].upper()}",
+                     color=color, fontsize=12, weight="bold")
+            fig.text(.77, y-.035, condition["text"], color="#c8d7ee", fontsize=9)
+            path = next((p for p in data["paths"] if p["kind"] == kind), None)
+            target = f"{path['points'][-1][1]:,.2f}" if path else "No validated target"
+            fig.text(.77, y-.07, f"Final target: {target}", color=color, fontsize=11)
+            zone = next((z for z in data["target_zones"] if z["kind"] == kind), None)
+            if zone:
+                fig.text(.77, y-.105, f"Zone: {zone['low']:,.2f} - {zone['high']:,.2f}",
+                         color=color, fontsize=10)
+            if path and len(path["points"]) > 2:
+                via = " / ".join(f"{v:,.2f}" for _, v in path["points"][1:-1])
+                import textwrap
+                fig.text(.77, y-.14, textwrap.fill("Via: " + via, 34), color="#c8d7ee", fontsize=9)
+        retest_prices = sorted({r["price"] for r in data["retests"]})
+        if retest_prices:
+            import textwrap
+            fig.text(.77, .25, textwrap.fill("Retest levels: " + " / ".join(
+                f"{p:,.2f}" for p in retest_prices), 34), color="#a9b8d1", fontsize=9)
+        if payload["report"].get("text_validation_warnings"):
+            fig.text(.055, .135, "TEXT WARNING: a condition price conflicts with its referenced level. Review report before use.",
+                     color="#ffbd75", fontsize=10)
         ax.scatter([0], [data["quote"]], color="white", s=20, zorder=8)
         pad = max((max(all_prices)-min(all_prices))*.12, data["quote"]*.003)
         ax.set_ylim(min(all_prices)-pad, max(all_prices)+pad)
