@@ -19,10 +19,10 @@ def fixture():
         prices=[1000+i*.7+5*math.sin(i*math.pi/4) for i in range(48)]
         series[tf]=[Candle(p,p+2,p-2,p,boundary-(48-i)*step) for i,p in enumerate(prices)]
     costs=SimpleNamespace(default_margin_usdt=50,default_leverage=3,maker_fee_rate=.0002,taker_fee_rate=.0005,slippage_bps=1,default_tp_behavior='market')
-    evidence=[dict(id='zone',kind='resistance',timeframe='1h',time_ms=now-3600000,low=1020.,high=1022.,price=1021.,direction=None),
-              dict(id='stop',kind='support',timeframe='1h',time_ms=now-7200000,low=1017.,high=1019.,price=1018.,direction=None),
-              dict(id='support_zone',kind='support',timeframe='1h',time_ms=now-10800000,low=1020.,high=1022.,price=1021.,direction=None),
-              dict(id='target',kind='resistance',timeframe='1h',time_ms=now-14400000,low=1060.,high=1062.,price=1061.,direction=None)]
+    evidence=[dict(id='zone',kind='resistance',timeframe='1h',time_ms=now-14400000,low=1020.,high=1022.,price=1021.,direction=None),
+              dict(id='stop',kind='support',timeframe='1h',time_ms=now-18000000,low=1017.,high=1019.,price=1018.,direction=None),
+              dict(id='support_zone',kind='support',timeframe='1h',time_ms=now-14400000,low=1020.,high=1022.,price=1021.,direction=None),
+              dict(id='target',kind='resistance',timeframe='1h',time_ms=now-21600000,low=1060.,high=1062.,price=1061.,direction=None)]
     return series,costs,evidence,now
 
 
