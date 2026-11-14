@@ -23,6 +23,7 @@ ALLOWED_CONFIRMATION_TOKENS = frozenset(
         "entry_zone_touch",
         "displacement",
         "trend_pullback", "trend_resume", "breakout_close", "breakout_retest",
+        "htf_sweep_reclaim", "htf_pullback_rejection",
     }
 )
 
