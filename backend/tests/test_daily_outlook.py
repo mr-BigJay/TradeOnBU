@@ -22,7 +22,7 @@ def report():
         activation_fa='بسته شدن روزانه بالای سقف روز قبل', invalidation_fa='بسته شدن روزانه زیر کف روز قبل',
         activation_level_ids=['high'], invalidation_level_ids=['low'], target_level_ids=['high'],
         path_fa=['ابتدا تأیید شکست سقف', 'سپس بررسی حفظ سطح در بازآزمایی'])
-    return dict(trade_plan=dict(action='wait', rationale_fa='سطوح برای نسبت سود به زیان کافی نیست.', trigger_fa='منتظر تشکیل ساختار معتبر بمانید.', entry_level_id=None, stop_level_id=None, target_level_ids=[]), summary_fa='ساختار بازار برای چند روز آینده به تأیید شکست و حفظ سطح وابسته است.',
+    return dict(trend_assessment=dict(phase='range', phase_fa='ساختار قیمت فعلاً روند روشنی را نشان نمی‌دهد.', reversal_watch_fa='واکنش به حمایت روزانه برای تغییر مسیر بررسی شود.', expected_path_fa='ابتدا حفظ حمایت و سپس حرکت مشروط به مقاومت بررسی شود.', horizon_fa='افق چند روز آینده، بدون زمان قطعی رسیدن.'), trade_plan=dict(action='wait', rationale_fa='سطوح برای نسبت سود به زیان کافی نیست.', trigger_fa='منتظر تشکیل ساختار معتبر بمانید.', entry_level_id=None, stop_level_id=None, target_level_ids=[]), summary_fa='ساختار بازار برای چند روز آینده به تأیید شکست و حفظ سطح وابسته است.',
         weekly_context_fa='ساختار هفتگی نیاز به تأیید دارد.', daily_structure_fa='ساختار روزانه در محدوده است.',
         dominant=scenario, alternative={**scenario, 'direction':'bearish'},
         uncertainty_fa='داده خبری در این گزارش وجود ندارد.', watch_next_fa=['بسته شدن روزانه'],
@@ -133,9 +133,10 @@ async def test_success_and_usage_without_trade_writes(isolated,monkeypatch,actio
     data=await service.dashboard()
     assert data['latest']['status']=='completed'
     assert data['latest']['usage']['input_tokens']==123
-    indicators=json.loads(inference.await_args.kwargs['user_input'])['market']['strategy_features']
-    assert set(indicators['timeframes'])=={'4h','1d'}
-    assert data['latest']['context']['strategy_features']==indicators
+    market=json.loads(inference.await_args.kwargs['user_input'])['market']
+    assert market['analysis_mode']=='independent_htf_v1'
+    assert 'strategy_features' not in market and 'poi_context' not in market
+    assert data['latest']['report']['trade_plan']['source']=='outlook_only'
     assert data['latest']['report']['trade_plan']['action'] == 'wait'
     assert data['attempted_today'] is True
     inference.assert_awaited_once()

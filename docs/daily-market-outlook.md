@@ -85,3 +85,45 @@ opening them does not regenerate AI or invent a plan. Chart persistence, schedul
 hourly analysis, execution gates and order creation are unchanged. No migration or
 additional inference call is needed. New concise text and plans apply to future
 reports only; historical text is retained inside the compact layout.
+
+## Independent HTF narrative and advisory swing plans
+
+Daily reports (`slot_close_ms=0`) now use `independent_htf_v1`. The existing
+four-hour report and A/B/C paper execution retain their previous behavior.
+
+- Analyse the supplied closed weekly/daily candles directly; 4h is supporting
+  development. No candidate, strategy feature, channel or execution snapshot
+  determines the daily analyst's conclusion. Existing scheduling is unchanged.
+- About 80 daily candles and 12 completed weeks are available. This supports a
+  multi-day outlook, not a claim about a multi-year cycle. No web search was added;
+  learned model knowledge is not a source of live facts. Market intelligence is
+  optional context with its existing freshness checks.
+- Up to 14 completed daily reports from the preceding 14 days are included with
+  original scenario/level/swing snapshots. Observations of later closed 4h bars
+  show ranges and target touches. The partial candle containing the old report
+  is excluded and the unobserved initial interval is explicit. A touch is not a
+  fill, a successful trade, or proof of the order of events inside a candle.
+- Weekly structure, daily structure, phase of trend, conditional path, reversal
+  watch and changed view are presented in the dashboard and Telegram. No actual
+  account position or P&L is inferred.
+- The model can select eight additional levels, each tied to an exact high,
+  low or close of a supplied closed daily/weekly candle. The server verifies
+  the timestamp and price before saving the level for chart rendering. Historical
+  extrema are evidence anchors, not proof that support will hold.
+- An optional swing proposal uses a simple daily/4h condition, 2–14 day holding
+  horizon (default 7), and a separate 1–48 hour entry validity (default 24).
+  It does **not** create a paper or live order, and an expired entry is not an
+  instruction to close an existing position. A later proposal is a new snapshot.
+- Entry/SL/TP must reference verified levels with correctly ordered targets.
+  Stop distance must be at least 0.5 daily ATR as a noise floor; the server never
+  moves a stop to make it pass. Estimated net R:R must be >=1.5 using the saved
+  application fee/spread/slippage assumptions and conservative STOP execution.
+  Future funding is excluded and disclosed. Intraday target caps do not apply.
+- A geometrically invalid, too-tight, already-invalidated or low-R:R proposal
+  becomes a no-proposal explanation without discarding a valid outlook. Schema
+  errors or fabricated scenario levels still fail validation and archive the
+  paid response without automatic retry.
+
+No database migration is needed. Historical reports retain their original UI.
+The change requires deploying the new application image; it does not update an
+already generated report or cause an extra paid generation automatically.

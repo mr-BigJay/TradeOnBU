@@ -150,3 +150,19 @@ it('distinguishes neutral evidence, omitted assessment and unavailable sources',
  expect(screen.getByText('اثر در پاسخ توضیح داده نشده است.')).toBeInTheDocument();
  expect(screen.getByText(/زمان داده خارج از محدوده مجاز؛ دادهٔ لحظه‌ای ثبت نشده/)).toBeInTheDocument();
 });
+it('shows the continuous outlook and an expired advisory swing separately from engine orders',async()=>{
+ window.location.hash='#/outlook/reports/1';
+ const independent={...run,report:{...run.report,analysis_mode:'independent_htf_v1',
+   trend_assessment:{phase:'correction',phase_fa:'اصلاح در روند بزرگ‌تر',reversal_watch_fa:'حمایت حساس روزانه',expected_path_fa:'مسیر مشروط تا مقاومت',horizon_fa:'افق چندروزه'},
+   previous_plan_review:{prior_report_id:7,assessment_fa:'سناریوی قبلی همچنان معتبر است.',late_entry_fa:'ورود تازه نیاز به ارزیابی دارد.'},
+   swing_plan:{source:'independent_swing',action:'long',rationale_fa:'ساختار روزانه',trigger_fa:'حفظ حمایت',entry_price:80000,stop_loss:77000,take_profits:[86000],risk_reward:[1.8],holding_days:7,entry_expires_at:'2020-01-01T00:00:00Z'},
+   trade_plan:{source:'outlook_only',action:'wait'}}};
+ apiFetch.mockImplementation((url:string)=>Promise.resolve(url.endsWith('/chart-image')?{data_url:'data:image/png;base64,abc',filename:'report.png'}:url.endsWith('/runs/1')?independent:empty()));
+ render(<DailyOutlookPage/>);
+ expect(await screen.findByText('پیگیری سناریوی قبلی')).toBeInTheDocument();
+ expect(screen.getByRole('link',{name:'گزارش مرجع'})).toHaveAttribute('href','#/outlook/reports/7');
+ expect(screen.getByText('اصلاح در روند بزرگ‌تر')).toBeInTheDocument();
+ expect(screen.getByText(/مهلت ورود این پیشنهاد گذشته/)).toBeInTheDocument();
+ expect(screen.getByText(/پیشنهاد مشروط سوئینگ/)).toBeInTheDocument();
+ expect(screen.queryByText('سفارش آزمایشی')).not.toBeInTheDocument();
+});
