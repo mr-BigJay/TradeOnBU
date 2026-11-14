@@ -70,14 +70,14 @@ def test_net_floor_includes_costs_and_uses_first_tick(direction,stop,obstacle):
     from app.services.execution_model_sim import auto_paper_rr_from_settings
     from app.domain.paper_execution_policy import HARD_MIN_AUTO_PAPER_NET_RR
     _,cost,_,_=fixture()
-    assert HARD_MIN_AUTO_PAPER_NET_RR==1.4
+    assert HARD_MIN_AUTO_PAPER_NET_RR==1.5
     sign=1 if direction=='LONG' else -1
     target=target_at_net_rr(cost,direction,1000,stop,obstacle)
     def rr(tp):
-        return auto_paper_rr_from_settings(cost,direction=direction,entry=1000,sl=stop,tp=tp,min_net_rr=1.4)
+        return auto_paper_rr_from_settings(cost,direction=direction,entry=1000,sl=stop,tp=tp,min_net_rr=HARD_MIN_AUTO_PAPER_NET_RR)
     assert rr(target).acceptable
     assert not rr(target-sign*.1).acceptable
-    assert not rr(1000+sign*14).acceptable  # Gross 1.4 is below the net floor.
+    assert not rr(1000+sign*14).acceptable  # Gross 1.4 is below the 1.5 net floor.
 
 
 def test_invalid_higher_timeframe_never_supplies_an_obstacle():

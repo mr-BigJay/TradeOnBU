@@ -30,7 +30,7 @@ def _ensure_utc(dt: datetime) -> datetime:
 
 def _effective_interval_minutes(cfg: AiAnalysisSettings) -> int:
     from app.services.multi_setup_analyst import enabled as analyst_enabled
-    if analyst_enabled():return 240
+    if analyst_enabled():return 60
     from app.services.verified_trade_plan import enabled
     if enabled():
         return 5
@@ -286,6 +286,11 @@ async def is_analysis_lock_held() -> bool:
 
 
 async def should_run_scheduled(session: AsyncSession) -> bool:
+    from app.services.multi_setup_analyst import enabled as analyst_enabled
+    if analyst_enabled():
+        from app.domain.trading_calendar import new_entries_allowed
+        if not new_entries_allowed(_utc_now()):
+            return False
     cfg = await get_or_create_settings(session, autocommit_migration=True)
     ok, _ = await scheduling_allowed(session, cfg)
     if not ok:

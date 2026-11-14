@@ -161,6 +161,11 @@ async def maybe_auto_open_paper_position(
 
     from app.services import verified_trade_plan as verified
     vplan = (setup.structured_snapshot or {}).get('verified_trade_plan')
+    from app.services.multi_setup_analyst import VERSION as ANALYST_VERSION
+    if vplan and vplan.get("version") == ANALYST_VERSION:
+        from app.domain.trading_calendar import new_entries_allowed
+        if not new_entries_allowed(_utc_now()):
+            return {**meta, "skipped": True, "reason": "weekend_new_entries_disabled"}
     if verified.enabled() or vplan:
         error = verified.plan_error(setup.structured_snapshot or {}, int(_utc_now().timestamp()*1000))
         if error:

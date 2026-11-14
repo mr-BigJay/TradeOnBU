@@ -137,6 +137,38 @@ def _token_on_bar(
         return False
     bar = window[-1]
     d = direction.upper()
+    if token == "htf_pullback_rejection":
+        # The HTF zone is independently server-validated by compile_plan.
+        # A single *closed* 5m directional rejection is sufficient to rest a
+        # limit order; the order still needs a later real price fill.
+        span = bar.high - bar.low
+        if span <= 0 or not _bar_in_zone(bar, zone_lo, zone_hi):
+            return False
+        midpoint = (zone_lo + zone_hi) / 2
+        if d == "LONG":
+            return (bar.close > bar.open and bar.close >= midpoint
+                    and (bar.close - bar.low) >= .6 * span)
+        if d == "SHORT":
+            return (bar.close < bar.open and bar.close <= midpoint
+                    and (bar.high - bar.close) >= .6 * span)
+        return False
+    if token == "htf_sweep_reclaim":
+        # A 5m wick must sweep an identified HTF invalidation level and close
+        # strongly back through it. Neither AI prose nor an intrabar wick alone
+        # can satisfy this event.
+        reference = (structured.get("verified_trade_plan") or {}).get("confirmation_reference") or {}
+        try:
+            level = float(reference["liquidity_price"])
+        except (KeyError, TypeError, ValueError):
+            return False
+        span = bar.high - bar.low
+        if not math.isfinite(level) or level <= 0 or span <= 0:
+            return False
+        if d == "LONG":
+            return bar.low < level < bar.close and (bar.close - bar.low) >= .55 * span
+        if d == "SHORT":
+            return bar.high > level > bar.close and (bar.high - bar.close) >= .55 * span
+        return False
     if token == "trend_pullback":
         return _bar_in_zone(bar, zone_lo, zone_hi)
     if token == "trend_resume":

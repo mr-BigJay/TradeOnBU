@@ -17,6 +17,9 @@ PROFILE_MIN_STRUCTURAL: dict[str, tuple[str, ...]] = {
     "sweep_bos_poi": ("liquidity_sweep", "bos"),
     "bos_fvg_retest": ("bos", "fvg_retest"),
     "mss_fvg_retest": ("mss", "fvg_retest"),
+    "htf_sweep_reclaim": ("htf_sweep_reclaim",),
+    "htf_pullback_rejection": ("htf_pullback_rejection",),
+    "htf_breakout_close": ("breakout_close",),
 }
 
 

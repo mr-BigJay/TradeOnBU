@@ -39,7 +39,7 @@ def test_rejected_continuation_carries_swing_regimes_and_selected_ids():
     rej = result["analyst_summary"]["rejected_plans"][0]
     assert rej["reason"] == "continuation_trend_conflict"
     assert rej["rank"] == 1
-    assert (rej["zone_id"], rej["invalidation_id"], rej["target_id"]) == ("zone", "stop", "target")
+    assert (rej["zone_id"], rej["invalidation_id"], rej["target_id"]) == ("support_zone", "stop", "target")
     assert rej["zone_evidence"]["price"] == 1021
     assert rej["entry"] == 1021
     assert rej["stop"] < rej["entry"]
