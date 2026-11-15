@@ -447,12 +447,12 @@ async def test_tehran_weekend_suppresses_scheduled_analyst_and_new_paper_order(s
     from app.services.paper_auto_trading import maybe_auto_open_paper_position
     monkeypatch.setenv("MULTI_SETUP_ANALYST_ENABLED","1")
     monkeypatch.setattr(trading_calendar, "new_entries_allowed", lambda _now: False)
-    # No model API charge and no scheduled outlook on weekend.
+    # Intraday inference/entries stay blocked; daily analysis can still reserve a report.
     assert await should_run_scheduled(session) is False
-    reserve=AsyncMock()
+    reserve=AsyncMock(return_value=(None, None, "not_due"))
     monkeypatch.setattr(daily_outlook,"reserve_run",reserve)
     await daily_outlook.daily_outlook_tick()
-    reserve.assert_not_awaited()
+    reserve.assert_awaited_once_with("scheduled", "daily")
 
     series,costs,evidence,now=fixture()
     plan=a.compile_plan(proposal("trend_continuation"),evidence,series,costs,now,now)

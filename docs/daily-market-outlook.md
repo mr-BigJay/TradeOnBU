@@ -201,3 +201,24 @@ this policy. No saved DB report is rewritten and no inference is retried.
 The market significance/completeness of the selected obstacle still depends on
 the analyst; this validation cannot independently prove that the AI found every
 important obstacle.
+
+### Weekend daily analysis
+
+Daily scheduling is independent of the new-entry calendar: a due daily report
+may run on Saturday/Sunday Tehran as well as weekdays. Existing enabled/due,
+shared-lock and one-report-per-day guards still apply. Intraday analysis and
+paper entry calendar checks are unchanged.
+
+Daily input contains new_position_proposals_allowed, calculated from the
+snapshot as_of timestamp in Tehran. Weekend instructions request trend,
+scenarios and target zones only, with no new/deferred position recommendation.
+The independent parser also replaces any supplied swing proposal with a
+calendar-specific wait before validation, so an unsolicited or malformed entry
+cannot appear as the report's trade card. This is a calendar restriction, not a
+claim that no opportunity exists. Raw responses remain archived; existing
+stored reports are not rewritten. Revalidating a preview follows its snapshot
+date, not the current wall-clock day.
+
+After deployment, an enabled overdue daily schedule can generate today's
+missing report on the next scheduler tick; it uses the usual single AI request
+and report delivery. No DB deletion or manual preview is required.

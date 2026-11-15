@@ -142,6 +142,14 @@ def parse_outlook(text: str, context: dict, *, execution_plan: dict | None = Non
         data["trade_plan"] = dict(action="wait", rationale_fa="تأیید ستاپ در موتور ورود بررسی می‌شود.",
                                   trigger_fa="منتظر تأیید ساختار قیمت بمانید.",
                                   entry_level_id=None, stop_level_id=None, target_level_ids=[])
+    weekend_analysis_only = False
+    if independent and isinstance(data, dict):
+        from app.services.outlook_calendar import proposals_allowed, weekend_plan
+        weekend_analysis_only = not proposals_allowed(context)
+        if weekend_analysis_only:
+            # Suppress even malformed/unsolicited proposals before schema validation.
+            # The original paid response is archived by the caller.
+            data["swing_plan"] = weekend_plan()
     result = Outlook.model_validate(data)
     levels = list(context["levels"])
     if independent and result.trend_assessment is None:
@@ -251,6 +259,11 @@ def parse_outlook(text: str, context: dict, *, execution_plan: dict | None = Non
                 "entry_level_id": None, "stop_level_id": None, "target_level_ids": []}
             output["swing_plan"]["validation_details"] = getattr(exc, "details", {})
             output["swing_plan"]["rejected_proposal"] = result.swing_plan.model_dump()
+        if weekend_analysis_only:
+            output["swing_plan"]["validation_reason"] = "weekend_analysis_only"
+            output["new_position_proposals_allowed"] = False
+        else:
+            output["new_position_proposals_allowed"] = True
         output["analysis_mode"] = "independent_htf_v1"
         output["trade_plan"] = dict(action="wait", source="outlook_only",
             rationale_fa="این گزارش مسیر چندروزه بازار را بررسی می‌کند و سیگنال اجرایی نیست.",
@@ -407,7 +420,16 @@ Do not equate sampled liquidation/order-book data with complete or durable marke
 Mention supplied data_quality_warnings and material missing data in uncertainty_fa.
 Compare with previous_report: say what changed, persisted, or was invalidated; do not claim
 verified forecasting accuracy from a previous narrative alone.
-You MUST assess a conditional entry in every report and return a non-null swing_plan.
+WEEKEND OVERRIDE: When market.new_position_proposals_allowed is false, produce
+the full trend/continuation/reversal analysis, scenarios, watch levels and target
+zones, but NO new position recommendation anywhere in the report. Return
+swing_plan.action=wait with null entry/stop IDs, empty targets, execution=null,
+first_obstacle=null and explain that Saturday/Sunday Tehran are analysis-only.
+Do not propose a deferred Monday trade or put entry/stop/TP instructions into
+summary, scenario prose, or previous_plan_review.late_entry_fa. Prior reports may
+be reviewed retrospectively; do not advise opening, closing or changing positions.
+This override takes priority over the entry-assessment requirement below.
+On allowed days, you MUST assess a conditional entry in every report and return a non-null swing_plan.
 First evaluate a structurally grounded continuation, pullback or reversal entry consistent
 with the supplied market context. If a valid future entry exists, return action=long/short
 with explicit entry_level_id, stop_level_id, target_level_ids, trigger_fa and entry_valid_hours.
