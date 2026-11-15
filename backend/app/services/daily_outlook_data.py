@@ -118,6 +118,8 @@ async def build_daily_context(symbol: str, market: MarketDataService | None = No
 
     if extended:
         context["swing_entry_policy"] = "conditional_entry_v2"
+        from app.services.outlook_calendar import proposals_allowed
+        context["new_position_proposals_allowed"] = proposals_allowed(context)
 
     context["history_coverage"] = {
         "requested_days": history_days,
