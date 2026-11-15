@@ -519,6 +519,9 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
                 analyst.INSTRUCTIONS + ai_direct_paper.DIRECT_INSTRUCTIONS
                 if direct_requested else analyst.INSTRUCTIONS
             )
+            from app.services.analyst_feasibility import build_execution_feasibility
+            feasibility = build_execution_feasibility(
+                evidence, candles_by_interval, costs, observed_ms, enabled_strategies)
             user_payload, analyst_payload_audit = build_analyst_payload(
                 market=market_payload,
                 evidence_catalog=evidence,
@@ -532,6 +535,7 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
                     if direct_requested else None
                 ),
                 instructions=analyst_instructions,
+                execution_feasibility=feasibility,
             )
         elif verified.enabled():
             # No old narratives or competing discretionary plans in the reviewer input.
@@ -586,6 +590,7 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
             structured=analyst.compile_response(structured,evidence,candles_by_interval,costs,
                 int(datetime.now(timezone.utc).timestamp()*1000),observed_ms,enabled_strategies,
                 outlook_major_levels=outlook_major_levels)
+            structured["analyst_summary"]["execution_feasibility"] = feasibility
             if direct_mode:
                 structured["analyst_summary"]["ai_direct_proposal"] = (
                     direct_proposal if isinstance(direct_proposal, dict) else None

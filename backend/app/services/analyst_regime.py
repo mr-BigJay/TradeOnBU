@@ -27,7 +27,18 @@ def executable_regime(series):
                        "=> bearish; insufficient confirmed pivots => unclear; otherwise range. "
                        "Confirmed pivot uses two closed candles on each side."),
         "timeframes": frames,
-        "continuation_rule": ("LONG requires 1h bullish and 4h not bearish; "
-                              "SHORT requires 1h bearish and 4h not bullish. "
+        "continuation_rule": ("4H bullish allows LONG; 4H bearish allows SHORT, including an opposing 1H pullback. "
+                              "If 4H is range/unclear, use directional 1H. A closed 5m rejection "
+                              "at structural support/resistance and a later limit fill are required. "
                               "EMA/RSI cannot override these execution labels."),
     }
+
+
+def continuation_direction(frames):
+    """4H defines trend; an opposing 1H swing may be its pullback.
+    Fall back to 1H when 4H has no directional structure.
+    A closed 5m rejection and later limit fill remain mandatory.
+    """
+    higher = frames["4h"]["trend"]
+    trend_label = higher if higher in ("bullish", "bearish") else frames["1h"]["trend"]
+    return {"bullish": "LONG", "bearish": "SHORT"}.get(trend_label)

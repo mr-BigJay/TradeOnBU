@@ -172,3 +172,34 @@ and https://www.tradingview.com/support/solutions/43000592270-exponential-moving
 These metrics are model context only. No RSI threshold, EMA cross requirement,
 confirmation sequence, risk rule, order rule or scheduler change is introduced.
 They add a small input payload to existing requests, not an additional paid request.
+
+## HTF continuation pullbacks and executable geometry (prompt v7)
+
+For B, directional 4H confirmed swings determine the trade direction. An opposing
+1H swing is allowed as a correction: bearish 4H/bullish 1H may propose a SHORT at
+HTF resistance, and the symmetric LONG is allowed. When 4H is range/unclear,
+directional 1H remains a fallback. With neither directional, B remains unavailable.
+The compiler and downstream strategy validation use the same dominant trend.
+Existing contracts and their confirmation evidence are not rewritten.
+
+A proposal still needs a closed 5m directional rejection at the structural zone,
+then a separate later limit fill. The correction alone cannot create an order.
+Structural stops, actual paper costs, minimum net 1.5R before the nearest obstacle,
+risk sizing, calendar rules and invalidation remain in force.
+
+Before inference, execution_feasibility supplies non-binding combinations of
+catalog zone/invalidation/target IDs that pass the same compiler geometry gates.
+The prompt includes up to four distinct entry zones per direction/strategy,
+combination counts and representative rejection geometry. This shortlist is not
+an allowlist: AI may select other catalog combinations, all of which undergo final
+validation. No additional AI call is needed and no candidate creates an order.
+
+proposal_geometry is shared by compilation, preflight and rejection diagnostics.
+Diagnostics report max(3 * ATR15m, ATR1h) as the actual stop-distance limit,
+effective obstacle ID/price, cost-adjusted obstacle R:R and derived target (or null).
+They describe the snapshot; the monitor still rechecks execution geometry after
+confirmation and may widen the stop or reject insufficient remaining reward.
+
+Tests cover opposing 1H pullbacks in both directions, the downstream validator,
+and a full synthetic B path from closed-candle confirmation to pending LIMIT
+and a later fill. These are correctness tests, not evidence of profitability.
