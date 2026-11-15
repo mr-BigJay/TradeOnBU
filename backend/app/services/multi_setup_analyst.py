@@ -9,12 +9,12 @@ from sqlalchemy import select
 from app.services.poi_context import market_zones
 from app.services.verified_trade_plan import atr, trend, valid_bars, flat, _tick
 from app.services.ict_execution_plan import target_at_net_rr
-from app.services.analyst_regime import executable_regime
+from app.services.analyst_regime import executable_regime, continuation_direction
 from app.services.analyst_outlook import compile_forecasts
 from app.services.analyst_major_levels import select_major_levels, minimum_forecast_gap
 
 VERSION = 'multi_setup_analyst_v1'
-PROMPT_VERSION = 6
+PROMPT_VERSION = 7
 STEPS = {'1m':60000,'5m':300000,'15m':900000,'1h':3600000,'4h':14400000}
 PROFILES = {'ict_reversal':'htf_sweep_reclaim', 'trend_continuation':'htf_pullback_rejection', 'breakout_retest':'htf_breakout_close'}
 TRIGGERS = {
@@ -57,7 +57,8 @@ Each plan: strategy_id (ict_reversal|trend_continuation|breakout_retest), direct
 zone_id, invalidation_id, target_id (exact supplied catalog IDs), reason_fa.
 At most one plan per strategy. Only enabled strategies. Empty plans is a valid outcome.
 Select meaningful candle-backed areas; NEVER invent price levels, IDs, confidence probabilities or confirmations. Executable support/resistance and OB source zones MUST come from 1H or 4H; 5m/15m evidence is for FVG execution precision and candle confirmation, never an arbitrary micro support/resistance trade. Prefer stops supported by structural invalidation, not micro swings.
-For continuation, use ONLY execution_regime.timeframes.1h.trend and .4h.trend as the executable trend: bullish/bearish are defined by two confirmed swing highs AND lows, NOT EMA slope or narrative bias. LONG requires 1h bullish and 4h not bearish; SHORT requires 1h bearish and 4h not bullish. If EMA or your visual impression disagrees, explicitly explain the discrepancy and do not propose a continuation that fails the swing rule. Breakout uses resistance for LONG or support for SHORT.
+For continuation, 4H confirmed swing structure determines the direction: bearish => SHORT on a rally/pullback into HTF resistance/OB; bullish => LONG on a decline/pullback into HTF support/OB. Opposing 1H structure can be the correction, NOT an automatic veto. If 4H is range/unclear, use directional 1H structure. Do not enter merely because price is correcting: require the existing closed-5m directional rejection at the selected zone and a separate later limit fill. EMA/RSI are context, not mandatory thresholds. Breakout uses resistance for LONG or support for SHORT.
+execution_feasibility contains server-checked geometry choices using actual paper costs and the nearest structural obstacle. Use these to avoid impossible entry/stop/target combinations, then assess market quality yourself. They are NOT confirmed signals or mandatory selections. You may propose other catalog combinations; all pass the same final validation. If no plan is selected, explain whether geometry or market evidence is the reason. Never invent a plan to meet a quota.
 Explain why each selected scenario is preferable and why alternatives were not selected.
 Server derives midpoint limit entry, ATR-buffered structural stop and cost-adjusted target before the nearest obstacle.
 Server checks one objective closed-5m trigger per new analyst setup: reversal=HTF liquidity sweep and strong reclaim; continuation=directional rejection on the selected HTF pullback area; breakout=5m close crossing a HTF level. All require a separate later limit-order fill. Do not claim an additional MSS, retest confirmation or 5m micro support is mandatory for the new analyst contract. Legacy setups retain their own historical confirmation policies.
@@ -143,7 +144,41 @@ async def review_allowed(session, now):
                 and int(usage.get('output_tokens') or 0)<5000),slot
 
 
-def compile_plan(proposal, evidence, series, costs, now_ms, observed_ms):
+def proposal_geometry(direction, zone, invalidation, target, evidence, series, costs=None):
+    """One price/risk calculation for compilation, preflight and diagnostics."""
+    from app.domain.paper_execution_policy import HARD_MIN_AUTO_PAPER_NET_RR
+    from app.services.execution_model_sim import auto_paper_rr_from_settings
+    sign = 1 if direction == "LONG" else -1
+    vol, vol15, vol1h = (atr(series[tf]) for tf in ("5m", "15m", "1h"))
+    entry = round((zone["low"] + zone["high"]) / 2, 1)
+    reference = invalidation["low"] if sign == 1 else invalidation["high"]
+    stop = _tick(reference - sign * max(.25 * vol, .1), sign)
+    if sign * (entry - stop) < vol:
+        stop = _tick(entry - sign * vol, sign)
+    result = dict(entry=entry, invalidation_price=reference, stop=stop,
+                  atr5m=vol, atr15m=vol15, atr1h=vol1h,
+                  stop_distance_limit=max(3 * vol15, vol1h),
+                  stop_distance=sign * (entry-stop),
+                  stop_distance_atr15=round(sign*(entry-stop)/vol15, 3) if vol15 else None,
+                  required_min_net_rr=HARD_MIN_AUTO_PAPER_NET_RR)
+    if target is None:
+        return result
+    obstacles = [target] + [x for x in evidence if x["timeframe"] in ("1h", "4h")
+        and x["kind"] == ("resistance" if sign == 1 else "support")
+        and sign * (x["price"]-entry) > .1*vol]
+    nearest = min(obstacles, key=lambda x: sign*x["price"])
+    obstacle = nearest["price"] - sign * .1*vol
+    result.update(obstacle=obstacle, obstacle_level_id=nearest["id"],
+                  selected_target_price=target["price"])
+    if costs is not None and sign*(obstacle-entry) > 0 and sign*(entry-stop) > 0:
+        rr = auto_paper_rr_from_settings(costs, direction=direction, entry=entry,
+            sl=stop, tp=obstacle, min_net_rr=HARD_MIN_AUTO_PAPER_NET_RR)
+        result["obstacle_net_rr"] = rr.net_rr
+        result["target"] = target_at_net_rr(costs, direction, entry, stop, obstacle)
+    return result
+
+
+def compile_plan(proposal, evidence, series, costs, now_ms, observed_ms, *, seed=True):
     if not isinstance(proposal,dict):raise ValueError('invalid_proposal')
     sid=proposal.get('strategy_id');direction=proposal.get('direction')
     if not isinstance(sid,str) or sid not in PROFILES or direction not in ('LONG','SHORT'):raise ValueError('invalid_strategy_direction')
@@ -153,7 +188,7 @@ def compile_plan(proposal, evidence, series, costs, now_ms, observed_ms):
     sign=1 if direction=='LONG' else -1
     frames=executable_regime(series)['timeframes'];regime=frames['1h']['trend'];higher=frames['4h']['trend']
     aligned='bullish' if sign==1 else 'bearish';opposed='bearish' if sign==1 else 'bullish'
-    if sid=='trend_continuation' and (regime!=aligned or higher==opposed):raise ValueError('continuation_trend_conflict')
+    if sid=='trend_continuation' and continuation_direction(frames)!=direction:raise ValueError('continuation_trend_conflict')
     if sid=='breakout_retest' and z['kind']!=('resistance' if sign==1 else 'support'):raise ValueError('breakout_requires_level')
     if sid in ('ict_reversal','trend_continuation') and z['kind'] not in (('support' if sign==1 else 'resistance'),'OB'):raise ValueError('reversal_continuation_requires_support_resistance')
     # Do not promote arbitrary lower-timeframe pivots or OBs to primary trade levels.
@@ -179,17 +214,13 @@ def compile_plan(proposal, evidence, series, costs, now_ms, observed_ms):
     if sign*((z['low'] if sign==1 else z['high'])-invalidation)<=0:raise ValueError('invalidation_inside_zone')
     if sign*(series['1m'][-1].close-invalidation)<=0:raise ValueError('already_invalidated')
     if target['kind']!=('resistance' if sign==1 else 'support') or target['timeframe'] not in ('1h','4h'):raise ValueError('target_requires_structural_level')
-    vol=atr(series['5m'])
-    stop=_tick(invalidation-sign*max(.25*vol,.1),sign)
-    if sign*(entry-stop)<vol:stop=_tick(entry-sign*vol,sign)
-    stop_limit=max(3*atr(series['15m']), atr(series['1h']))
-    if not 0<sign*(entry-stop)<=stop_limit:raise ValueError('stop_too_wide')
-    obstacle=target['price']-sign*.1*vol
+    geometry = proposal_geometry(direction, z, inv, target, evidence, series, costs)
+    vol, stop = geometry["atr5m"], geometry["stop"]
+    stop_limit = geometry["stop_distance_limit"]
+    if not 0 < geometry["stop_distance"] <= stop_limit:raise ValueError('stop_too_wide')
+    obstacle = geometry["obstacle"]
     if sign*(obstacle-entry)<=0:raise ValueError('target_wrong_side')
-    obstacles=[x['price']-sign*.1*vol for x in evidence if x['timeframe'] in ('1h','4h')
-               and x['kind']==('resistance' if sign==1 else 'support') and sign*(x['price']-entry)>.1*vol]
-    if obstacles:obstacle=min([obstacle,*obstacles]) if sign==1 else max([obstacle,*obstacles])
-    tp=target_at_net_rr(costs,direction,entry,stop,obstacle)
+    tp = geometry.get("target")
     if tp is None:raise ValueError('insufficient_net_reward_before_obstacle')
     if sign*(series['1m'][-1].close-tp)>=0:raise ValueError('target_already_reached')
     expiry=observed_ms+14400000
@@ -208,10 +239,11 @@ def compile_plan(proposal, evidence, series, costs, now_ms, observed_ms):
         c['confirmation_reference']={'liquidity_price':inv['price'], 'liquidity_id':inv['id'],
             'liquidity_timeframe':inv['timeframe']}
     from app.services.analyst_confirmation import recent_confirmations
-    c['seed_confirmations']=recent_confirmations(c,series['5m'],observed_ms)
+    c['seed_confirmations']=recent_confirmations(c,series['5m'],observed_ms) if seed else {}
     c['opportunity_id']=f"{VERSION}:{sid}:{direction}:{z['id']}:{observed_ms//14400000}"
     c['candidate_id']=hashlib.sha256(json.dumps(c,sort_keys=True).encode()).hexdigest()[:24]
     c.update(as_of_ms=observed_ms,approved_at_ms=now_ms)
+    trade_regime = higher if sid == 'trend_continuation' and higher in ('bullish', 'bearish') else regime
     trigger=TRIGGERS[sid]
     if sid=='ict_reversal':
         ref=c['confirmation_reference']
@@ -221,15 +253,15 @@ def compile_plan(proposal, evidence, series, costs, now_ms, observed_ms):
         conditional_entry_zone_low=z['low'],conditional_entry_zone_high=z['high'],stop_loss=stop,take_profit=tp,
         structural_invalidation_level=invalidation,confirmation_type=PROFILES[sid],confirmation_timeframe='5m',
         confirmation_required=trigger,conditional_invalidation='بسته‌شدن 5m آن‌سوی سطح ابطال یا پایان اعتبار چهار‌ساعته.',
-        breakout_level=c['breakout_level'],trade_reason=reason,market_regime=regime,market_regime_confidence='low',
-        market_context_caution_ack=True,trade_against_dominant_trend=regime==opposed,
+        breakout_level=c['breakout_level'],trade_reason=reason,market_regime=trade_regime,market_regime_confidence='low',
+        market_context_caution_ack=True,trade_against_dominant_trend=trade_regime==opposed,
         setup_timeframe='intraday_5m_15m',liquidity_event_clear=False,structural_confirmation_clear=False,
         logical_invalidation_clear=True,poi_reaction_clear=False,
         proposed_setup={'new_setup':True,'thesis_fa':reason,'expires_hours':(expiry-now_ms)/3600000},
         verified_trade_plan=c,strategy_candidates={})
 
 
-def _proposal_diagnostic(proposal, evidence, series, rank):
+def _proposal_diagnostic(proposal, evidence, series, rank, costs=None):
     """Bounded, candle-derived rejection context; never trust model prices."""
     diagnostic = {"rank": rank}
     if not isinstance(proposal, dict):
@@ -248,20 +280,11 @@ def _proposal_diagnostic(proposal, evidence, series, rank):
     frames = executable_regime(series)["timeframes"]
     diagnostic["regime_1h"] = frames["1h"]["trend"]
     diagnostic["regime_4h"] = frames["4h"]["trend"]
-    vol5, vol15 = atr(series["5m"]), atr(series["15m"])
-    diagnostic.update(atr5m=vol5, atr15m=vol15, stop_distance_limit=3*vol15)
     zone, invalidation = picked["zone_id"], picked["invalidation_id"]
     direction = proposal.get("direction")
     if zone and invalidation and direction in ("LONG", "SHORT"):
-        sign = 1 if direction == "LONG" else -1
-        entry = round((zone["low"]+zone["high"])/2, 1)
-        reference = invalidation["low"] if sign == 1 else invalidation["high"]
-        stop = _tick(reference-sign*max(.25*vol5, .1), sign)
-        if sign*(entry-stop) < vol5:
-            stop = _tick(entry-sign*vol5, sign)
-        diagnostic.update(entry=entry, invalidation_price=reference, stop=stop,
-                          stop_distance=sign*(entry-stop),
-                          stop_distance_atr15=(round(sign*(entry-stop)/vol15, 3) if vol15 > 0 else None))
+        diagnostic.update(proposal_geometry(direction, zone, invalidation,
+            picked["target_id"], evidence, series, costs))
     return diagnostic
 
 
@@ -282,7 +305,7 @@ def compile_response(raw,evidence,series,costs,now_ms,observed_ms,strategies,*,o
         except ValueError as exc:
             reason=str(exc)
             rejections.append(reason)
-            item=_proposal_diagnostic(p,evidence,series,rank)
+            item=_proposal_diagnostic(p,evidence,series,rank,costs)
             item['reason']=reason
             rejected_plans.append(item)
     result=next(iter(accepted.values())) if accepted else flat('پیشنهاد قابل اجرای معتبر وجود ندارد.')

@@ -29,6 +29,7 @@ def test_rejected_continuation_carries_swing_regimes_and_selected_ids():
     from app.domain.candles import Candle
     series["1h"] = [Candle(1000, 1002, 998, 1000, b.time_ms)
                      for b in series["1h"]]
+    series["4h"] = [Candle(1000, 1002, 998, 1000, b.time_ms) for b in series["4h"]]
     p = proposal("trend_continuation")
     result = analyst.compile_response(
         {"market_summary_fa": "EMA را صعودی می‌دانم", "plans": [p]},

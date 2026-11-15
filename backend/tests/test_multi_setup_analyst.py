@@ -87,6 +87,7 @@ def test_catalog_rejects_missing_or_unclosed_data():
 def test_continuation_requires_structural_trend():
     s,c,e,n=fixture()
     s['1h']=[Candle(1000,1002,998,1000,b.time_ms) for b in s['1h']]
+    s['4h']=[Candle(1000,1002,998,1000,b.time_ms) for b in s['4h']]
     with pytest.raises(ValueError,match='continuation_trend_conflict'):
         a.compile_plan(proposal('trend_continuation'),e,s,c,n,n)
 
@@ -180,6 +181,8 @@ async def test_api_discovers_plans_without_old_candidate_and_persists_before_del
     payload=json.loads(inference.call_args.kwargs['user_input'])
     assert payload['evidence_catalog']==e and payload['market_intelligence']['funding']['available'] is False
     assert set(payload['enabled_strategies'])==set(a.PROFILES)
+    assert payload['execution_feasibility']['choices']
+    assert draft.structured['analyst_summary']['execution_feasibility'] == payload['execution_feasibility']
     assert set(payload['strategy_features']['timeframes'])=={'5m','15m','1h','4h'}
     assert all('rsi14' in f and 'ema9' in f for f in payload['strategy_features']['timeframes'].values())
     assert draft.structured['_artifacts']['strategy_features']==payload['strategy_features']
@@ -198,8 +201,8 @@ async def test_api_discovers_plans_without_old_candidate_and_persists_before_del
     inference.assert_awaited_once()
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('sid,deep_sweep',[(sid,False) for sid in a.PROFILES]+[('ict_reversal',True)])
-async def test_real_monitor_confirms_then_places_limit_and_fills_later(session,monkeypatch,sid,deep_sweep):
+@pytest.mark.parametrize('sid,deep_sweep,pullback',[(sid,False,False) for sid in a.PROFILES]+[('ict_reversal',True,False),('trend_continuation',False,True)])
+async def test_real_monitor_confirms_then_places_limit_and_fills_later(session,monkeypatch,sid,deep_sweep,pullback):
     from app.domain import trading_calendar
     monkeypatch.setattr(trading_calendar, "new_entries_allowed", lambda _now: True)
     from app.models import AiAnalysisRun,SimPosition
@@ -212,6 +215,9 @@ async def test_real_monitor_confirms_then_places_limit_and_fills_later(session,m
     from sqlalchemy import select
     monkeypatch.setenv('MULTI_SETUP_ANALYST_ENABLED','1')
     s,c,e,n=fixture()
+    if pullback:
+        s['1h'] = [Candle(2100-b.open,2100-b.low,2100-b.high,2100-b.close,b.time_ms)
+                   for b in s['1h']]
     # The analyzed history and monitor history agree on the confirmed pivot.
     s['5m']=[Candle(1023,1024,1019.5,1023,b.time_ms) for b in s['5m']]
     p=a.compile_plan(proposal(sid),e,s,c,n,n)
