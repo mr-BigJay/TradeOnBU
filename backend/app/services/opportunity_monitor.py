@@ -268,6 +268,50 @@ async def _monitor_ready_structural_invalidation_before_order(
     return False
 
 
+_HISTORY_BACKFILL_REASONS = frozenset({
+    "insufficient_1m_history_for_target_cancel",
+    "insufficient_1m_history_for_invalidation_cancel",
+})
+
+
+async def _reconcile_pending_with_history(
+    *, market: MarketDataService, symbol: str, order_ms: int, now_ms: int,
+    recent_bundle, reconcile_args: dict[str, Any],
+):
+    """Backfill from order creation only when a terminal event needs proof.
+
+    Never cancel or fill an order based on a truncated recent 120x1m window.
+    Historical gaps and same-minute ambiguity remain fail-closed.
+    """
+    common = {**reconcile_args, "order_ms": order_ms, "now_ms": now_ms}
+    result = reconcile_pending_ai_limit_order(
+        **common,
+        closed_1m=list(recent_bundle.closed or []),
+        one_m_data_complete=bool(recent_bundle.data_complete),
+        gaps_remaining=list(recent_bundle.gaps_remaining or []),
+    )
+    if result.action != "suspend" or result.reason not in _HISTORY_BACKFILL_REASONS:
+        return result
+
+    start_ms = max(0, order_ms // 60_000 * 60_000)
+    max_bars = min(1600, max(140, (now_ms - start_ms) // 60_000 + 5))
+    try:
+        history = await market.fetch_historical_closed(
+            symbol, "1m", start_ms, max_bars=max_bars
+        )
+    except Exception as exc:
+        logger.warning(
+            "Pending 1m backfill failed (%s): %s", symbol, type(exc).__name__
+        )
+        return result
+    return reconcile_pending_ai_limit_order(
+        **common,
+        closed_1m=list(history.closed or []),
+        one_m_data_complete=bool(history.data_complete),
+        gaps_remaining=list(history.gaps_remaining or []),
+    )
+
+
 async def _monitor_pending_structural_invalidation(
     session: AsyncSession,
     setup: AiProposedSetup,
@@ -281,9 +325,15 @@ async def _monitor_pending_structural_invalidation(
     if setup.invalidation_level is None:
         return
     pos = await _pending_position_for_setup(session, setup.setup_id)
-    if (setup.objective_notes or {}).get("pending_target_review_required"):
-        setup.last_monitor_at = now
-        return
+    review = (setup.objective_notes or {}).get("pending_target_review_required")
+    if review:
+        # Older permanent review holds can recover when full 1m history becomes
+        # available. Ambiguous event ordering still needs manual inspection.
+        if (not isinstance(review, dict)
+                or review.get("reason") not in _HISTORY_BACKFILL_REASONS
+                or now_ms < int(review.get("retry_after_ms") or 0)):
+            setup.last_monitor_at = now
+            return
     new_bars = _eligible_closed_bars_since_cursor(setup, bundle.closed, now_ms)
     settings = get_effective_settings()
     closed_5m = list(bundle.closed) if bundle.closed else []
@@ -314,32 +364,50 @@ async def _monitor_pending_structural_invalidation(
             setup.objective_notes = notes
             setup.last_monitor_at = now
             return
-        outcome = reconcile_pending_ai_limit_order(
+        outcome = await _reconcile_pending_with_history(
+            market=market,
+            symbol=setup.symbol,
             order_ms=order_ms,
-            direction=setup.direction,
-            invalidation_level=setup.invalidation_level,
-            monitor_cursor_ms=setup.monitor_cursor_ms,
-            limit_price=float(pos.limit_entry_price or setup.entry_price or 0),
-            closed_1m=closed_1m,
-            closed_5m=closed_5m,
             now_ms=now_ms,
-            five_m_data_verified=True,
-            one_m_data_complete=bundle_1m.data_complete,
-            gaps_remaining=list(bundle_1m.gaps_remaining or []),
-            target_price=pos.take_profit if fresh_plan(setup) else None,
-            entry_zone=_zone_bounds(setup) if fresh_plan(setup) else None,
+            recent_bundle=bundle_1m,
+            reconcile_args=dict(
+                direction=setup.direction,
+                invalidation_level=setup.invalidation_level,
+                monitor_cursor_ms=setup.monitor_cursor_ms,
+                limit_price=float(pos.limit_entry_price or setup.entry_price or 0),
+                closed_5m=closed_5m,
+                five_m_data_verified=True,
+                target_price=pos.take_profit if fresh_plan(setup) else None,
+                entry_zone=_zone_bounds(setup) if fresh_plan(setup) else None,
+            ),
         )
         if outcome.action == "suspend":
             notes = dict(setup.objective_notes or {})
             notes["pending_fill_suspended"] = True
             notes["pending_fill_block_reason"] = outcome.reason
             if outcome.terminal_bar_1m is not None:
-                notes["pending_target_review_required"] = {"reason": outcome.reason, "bar_ms": outcome.terminal_bar_1m.time_ms}
+                notes["pending_target_review_required"] = {
+                    "reason": outcome.reason,
+                    "bar_ms": outcome.terminal_bar_1m.time_ms,
+                    "retry_after_ms": now_ms + 5 * 60_000,
+                }
                 setup.last_rejection_reason = outcome.reason
                 setup.last_validation_result = {"ok": False, "reason": outcome.reason, "requires_review": True}
             setup.objective_notes = notes
             setup.last_monitor_at = now
             return
+        if review and outcome.action == "hold":
+            # A previously seen terminal event must not disappear simply because
+            # the exchange subsequently returned a shorter time window.
+            setup.last_monitor_at = now
+            return
+        if review and outcome.action != "suspend":
+            notes = dict(setup.objective_notes or {})
+            notes.pop("pending_target_review_required", None)
+            notes.pop("pending_fill_block_reason", None)
+            notes["pending_fill_suspended"] = False
+            setup.objective_notes = notes
+
         if outcome.action == "cancel" and outcome.terminal_bar_1m is not None:
             await SimPositionService().cancel_pending(session, pos.public_id, commit=False)
             pos.extra = {**(pos.extra or {}), "auto_paper_cancel_reason": outcome.reason}
