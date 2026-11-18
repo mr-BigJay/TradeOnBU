@@ -12,6 +12,10 @@ from app.domain.candle_utils import candle_close_ms, interval_ms
 from app.domain.candles import Candle
 from app.domain.setup_lifecycle import (
     ACTIVE_MONITOR_STATES,
+    EXPIRED,
+    INVALIDATED,
+    POSITION_CLOSED,
+    POSITION_OPEN,
     SETUP_MODE_CONDITIONAL,
     SETUP_MODE_IMMEDIATE,
     ready_state_for_direction,
@@ -341,6 +345,13 @@ def _finalize_validity_and_tracking(setup: AiProposedSetup, now: datetime | None
             phase = notes.get("lifecycle_phase")
             if phase not in POST_ENTRY_TERMINAL_PHASES:
                 notes["lifecycle_phase"] = LIFECYCLE_EXPIRED
+    # Objective tracking and order execution have different clocks. Once a
+    # proposal is expired, its old WAIT/READY/PENDING lifecycle must not imply
+    # an executable order even if paper cancellation is still reconciling.
+    if (setup.status == "expired"
+            and notes.get("validity_status") == VALIDITY_EXPIRED
+            and setup.lifecycle_state not in (EXPIRED, POSITION_OPEN, POSITION_CLOSED, INVALIDATED)):
+        setup.lifecycle_state = EXPIRED
     _save_notes(setup, notes)
 
 
