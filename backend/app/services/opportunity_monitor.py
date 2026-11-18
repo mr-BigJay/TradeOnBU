@@ -126,6 +126,12 @@ async def _sync_position_lifecycle(session: AsyncSession, setup: AiProposedSetup
     pos = result.scalar_one_or_none()
     if not pos:
         return
+    # An expired setup is not reactivated merely because its resting order has
+    # not yet been cancelled by the paper-position monitor.
+    if setup.status != "open" and pos.status == "pending_entry":
+        if setup.status == "expired":
+            setup.lifecycle_state = EXPIRED
+        return
     if pos.status == "pending_entry" and setup.lifecycle_state not in (PENDING_ENTRY, POSITION_OPEN):
         setup.lifecycle_state = PENDING_ENTRY
     elif pos.status == "open":
@@ -390,6 +396,32 @@ def _promotion_confirmations_met(
     )
 
 
+def _new_ready_transition(setup: AiProposedSetup) -> bool:
+    """Log a READY promotion once per confirmed structure and signed geometry.
+
+    Repeated monitor passes (or temporary execution blocks) may legitimately
+    retry an order, but they must not produce hundreds of identical READY events.
+    A new confirmation or revised geometry can produce a new transition.
+    """
+    stamps = (setup.confirmation_state or {}).get("confirmation_timestamps") or {}
+    contract = (setup.structured_snapshot or {}).get("verified_trade_plan") or {}
+    signature = {
+        "candidate_id": contract.get("candidate_id"),
+        "direction": setup.direction,
+        "entry": setup.entry_price,
+        "stop": setup.stop_loss,
+        "target": setup.take_profit,
+        "invalidation": setup.invalidation_level,
+        "confirmations": dict(stamps),
+    }
+    notes = dict(setup.objective_notes or {})
+    if notes.get("last_ready_transition") == signature:
+        return False
+    notes["last_ready_transition"] = signature
+    setup.objective_notes = notes
+    return True
+
+
 async def _attempt_ready_paper_order(
     session: AsyncSession,
     setup: AiProposedSetup,
@@ -436,9 +468,10 @@ async def _attempt_ready_paper_order(
         dry_run=bool(getattr(runtime, "paper_entry_dry_run", False)),
         paper_trading_paused=runtime.paper_trading_paused,
     ):
+        setup.last_rejection_reason = "paper_trading_paused" if runtime.paper_trading_paused else "paper_entry_dry_run"
         setup.last_validation_result = {
             "ok": False, "ready_for_paper": True,
-            "order_skipped_reason": "paper_trading_paused" if runtime.paper_trading_paused else "paper_entry_dry_run",
+            "order_skipped_reason": setup.last_rejection_reason,
         }
         append_timeline_event(
             setup,
@@ -538,8 +571,9 @@ async def _attempt_ready_paper_order(
             if not auto.get("created"):
                 setup.lifecycle_state = ready_state_for_direction(direction)
                 reason = auto.get("reason") or "auto_open_skipped"
-                if reason in ("auto_open_disabled", "auto_paper_disabled"):
-                    setup.last_rejection_reason = REASON_AUTO_PAPER_DISABLED
+                setup.last_rejection_reason = (REASON_AUTO_PAPER_DISABLED
+                                               if reason in ("auto_open_disabled", "auto_paper_disabled")
+                                               else reason)
                 setup.last_validation_result = {
                     "ok": False,
                     "ready_for_paper": True,
@@ -1114,16 +1148,17 @@ class OpportunityMonitorService:
                     "paper_entry_mode": paper_entry_mode,
                     "live_engine": live_engine,
                 }
-                append_timeline_event(
-                    setup,
-                    "promoted_ready",
-                    net_rr=net_rr,
-                    at_ms=now_ms,
-                    paper_entry_mode=paper_entry_mode,
-                    live_engine=live_engine,
-                )
-                await log_setup_event(session, setup_id=setup.setup_id, event_type="promoted_ready", payload={"net_rr": net_rr})
-                summary["promoted"] += 1
+                if _new_ready_transition(setup):
+                    append_timeline_event(
+                        setup,
+                        "promoted_ready",
+                        net_rr=net_rr,
+                        at_ms=now_ms,
+                        paper_entry_mode=paper_entry_mode,
+                        live_engine=live_engine,
+                    )
+                    await log_setup_event(session, setup_id=setup.setup_id, event_type="promoted_ready", payload={"net_rr": net_rr})
+                    summary["promoted"] += 1
 
             if setup.lifecycle_state in (ICT_CONFIRMED_LONG, ICT_CONFIRMED_SHORT):
                 if not _promotion_confirmations_met(
@@ -1139,7 +1174,8 @@ class OpportunityMonitorService:
                     setup.lifecycle_state = ready_state_for_direction(setup.direction)
                     setup.last_rejection_reason = None
                     setup.last_validation_result = {"ok": True, "net_rr": net_rr, "promoted_at": now.isoformat()}
-                    summary["promoted"] += 1
+                    if _new_ready_transition(setup):
+                        summary["promoted"] += 1
                 else:
                     setup.last_rejection_reason = REASON_ICT_CONFIRMED_BLOCKED_RR
                     setup.last_validation_result = {
@@ -1213,6 +1249,7 @@ class OpportunityMonitorService:
                         at_ms=now_ms,
                         reason=integrity.get("reason"),
                     )
+                    setup.last_rejection_reason = "balanced_1m_integrity"
                     setup.last_validation_result = {
                         "ok": True,
                         "ready_for_paper": True,
