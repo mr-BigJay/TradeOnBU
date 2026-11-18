@@ -79,3 +79,41 @@ async def test_open_setup_still_tracks_its_existing_pending_limit():
     )
     await _sync_position_lifecycle(SessionStub(), row)
     assert row.lifecycle_state == PENDING_ENTRY
+
+
+def test_expiry_tracking_does_not_leave_pending_entry_lifecycle(monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    from app.services import ai_setup_memory as memory
+
+    monkeypatch.setattr(memory, "_tracking_incomplete", lambda _row, _now: False)
+    now = datetime.now(timezone.utc)
+    row = SimpleNamespace(
+        status="open",
+        lifecycle_state=PENDING_ENTRY,
+        expires_at=now - timedelta(minutes=2),
+        objective_notes={"validity_status": "active"},
+        closed_at=None,
+    )
+    memory._finalize_validity_and_tracking(row, now)
+    assert row.status == "expired"
+    assert row.lifecycle_state == EXPIRED
+    assert row.objective_notes["validity_status"] == "expired"
+
+
+def test_expiry_does_not_rewrite_position_open_lifecycle(monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    from app.domain.setup_lifecycle import POSITION_OPEN
+    from app.services import ai_setup_memory as memory
+
+    monkeypatch.setattr(memory, "_tracking_incomplete", lambda _row, _now: False)
+    now = datetime.now(timezone.utc)
+    row = SimpleNamespace(
+        status="open",
+        lifecycle_state=POSITION_OPEN,
+        expires_at=now - timedelta(minutes=2),
+        objective_notes={},
+        closed_at=None,
+    )
+    memory._finalize_validity_and_tracking(row, now)
+    assert row.status == "expired"
+    assert row.lifecycle_state == POSITION_OPEN
