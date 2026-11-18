@@ -14,8 +14,11 @@ from app.services.analyst_outlook import compile_forecasts
 from app.services.analyst_major_levels import select_major_levels, minimum_forecast_gap
 
 VERSION = 'multi_setup_analyst_v1'
-PROMPT_VERSION = 7
+PROMPT_VERSION = 8
 STEPS = {'1m':60000,'5m':300000,'15m':900000,'1h':3600000,'4h':14400000}
+# Signed intraday opportunities may wait for an HTF pullback across six 4H bars.
+# The monitor still retires on structural invalidation or target-before-order.
+ANALYST_PLAN_TTL_MS = 24 * 60 * 60 * 1000
 PROFILES = {'ict_reversal':'htf_sweep_reclaim', 'trend_continuation':'htf_pullback_rejection', 'breakout_retest':'htf_breakout_close'}
 TRIGGERS = {
  'ict_reversal':'Sweep و بازپس‌گیری سطح معتبر 1H/4H با یک کندل بستهٔ 5m؛ سفارش Limit برای بازگشت بعدی.',
@@ -58,7 +61,7 @@ zone_id, invalidation_id, target_id (exact supplied catalog IDs), reason_fa.
 At most one plan per strategy. Only enabled strategies. Empty plans is a valid outcome.
 Select meaningful candle-backed areas; NEVER invent price levels, IDs, confidence probabilities or confirmations. Executable support/resistance and OB source zones MUST come from 1H or 4H; 5m/15m evidence is for FVG execution precision and candle confirmation, never an arbitrary micro support/resistance trade. Prefer stops supported by structural invalidation, not micro swings.
 For continuation, 4H confirmed swing structure determines the direction: bearish => SHORT on a rally/pullback into HTF resistance/OB; bullish => LONG on a decline/pullback into HTF support/OB. Opposing 1H structure can be the correction, NOT an automatic veto. If 4H is range/unclear, use directional 1H structure. Do not enter merely because price is correcting: require the existing closed-5m directional rejection at the selected zone and a separate later limit fill. EMA/RSI are context, not mandatory thresholds. Breakout uses resistance for LONG or support for SHORT.
-execution_feasibility contains server-checked geometry choices using actual paper costs and the nearest structural obstacle. Use these to avoid impossible entry/stop/target combinations, then assess market quality yourself. They are NOT confirmed signals or mandatory selections. You may propose other catalog combinations; all pass the same final validation. If no plan is selected, explain whether geometry or market evidence is the reason. Never invent a plan to meet a quota.
+execution_feasibility contains server-checked geometry choices using actual paper costs and the nearest structural obstacle. It also includes zone_gap_atr15 and live_to_target_atr15: compare travel needed to reach an entry zone against the remaining room to the target. When trend-continuation B is far from current price while the target is close, do not repeatedly select an implausible B pullback; assess a valid same-direction breakout/retest C instead, or leave that strategy empty if no executable structure exists. This is advisory, not a new eligibility gate. Use these to avoid impossible entry/stop/target combinations, then assess market quality yourself. They are NOT confirmed signals or mandatory selections. You may propose other catalog combinations; all pass the same final validation. If no plan is selected, explain whether geometry or market evidence is the reason. Never invent a plan to meet a quota.
 Explain why each selected scenario is preferable and why alternatives were not selected.
 Server derives midpoint limit entry, ATR-buffered structural stop and cost-adjusted target before the nearest obstacle.
 Server checks one objective closed-5m trigger per new analyst setup: reversal=HTF liquidity sweep and strong reclaim; continuation=directional rejection on the selected HTF pullback area; breakout=5m close crossing a HTF level. All require a separate later limit-order fill. Do not claim an additional MSS, retest confirmation or 5m micro support is mandatory for the new analyst contract. Legacy setups retain their own historical confirmation policies.
@@ -151,6 +154,8 @@ def proposal_geometry(direction, zone, invalidation, target, evidence, series, c
     sign = 1 if direction == "LONG" else -1
     vol, vol15, vol1h = (atr(series[tf]) for tf in ("5m", "15m", "1h"))
     entry = round((zone["low"] + zone["high"]) / 2, 1)
+    live = float(series["1m"][-1].close)
+    zone_gap = max(float(zone["low"]) - live, live - float(zone["high"]), 0.0)
     reference = invalidation["low"] if sign == 1 else invalidation["high"]
     stop = _tick(reference - sign * max(.25 * vol, .1), sign)
     if sign * (entry - stop) < vol:
@@ -160,6 +165,7 @@ def proposal_geometry(direction, zone, invalidation, target, evidence, series, c
                   stop_distance_limit=max(3 * vol15, vol1h),
                   stop_distance=sign * (entry-stop),
                   stop_distance_atr15=round(sign*(entry-stop)/vol15, 3) if vol15 else None,
+                  zone_gap_atr15=round(zone_gap/vol15, 3) if vol15 else None,
                   required_min_net_rr=HARD_MIN_AUTO_PAPER_NET_RR)
     if target is None:
         return result
@@ -175,6 +181,8 @@ def proposal_geometry(direction, zone, invalidation, target, evidence, series, c
             sl=stop, tp=obstacle, min_net_rr=HARD_MIN_AUTO_PAPER_NET_RR)
         result["obstacle_net_rr"] = rr.net_rr
         result["target"] = target_at_net_rr(costs, direction, entry, stop, obstacle)
+        if result["target"] is not None and vol15:
+            result["live_to_target_atr15"] = round(sign*(result["target"]-live)/vol15, 3)
     return result
 
 
@@ -223,7 +231,7 @@ def compile_plan(proposal, evidence, series, costs, now_ms, observed_ms, *, seed
     tp = geometry.get("target")
     if tp is None:raise ValueError('insufficient_net_reward_before_obstacle')
     if sign*(series['1m'][-1].close-tp)>=0:raise ValueError('target_already_reached')
-    expiry=observed_ms+14400000
+    expiry=observed_ms+ANALYST_PLAN_TTL_MS
     if now_ms>=expiry:raise ValueError('proposal_expired')
     reason=str(proposal.get('reason_fa') or '')[:1600]
     if not reason.strip():raise ValueError('missing_reason')
@@ -252,7 +260,7 @@ def compile_plan(proposal, evidence, series, costs, now_ms, observed_ms, *, seed
         potential_direction=direction,entry_price=entry,entry_zone_low=z['low'],entry_zone_high=z['high'],
         conditional_entry_zone_low=z['low'],conditional_entry_zone_high=z['high'],stop_loss=stop,take_profit=tp,
         structural_invalidation_level=invalidation,confirmation_type=PROFILES[sid],confirmation_timeframe='5m',
-        confirmation_required=trigger,conditional_invalidation='بسته‌شدن 5m آن‌سوی سطح ابطال یا پایان اعتبار چهار‌ساعته.',
+        confirmation_required=trigger,conditional_invalidation='بسته‌شدن 5m آن‌سوی سطح ابطال، رسیدن به هدف پیش از سفارش یا پایان اعتبار ۲۴ساعته.',
         breakout_level=c['breakout_level'],trade_reason=reason,market_regime=trade_regime,market_regime_confidence='low',
         market_context_caution_ack=True,trade_against_dominant_trend=trade_regime==opposed,
         setup_timeframe='intraday_5m_15m',liquidity_event_clear=False,structural_confirmation_clear=False,
