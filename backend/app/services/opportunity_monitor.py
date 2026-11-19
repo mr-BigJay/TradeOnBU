@@ -572,6 +572,7 @@ async def _attempt_ready_paper_order(
         latest_closed_5m=latest_closed_5m,
         now_ms=int(now.timestamp() * 1000),
         market_data_verified=market_data_verified,
+        allow_signed_b_preorder=structural_preorder,
     )
     if not pre_ok:
         setup.lifecycle_state = wait_state_for_direction(setup.direction)
