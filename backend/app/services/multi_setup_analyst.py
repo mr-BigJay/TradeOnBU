@@ -14,7 +14,7 @@ from app.services.analyst_outlook import compile_forecasts
 from app.services.analyst_major_levels import select_major_levels, minimum_forecast_gap
 
 VERSION = 'multi_setup_analyst_v1'
-PROMPT_VERSION = 8
+PROMPT_VERSION = 9
 STEPS = {'1m':60000,'5m':300000,'15m':900000,'1h':3600000,'4h':14400000}
 # Signed intraday opportunities may wait for an HTF pullback across six 4H bars.
 # The monitor still retires on structural invalidation or target-before-order.
