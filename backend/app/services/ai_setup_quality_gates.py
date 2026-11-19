@@ -471,6 +471,7 @@ async def validate_setup_quality_at_execution(
     exclude_sim_public_id: str | None = None,
     closed_5m: list[Candle] | None = None,
     as_of_ms: int | None = None,
+    allow_signed_b_preorder: bool = False,
 ) -> tuple[bool, str | None]:
     """
     Re-validate on closed 5m data before paper order creation or limit fill (no look-ahead).
@@ -504,9 +505,28 @@ async def validate_setup_quality_at_execution(
     loss = await _recent_losing_sim_same_direction(session, symbol=setup.symbol, direction=direction)
     if loss is not None:
         failure_ms = sim_position_failure_ms(loss)
-        ok, _ts = confirmations_strictly_after_ms(setup, failure_ms)
-        if not ok:
-            return False, "confirmations_not_after_prior_same_direction_loss"
+        contract = (setup.structured_snapshot or {}).get("verified_trade_plan") or {}
+        # The B HTF pullback LIMIT is explicitly allowed *before* its 5m
+        # reaction. Requiring new 5m timestamps here makes that path
+        # impossible for seven days after a loss. Require a newly formed,
+        # server-signed thesis after the loss instead. Daily loss limits,
+        # one-position limit and stop/fee/R:R remain mandatory downstream.
+        signed_new_b = False
+        if allow_signed_b_preorder:
+            from app.services.multi_setup_analyst import VERSION as ANALYST_VERSION
+            from app.services.verified_trade_plan import plan_error
+            signed_new_b = (
+                contract.get("version") == ANALYST_VERSION
+                and contract.get("strategy_id") == "trend_continuation"
+                and contract.get("direction") == direction
+                and isinstance(contract.get("formed_ms"), int)
+                and contract["formed_ms"] > failure_ms
+                and plan_error(setup.structured_snapshot or {}, now_ms) is None
+            )
+        if not signed_new_b:
+            ok, _ts = confirmations_strictly_after_ms(setup, failure_ms)
+            if not ok:
+                return False, "confirmations_not_after_prior_same_direction_loss"
 
     other = await _active_sim_same_direction_excluding_setup(
         session,
