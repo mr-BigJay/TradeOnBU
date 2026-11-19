@@ -77,6 +77,34 @@ def test_contract_tampering_expiry_and_insufficient_reward():
         a.compile_plan(proposal('ict_reversal'),e,s,c,n,n)
 
 
+
+
+def test_analyst_plan_remains_signed_through_intraday_htf_pullback_window():
+    """Six closed 4H periods are allowed, but expiry remains fail-closed."""
+    series, costs, evidence, now = fixture()
+    plan = a.compile_plan(proposal("trend_continuation"), evidence, series, costs, now, now)
+    contract = plan["verified_trade_plan"]
+    assert contract["expires_ms"] == now + a.ANALYST_PLAN_TTL_MS
+    assert contract["expires_ms"] - now == 24 * 60 * 60 * 1000
+    assert plan["proposed_setup"]["expires_hours"] == pytest.approx(24)
+    assert v.plan_error(plan, now + 4 * a.STEPS["4h"]) is None
+    assert v.plan_error(plan, contract["expires_ms"]) == "verified_plan_expired"
+
+
+def test_executable_geometry_advises_about_distant_pullback_without_new_gate():
+    series, costs, evidence, now = fixture()
+    by_id = {item["id"]: item for item in evidence}
+    geometry = a.proposal_geometry(
+        "LONG", by_id["support_zone"], by_id["stop"],
+        by_id["target"], evidence, series, costs,
+    )
+    assert geometry["zone_gap_atr15"] >= 0
+    assert geometry["live_to_target_atr15"] > 0
+    assert "zone_gap_atr15" in a.INSTRUCTIONS
+    assert "breakout/retest C" in a.INSTRUCTIONS
+    # Feasibility is advisory: the same signed structural B setup still compiles.
+    assert a.compile_plan(proposal("trend_continuation"), evidence, series, costs, now, now)
+
 def test_catalog_rejects_missing_or_unclosed_data():
     s,c,e,n=fixture()
     assert a.catalog(s,n)

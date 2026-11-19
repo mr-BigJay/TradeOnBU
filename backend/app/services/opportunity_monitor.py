@@ -126,6 +126,12 @@ async def _sync_position_lifecycle(session: AsyncSession, setup: AiProposedSetup
     pos = result.scalar_one_or_none()
     if not pos:
         return
+    # An expired setup is not reactivated merely because its resting order has
+    # not yet been cancelled by the paper-position monitor.
+    if setup.status != "open" and pos.status == "pending_entry":
+        if setup.status == "expired":
+            setup.lifecycle_state = EXPIRED
+        return
     if pos.status == "pending_entry" and setup.lifecycle_state not in (PENDING_ENTRY, POSITION_OPEN):
         setup.lifecycle_state = PENDING_ENTRY
     elif pos.status == "open":
@@ -262,6 +268,50 @@ async def _monitor_ready_structural_invalidation_before_order(
     return False
 
 
+_HISTORY_BACKFILL_REASONS = frozenset({
+    "insufficient_1m_history_for_target_cancel",
+    "insufficient_1m_history_for_invalidation_cancel",
+})
+
+
+async def _reconcile_pending_with_history(
+    *, market: MarketDataService, symbol: str, order_ms: int, now_ms: int,
+    recent_bundle, reconcile_args: dict[str, Any],
+):
+    """Backfill from order creation only when a terminal event needs proof.
+
+    Never cancel or fill an order based on a truncated recent 120x1m window.
+    Historical gaps and same-minute ambiguity remain fail-closed.
+    """
+    common = {**reconcile_args, "order_ms": order_ms, "now_ms": now_ms}
+    result = reconcile_pending_ai_limit_order(
+        **common,
+        closed_1m=list(recent_bundle.closed or []),
+        one_m_data_complete=bool(recent_bundle.data_complete),
+        gaps_remaining=list(recent_bundle.gaps_remaining or []),
+    )
+    if result.action != "suspend" or result.reason not in _HISTORY_BACKFILL_REASONS:
+        return result
+
+    start_ms = max(0, order_ms // 60_000 * 60_000)
+    max_bars = min(1600, max(140, (now_ms - start_ms) // 60_000 + 5))
+    try:
+        history = await market.fetch_historical_closed(
+            symbol, "1m", start_ms, max_bars=max_bars
+        )
+    except Exception as exc:
+        logger.warning(
+            "Pending 1m backfill failed (%s): %s", symbol, type(exc).__name__
+        )
+        return result
+    return reconcile_pending_ai_limit_order(
+        **common,
+        closed_1m=list(history.closed or []),
+        one_m_data_complete=bool(history.data_complete),
+        gaps_remaining=list(history.gaps_remaining or []),
+    )
+
+
 async def _monitor_pending_structural_invalidation(
     session: AsyncSession,
     setup: AiProposedSetup,
@@ -275,9 +325,15 @@ async def _monitor_pending_structural_invalidation(
     if setup.invalidation_level is None:
         return
     pos = await _pending_position_for_setup(session, setup.setup_id)
-    if (setup.objective_notes or {}).get("pending_target_review_required"):
-        setup.last_monitor_at = now
-        return
+    review = (setup.objective_notes or {}).get("pending_target_review_required")
+    if review:
+        # Older permanent review holds can recover when full 1m history becomes
+        # available. Ambiguous event ordering still needs manual inspection.
+        if (not isinstance(review, dict)
+                or review.get("reason") not in _HISTORY_BACKFILL_REASONS
+                or now_ms < int(review.get("retry_after_ms") or 0)):
+            setup.last_monitor_at = now
+            return
     new_bars = _eligible_closed_bars_since_cursor(setup, bundle.closed, now_ms)
     settings = get_effective_settings()
     closed_5m = list(bundle.closed) if bundle.closed else []
@@ -308,32 +364,50 @@ async def _monitor_pending_structural_invalidation(
             setup.objective_notes = notes
             setup.last_monitor_at = now
             return
-        outcome = reconcile_pending_ai_limit_order(
+        outcome = await _reconcile_pending_with_history(
+            market=market,
+            symbol=setup.symbol,
             order_ms=order_ms,
-            direction=setup.direction,
-            invalidation_level=setup.invalidation_level,
-            monitor_cursor_ms=setup.monitor_cursor_ms,
-            limit_price=float(pos.limit_entry_price or setup.entry_price or 0),
-            closed_1m=closed_1m,
-            closed_5m=closed_5m,
             now_ms=now_ms,
-            five_m_data_verified=True,
-            one_m_data_complete=bundle_1m.data_complete,
-            gaps_remaining=list(bundle_1m.gaps_remaining or []),
-            target_price=pos.take_profit if fresh_plan(setup) else None,
-            entry_zone=_zone_bounds(setup) if fresh_plan(setup) else None,
+            recent_bundle=bundle_1m,
+            reconcile_args=dict(
+                direction=setup.direction,
+                invalidation_level=setup.invalidation_level,
+                monitor_cursor_ms=setup.monitor_cursor_ms,
+                limit_price=float(pos.limit_entry_price or setup.entry_price or 0),
+                closed_5m=closed_5m,
+                five_m_data_verified=True,
+                target_price=pos.take_profit if fresh_plan(setup) else None,
+                entry_zone=_zone_bounds(setup) if fresh_plan(setup) else None,
+            ),
         )
         if outcome.action == "suspend":
             notes = dict(setup.objective_notes or {})
             notes["pending_fill_suspended"] = True
             notes["pending_fill_block_reason"] = outcome.reason
             if outcome.terminal_bar_1m is not None:
-                notes["pending_target_review_required"] = {"reason": outcome.reason, "bar_ms": outcome.terminal_bar_1m.time_ms}
+                notes["pending_target_review_required"] = {
+                    "reason": outcome.reason,
+                    "bar_ms": outcome.terminal_bar_1m.time_ms,
+                    "retry_after_ms": now_ms + 5 * 60_000,
+                }
                 setup.last_rejection_reason = outcome.reason
                 setup.last_validation_result = {"ok": False, "reason": outcome.reason, "requires_review": True}
             setup.objective_notes = notes
             setup.last_monitor_at = now
             return
+        if review and outcome.action == "hold":
+            # A previously seen terminal event must not disappear simply because
+            # the exchange subsequently returned a shorter time window.
+            setup.last_monitor_at = now
+            return
+        if review and outcome.action != "suspend":
+            notes = dict(setup.objective_notes or {})
+            notes.pop("pending_target_review_required", None)
+            notes.pop("pending_fill_block_reason", None)
+            notes["pending_fill_suspended"] = False
+            setup.objective_notes = notes
+
         if outcome.action == "cancel" and outcome.terminal_bar_1m is not None:
             await SimPositionService().cancel_pending(session, pos.public_id, commit=False)
             pos.extra = {**(pos.extra or {}), "auto_paper_cancel_reason": outcome.reason}
@@ -390,6 +464,32 @@ def _promotion_confirmations_met(
     )
 
 
+def _new_ready_transition(setup: AiProposedSetup) -> bool:
+    """Log a READY promotion once per confirmed structure and signed geometry.
+
+    Repeated monitor passes (or temporary execution blocks) may legitimately
+    retry an order, but they must not produce hundreds of identical READY events.
+    A new confirmation or revised geometry can produce a new transition.
+    """
+    stamps = (setup.confirmation_state or {}).get("confirmation_timestamps") or {}
+    contract = (setup.structured_snapshot or {}).get("verified_trade_plan") or {}
+    signature = {
+        "candidate_id": contract.get("candidate_id"),
+        "direction": setup.direction,
+        "entry": setup.entry_price,
+        "stop": setup.stop_loss,
+        "target": setup.take_profit,
+        "invalidation": setup.invalidation_level,
+        "confirmations": dict(stamps),
+    }
+    notes = dict(setup.objective_notes or {})
+    if notes.get("last_ready_transition") == signature:
+        return False
+    notes["last_ready_transition"] = signature
+    setup.objective_notes = notes
+    return True
+
+
 async def _attempt_ready_paper_order(
     session: AsyncSession,
     setup: AiProposedSetup,
@@ -436,9 +536,10 @@ async def _attempt_ready_paper_order(
         dry_run=bool(getattr(runtime, "paper_entry_dry_run", False)),
         paper_trading_paused=runtime.paper_trading_paused,
     ):
+        setup.last_rejection_reason = "paper_trading_paused" if runtime.paper_trading_paused else "paper_entry_dry_run"
         setup.last_validation_result = {
             "ok": False, "ready_for_paper": True,
-            "order_skipped_reason": "paper_trading_paused" if runtime.paper_trading_paused else "paper_entry_dry_run",
+            "order_skipped_reason": setup.last_rejection_reason,
         }
         append_timeline_event(
             setup,
@@ -538,8 +639,9 @@ async def _attempt_ready_paper_order(
             if not auto.get("created"):
                 setup.lifecycle_state = ready_state_for_direction(direction)
                 reason = auto.get("reason") or "auto_open_skipped"
-                if reason in ("auto_open_disabled", "auto_paper_disabled"):
-                    setup.last_rejection_reason = REASON_AUTO_PAPER_DISABLED
+                setup.last_rejection_reason = (REASON_AUTO_PAPER_DISABLED
+                                               if reason in ("auto_open_disabled", "auto_paper_disabled")
+                                               else reason)
                 setup.last_validation_result = {
                     "ok": False,
                     "ready_for_paper": True,
@@ -1114,16 +1216,17 @@ class OpportunityMonitorService:
                     "paper_entry_mode": paper_entry_mode,
                     "live_engine": live_engine,
                 }
-                append_timeline_event(
-                    setup,
-                    "promoted_ready",
-                    net_rr=net_rr,
-                    at_ms=now_ms,
-                    paper_entry_mode=paper_entry_mode,
-                    live_engine=live_engine,
-                )
-                await log_setup_event(session, setup_id=setup.setup_id, event_type="promoted_ready", payload={"net_rr": net_rr})
-                summary["promoted"] += 1
+                if _new_ready_transition(setup):
+                    append_timeline_event(
+                        setup,
+                        "promoted_ready",
+                        net_rr=net_rr,
+                        at_ms=now_ms,
+                        paper_entry_mode=paper_entry_mode,
+                        live_engine=live_engine,
+                    )
+                    await log_setup_event(session, setup_id=setup.setup_id, event_type="promoted_ready", payload={"net_rr": net_rr})
+                    summary["promoted"] += 1
 
             if setup.lifecycle_state in (ICT_CONFIRMED_LONG, ICT_CONFIRMED_SHORT):
                 if not _promotion_confirmations_met(
@@ -1139,7 +1242,8 @@ class OpportunityMonitorService:
                     setup.lifecycle_state = ready_state_for_direction(setup.direction)
                     setup.last_rejection_reason = None
                     setup.last_validation_result = {"ok": True, "net_rr": net_rr, "promoted_at": now.isoformat()}
-                    summary["promoted"] += 1
+                    if _new_ready_transition(setup):
+                        summary["promoted"] += 1
                 else:
                     setup.last_rejection_reason = REASON_ICT_CONFIRMED_BLOCKED_RR
                     setup.last_validation_result = {
@@ -1213,6 +1317,7 @@ class OpportunityMonitorService:
                         at_ms=now_ms,
                         reason=integrity.get("reason"),
                     )
+                    setup.last_rejection_reason = "balanced_1m_integrity"
                     setup.last_validation_result = {
                         "ok": True,
                         "ready_for_paper": True,

@@ -38,4 +38,7 @@ jobs:
             tests/test_paper_auto_trading.py \
             tests/test_ready_paper_confirmation_guards.py \
             tests/test_opportunity_monitor.py \
-            tests/test_opportunity_monitor_ict_confirmed.py
+            tests/test_opportunity_monitor_ict_confirmed.py \
+            tests/test_multi_setup_analyst.py \
+            tests/test_analyst_ready_event_dedupe.py \
+            tests/test_pending_limit_history_recovery.py
