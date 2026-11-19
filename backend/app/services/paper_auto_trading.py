@@ -168,12 +168,15 @@ async def maybe_auto_open_paper_position(
     commit: bool = True,
     require_ai_flags: bool = True,
     allow_pre_entry_without_touch: bool = False,
+    allow_structural_preorder: bool = False,
     entry_mode: str | None = None,
     verified_5m: list[Candle] | None = None,
     as_of_ms: int | None = None,
 ) -> dict[str, Any]:
     """
-    Create a pending limit paper order from a validated AI setup when auto mode is enabled.
+    Rest an HTF paper limit on signed B/C plans before additional 5m proof,
+    or use the established confirmation route for other setups. All actual
+    fills require a forward-only 1m candle touch and normal execution quality.
     Live trading is never used.
     """
     meta: dict[str, Any] = {"attempted": True, "created": False, "skipped": False}
@@ -186,6 +189,15 @@ async def maybe_auto_open_paper_position(
     from app.services import verified_trade_plan as verified
     vplan = (setup.structured_snapshot or {}).get('verified_trade_plan')
     from app.services.multi_setup_analyst import VERSION as ANALYST_VERSION
+    structural_preorder = bool(
+        allow_structural_preorder
+        and vplan and vplan.get("version") == ANALYST_VERSION
+        and vplan.get("strategy_id") in ("trend_continuation", "breakout_retest")
+        and (setup.lifecycle_state or "").upper() in ("WAIT_LONG", "WAIT_SHORT")
+        and setup.status == "open"
+    )
+    if allow_structural_preorder and not structural_preorder:
+        return {**meta, "skipped": True, "reason": "structural_preorder_not_eligible"}
     if vplan and vplan.get("version") == ANALYST_VERSION:
         from app.domain.trading_calendar import new_entries_allowed
         if not new_entries_allowed(_utc_now()):
@@ -203,7 +215,7 @@ async def maybe_auto_open_paper_position(
         # API latency and scheduler delay must not turn a used zone into a fresh order.
         from app.services.market_data import MarketDataService
         since = vplan['as_of_ms']//60_000*60_000
-        if vplan['version']==ANALYST_VERSION:
+        if vplan['version']==ANALYST_VERSION and not structural_preorder:
             from app.services.conditional_revision import objective_confirmations_satisfied_for_order
             confirmed,reason=objective_confirmations_satisfied_for_order(setup,allow_pre_entry_without_touch=True)
             if not confirmed:return {**meta,'skipped':True,'reason':reason or 'missing_confirmations'}
@@ -258,7 +270,7 @@ async def maybe_auto_open_paper_position(
     mode = normalize_entry_mode(entry_mode) if entry_mode is not None else _mode_cfg
 
     lifecycle_upper = (setup.lifecycle_state or "").upper()
-    if lifecycle_upper in (READY_LONG, READY_SHORT):
+    if lifecycle_upper in (READY_LONG, READY_SHORT) and not structural_preorder:
         ok_conf, conf_reason = objective_confirmations_satisfied_for_order(
             setup,
             allow_pre_entry_without_touch=allow_pre_entry_without_touch,
@@ -277,7 +289,7 @@ async def maybe_auto_open_paper_position(
         return meta
 
     lifecycle = (setup.lifecycle_state or "").upper()
-    if validation.get("objective_ready") and lifecycle not in (READY_LONG, READY_SHORT, PENDING_ENTRY):
+    if validation.get("objective_ready") and lifecycle not in (READY_LONG, READY_SHORT, PENDING_ENTRY) and not structural_preorder:
         meta["skipped"] = True
         meta["reason"] = "lifecycle_not_ready"
         return meta
@@ -295,7 +307,7 @@ async def maybe_auto_open_paper_position(
     sl_f = float(setup.stop_loss)  # type: ignore[arg-type]
     tp_f = float(setup.take_profit)  # type: ignore[arg-type]
     execution = None
-    if vplan:
+    if vplan and not structural_preorder:
         from app.services.analyst_execution import execution_plan
         execution, error = execution_plan(setup, settings, verified_5m, as_of_ms)
         if error:
@@ -409,11 +421,13 @@ async def maybe_auto_open_paper_position(
             "strategy_id": (setup.structured_snapshot or {}).get("strategy_id", "ict_reversal"),
             "paper_entry_mode": mode,
             "execution_pipeline_state": pipe.get("state"),
-            "pre_entry_order": bool(allow_pre_entry_without_touch),
+            "pre_entry_order": bool(allow_pre_entry_without_touch or structural_preorder),
+            "structural_preorder": structural_preorder,
         }
         await session.flush()
 
     meta["created"] = True
+    meta["structural_preorder"] = structural_preorder
     meta.setdefault('net_rr', net_rr)
     meta['execution_plan'] = execution
     meta["position_id"] = result.position_id
