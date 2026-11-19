@@ -53,6 +53,197 @@ def test_three_independent_conditional_contracts_and_cost_floor():
         assert p['take_profit']<1061
 
 
+def test_empty_ai_plans_can_still_produce_signed_nearby_b_limit_without_fake_fill():
+    """A conditional HTF pullback is executable before its first 5m rejection."""
+    from app.services.analyst_feasibility import build_execution_feasibility
+
+    series, costs, evidence, observed = fixture()
+    # Move only the latest 1m mark to a reachable pre-entry phase; the
+    # original fixture has only 0.312 ATR15 remaining to minimum RR target.
+    # It should NOT produce a late order that the market will outrun.
+    old = series['1m'][-1]
+    series['1m'][-1] = Candle(1025, 1026, 1024, 1025, old.time_ms)
+    enabled = {sid: True for sid in a.PROFILES}
+    hints = build_execution_feasibility(evidence, series, costs, observed, enabled)
+    assert any(p['strategy_id'] == 'trend_continuation' for p in hints['choices'])
+    raw = {'plans': [], 'comparison_fa': 'هیچ ورود فوری تأیید نشده است'}
+    result = a.compile_response(raw, evidence, series, costs, observed, observed,
+                                enabled, execution_feasibility=hints)
+    audit = result['analyst_summary']
+    assert audit['proposed'] == 0
+    # Both A (future sweep trigger) and B (resting pullback limit) are
+    # independently valid at the same near-market HTF support. C long would
+    # be a marketable pre-breakout limit and is intentionally excluded.
+    assert audit['accepted'] == 2, audit['execution_fallbacks']
+    assert set(x['strategy_id'] for x in audit['execution_fallbacks']) == {
+        'ict_reversal', 'trend_continuation'
+    }
+    assert audit['execution_fallback']['source'] == 'server_compiled_paper_conditional'
+    assert audit['execution_fallback']['strategy_id'] == 'trend_continuation'
+    assert audit['fallback_accepted'] >= 1
+    assert audit['ai_accepted'] == 0
+    assert result['strategy_id'] == 'trend_continuation'
+    assert result['decision'] == 'NO_TRADE'
+    assert result['final_ai_decision'] == 'WAIT'
+    assert result['structural_confirmation_clear'] is False
+    assert v.plan_error(result, observed) is None
+
+    # No valid server example, no fallback: never invent a price or override
+    # the structural compiler just to meet an entry quota.
+    none = a.compile_response(raw, evidence, series, costs, observed, observed,
+                              enabled, execution_feasibility={'choices': []})
+    assert none['analyst_summary']['accepted'] == 0
+    assert none['analyst_summary']['execution_fallback'] is None
+
+    # A geometrically valid plan is NOT automatically executable after most
+    # of the move is already spent. This avoids more missed-target limits.
+    late_series, late_costs, late_evidence, late_now = fixture()
+    late_hints = build_execution_feasibility(
+        late_evidence, late_series, late_costs, late_now, enabled)
+    late = a.compile_response(raw, late_evidence, late_series, late_costs,
+                              late_now, late_now, enabled,
+                              execution_feasibility=late_hints)
+    assert late['analyst_summary']['accepted'] == 0
+
+
+@pytest.mark.parametrize('sid,live_mark', [
+    ('ict_reversal', 1025.0),
+    ('trend_continuation', 1025.0),
+    ('breakout_retest', 1019.0),
+])
+def test_empty_ai_plans_recovers_each_enabled_abc_strategy_independently(sid, live_mark):
+    from app.services.analyst_feasibility import build_execution_feasibility
+
+    series, costs, evidence, observed = fixture()
+    last = series['1m'][-1]
+    series['1m'][-1] = Candle(live_mark, live_mark + 1,
+                            live_mark - 1, live_mark, last.time_ms)
+    enabled = {x: x == sid for x in a.PROFILES}
+    hints = build_execution_feasibility(evidence, series, costs, observed, enabled)
+    assert any(p['strategy_id'] == sid for p in hints['choices'])
+    raw = {'plans': [], 'comparison_fa': 'صرفاً سناریوهای آینده'}
+    result = a.compile_response(raw, evidence, series, costs, observed, observed,
+                                enabled, execution_feasibility=hints)
+    summary = result['analyst_summary']
+    assert summary['proposed'] == 0
+    assert summary['ai_accepted'] == 0
+    assert summary['fallback_accepted'] == 1, hints['choices']
+    assert summary['execution_fallbacks'][0]['strategy_id'] == sid
+    assert result['strategy_id'] == sid
+    assert result['decision'] == 'NO_TRADE'
+    assert result['final_ai_decision'] == 'WAIT'
+    assert result['structural_confirmation_clear'] is False
+    assert v.plan_error(result, observed) is None
+    assert result['verified_trade_plan']['seed_confirmations'] == {}
+
+
+def test_ai_first_never_overridden_and_missing_strategy_can_be_recovered():
+    from app.services.analyst_feasibility import build_execution_feasibility
+
+    series, costs, evidence, now = fixture()
+    last = series['1m'][-1]
+    series['1m'][-1] = Candle(1025, 1026, 1024, 1025, last.time_ms)
+    enabled = {sid: True for sid in a.PROFILES}
+    hints = build_execution_feasibility(evidence, series, costs, now, enabled)
+    raw = {'plans': [proposal('trend_continuation')]}
+    result = a.compile_response(raw, evidence, series, costs, now, now,
+                                enabled, execution_feasibility=hints)
+    summary = result['analyst_summary']
+    assert summary['proposed'] == 1
+    assert summary['ai_accepted'] == 1
+    assert result['strategy_id'] == 'trend_continuation'
+    assert result['analyst_rank'] == 1
+    assert result['strategy_candidates']['ict_reversal']['analyst_rank'] == 2
+    assert summary['fallback_accepted'] >= 1
+
+    # Bad AI evidence must not be silently turned into a server endorsement.
+    bad = dict(proposal('ict_reversal'), zone_id='invented')
+    rejected = a.compile_response({'plans': [bad]}, evidence, series, costs,
+                                  now, now, enabled, execution_feasibility=hints)
+    assert 'unknown_evidence_id' in rejected['analyst_summary']['rejections']
+    assert 'ict_reversal' not in (
+        {rejected.get('strategy_id')} | set(rejected.get('strategy_candidates', {}))
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('sid,mark', [
+    ('ict_reversal', 1025.0),
+    ('breakout_retest', 1019.0),
+])
+async def test_server_recovered_a_c_persist_waiting_for_real_5m(session, monkeypatch, sid, mark):
+    from app.models import AiAnalysisRun, SimPosition
+    from app.services.strategy_candidates import persist_strategy_candidates
+    from app.services.analyst_feasibility import build_execution_feasibility
+    from sqlalchemy import select
+
+    monkeypatch.setenv('MULTI_SETUP_ANALYST_ENABLED', '1')
+    from app.services import analyst_confirmation
+    monkeypatch.setattr(analyst_confirmation, 'recent_confirmations', lambda *_: {})
+    series, costs, evidence, now = fixture()
+    last = series['1m'][-1]
+    series['1m'][-1] = Candle(mark, mark + 1, mark - 1, mark, last.time_ms)
+    enabled = {x: x == sid for x in a.PROFILES}
+    hints = build_execution_feasibility(evidence, series, costs, now, enabled)
+    draft = a.compile_response({'plans': []}, evidence, series, costs, now, now,
+                               enabled, execution_feasibility=hints)
+    assert draft['analyst_summary']['fallback_accepted'] == 1
+    run = AiAnalysisRun(trigger='manual', status='completed', structured=draft)
+    session.add(run)
+    await session.flush()
+    rows, metadata = await persist_strategy_candidates(
+        session, run_id=run.id, symbol='BTCUSDT', structured=draft)
+    assert sid in rows, metadata
+    assert rows[sid].status == 'open'
+    assert rows[sid].lifecycle_state == 'WAIT_LONG'
+    assert not (rows[sid].confirmation_state or {}).get('confirmation_timestamps')
+    assert not (await session.execute(select(SimPosition))).scalars().all()
+
+
+@pytest.mark.asyncio
+async def test_signed_b_preorder_post_loss_needs_newer_thesis_not_fake_5m(session, monkeypatch):
+    from app.services import ai_setup_quality_gates as quality
+    from types import SimpleNamespace
+
+    series, costs, evidence, observed = fixture()
+    plan = a.compile_plan(proposal('trend_continuation'), evidence,
+                          series, costs, observed, observed)
+    setup = SimpleNamespace(
+        symbol='BTCUSDT', direction='LONG', setup_id='fresh-b',
+        invalidation_level=plan['structural_invalidation_level'],
+        expires_at=datetime.fromtimestamp(
+            plan['verified_trade_plan']['expires_ms'] / 1000, timezone.utc),
+        structured_snapshot=plan,
+        confirmation_state={},
+    )
+    loss = SimpleNamespace()
+    monkeypatch.setattr(quality, '_recent_losing_sim_same_direction',
+                        AsyncMock(return_value=loss))
+    monkeypatch.setattr(quality, '_active_sim_same_direction_excluding_setup',
+                        AsyncMock(return_value=None))
+    monkeypatch.setattr(quality, 'sim_position_failure_ms',
+                        lambda _loss: observed - 300000)
+    bar = series['5m'][-1]
+    allowed, reason = await quality.validate_setup_quality_at_execution(
+        session, setup, latest_closed_5m=bar, market_data_verified=True,
+        now_ms=observed, allow_signed_b_preorder=True)
+    assert (allowed, reason) == (True, None)
+
+    denied, reason = await quality.validate_setup_quality_at_execution(
+        session, setup, latest_closed_5m=bar, market_data_verified=True,
+        now_ms=observed)
+    assert denied is False
+    assert reason == 'confirmations_not_after_prior_same_direction_loss'
+
+    monkeypatch.setattr(quality, 'sim_position_failure_ms',
+                        lambda _loss: observed + 1)
+    denied, reason = await quality.validate_setup_quality_at_execution(
+        session, setup, latest_closed_5m=bar, market_data_verified=True,
+        now_ms=observed, allow_signed_b_preorder=True)
+    assert denied is False
+    assert reason == 'confirmations_not_after_prior_same_direction_loss'
+
+
 @pytest.mark.parametrize('key,value,reason',[
     ('zone_id','invented','unknown_evidence_id'),('strategy_id',[], 'invalid_strategy_direction'),
     ('target_id','stop','target_requires_structural_level'),('invalidation_id','support_zone','invalidation_inside_zone'),

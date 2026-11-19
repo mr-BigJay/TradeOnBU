@@ -589,7 +589,8 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
         if analyst_mode:
             structured=analyst.compile_response(structured,evidence,candles_by_interval,costs,
                 int(datetime.now(timezone.utc).timestamp()*1000),observed_ms,enabled_strategies,
-                outlook_major_levels=outlook_major_levels)
+                outlook_major_levels=outlook_major_levels,
+                execution_feasibility=feasibility)
             structured["analyst_summary"]["execution_feasibility"] = feasibility
             if direct_mode:
                 structured["analyst_summary"]["ai_direct_proposal"] = (
@@ -625,8 +626,28 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
             if not market_text:
                 market_text = format_market_features_fa(features, overview.get('execution_regime') or {})
             comparison_text = safe_model_narrative_fa(overview.get('comparison_fa'))
+            fallback_setups = overview.get('execution_fallbacks') or []
+            fallback_text = ''
+            if fallback_setups:
+                names = {
+                    'ict_reversal': 'A (برگشت ICT)',
+                    'trend_continuation': 'B (ادامه‌روند)',
+                    'breakout_retest': 'C (شکست و بازآزمایی)',
+                }
+                selected = '، '.join(names.get(f.get('strategy_id'), '?')
+                                     for f in fallback_setups)
+                fallback_text = (
+                    'پلن‌های مشروط ساختاریِ سرور (نه پیشنهاد مستقیم AI): '
+                    + selected
+                    + '. برای A و C ابتدا تأیید واقعی کندل ۵دقیقه‌ای لازم است؛ '
+                      'برای B امکان سفارش Limit پیش از آن وجود دارد. '
+                      'هیچ سفارش پرشده یا پوزیشن بازشده‌ای فرض نشده است.'
+                )
             structured['report_fa'] = '\n\n'.join(
-                part for part in (regime_head, market_text, major_text, outlook_text, comparison_text, *reports)
+                part for part in (
+                    regime_head, market_text, major_text, outlook_text,
+                    comparison_text, fallback_text, *reports
+                )
                 if part
             )
         safety = _paper_safety_notes(structured, live)

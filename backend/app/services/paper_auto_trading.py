@@ -510,6 +510,7 @@ async def auto_paper_execution_quality_ok(
         exclude_sim_public_id=pos.public_id,
         closed_5m=closed_5m,
         as_of_ms=as_of_ms,
+        allow_signed_b_preorder=bool((pos.extra or {}).get("structural_preorder")),
     )
 
 
