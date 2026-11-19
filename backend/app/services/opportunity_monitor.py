@@ -1203,7 +1203,7 @@ class OpportunityMonitorService:
                         contract.get("version") == ANALYST_VERSION
                         and contract.get("strategy_id") == "trend_continuation"
                     )
-                    if is_signed_b and new_bars and not gap_suspend:
+                    if is_signed_b and not gap_suspend:
                         from app.services.ai_setup_quality_gates import pick_latest_closed_5m
                         await _attempt_ready_paper_order(
                             session, setup, now=now, summary=summary,
