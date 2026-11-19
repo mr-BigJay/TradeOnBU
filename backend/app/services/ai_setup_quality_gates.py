@@ -552,6 +552,7 @@ async def validate_ready_setup_before_paper_order(
     latest_closed_5m: Candle | None,
     now_ms: int,
     market_data_verified: bool = True,
+    allow_signed_b_preorder: bool = False,
 ) -> tuple[bool, str | None]:
     return await validate_setup_quality_at_execution(
         session,
@@ -560,5 +561,6 @@ async def validate_ready_setup_before_paper_order(
         market_data_verified=market_data_verified,
         now_ms=now_ms,
         phase="order",
+        allow_signed_b_preorder=allow_signed_b_preorder,
     )
 
