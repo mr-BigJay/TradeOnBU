@@ -66,7 +66,11 @@ def test_empty_ai_plans_can_still_produce_signed_nearby_b_limit_without_fake_fil
                                 enabled, execution_feasibility=hints)
     audit = result['analyst_summary']
     assert audit['proposed'] == 0
-    assert audit['accepted'] == 1
+    assert audit['accepted'] == 1, [
+        (x.get('strategy_id'), x.get('direction'), x.get('entry'),
+         x.get('zone_gap_atr15'), x.get('live_to_target_atr15'))
+        for x in hints['choices']
+    ]
     assert audit['execution_fallback']['source'] == 'server_compiled_paper_b_limit'
     assert result['strategy_id'] == 'trend_continuation'
     assert result['decision'] == 'NO_TRADE'
