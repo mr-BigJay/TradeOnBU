@@ -53,6 +53,35 @@ def test_three_independent_conditional_contracts_and_cost_floor():
         assert p['take_profit']<1061
 
 
+def test_empty_ai_plans_can_still_produce_signed_nearby_b_limit_without_fake_fill():
+    """A conditional HTF pullback is executable before its first 5m rejection."""
+    from app.services.analyst_feasibility import build_execution_feasibility
+
+    series, costs, evidence, observed = fixture()
+    enabled = {sid: True for sid in a.PROFILES}
+    hints = build_execution_feasibility(evidence, series, costs, observed, enabled)
+    assert any(p['strategy_id'] == 'trend_continuation' for p in hints['choices'])
+    raw = {'plans': [], 'comparison_fa': 'هیچ ورود فوری تأیید نشده است'}
+    result = a.compile_response(raw, evidence, series, costs, observed, observed,
+                                enabled, execution_feasibility=hints)
+    audit = result['analyst_summary']
+    assert audit['proposed'] == 0
+    assert audit['accepted'] == 1
+    assert audit['execution_fallback']['source'] == 'server_compiled_paper_b_limit'
+    assert result['strategy_id'] == 'trend_continuation'
+    assert result['decision'] == 'NO_TRADE'
+    assert result['final_ai_decision'] == 'WAIT'
+    assert result['structural_confirmation_clear'] is False
+    assert v.plan_error(result, observed) is None
+
+    # No valid server example, no fallback: never invent a price or override
+    # the structural compiler just to meet an entry quota.
+    none = a.compile_response(raw, evidence, series, costs, observed, observed,
+                              enabled, execution_feasibility={'choices': []})
+    assert none['analyst_summary']['accepted'] == 0
+    assert none['analyst_summary']['execution_fallback'] is None
+
+
 @pytest.mark.parametrize('key,value,reason',[
     ('zone_id','invented','unknown_evidence_id'),('strategy_id',[], 'invalid_strategy_direction'),
     ('target_id','stop','target_requires_structural_level'),('invalidation_id','support_zone','invalidation_inside_zone'),
