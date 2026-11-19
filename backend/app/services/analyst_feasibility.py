@@ -64,6 +64,6 @@ def build_execution_feasibility(evidence, series, costs, observed_ms, strategies
                     break
     return dict(policy="advisory_geometry_v1", confirmed=False,
                 note="Examples only, not an allowlist or orders. Other catalog combinations remain allowed. "
-                     "Counts are geometry combinations, not distinct signals; all need closed-5m proof and later fill.",
+                     "Counts are geometry combinations, not distinct signals. Signed B pullback PAPER limits may rest before a 5m reaction; all LIMITs require a real later post-registration 1m price touch for fill. A/C still need closed-5m proof.",
                 choices=choices, feasible_counts=dict(counts), rejection_counts=dict(rejected),
                 rejection_examples=examples)
