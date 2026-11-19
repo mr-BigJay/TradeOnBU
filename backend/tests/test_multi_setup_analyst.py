@@ -58,6 +58,11 @@ def test_empty_ai_plans_can_still_produce_signed_nearby_b_limit_without_fake_fil
     from app.services.analyst_feasibility import build_execution_feasibility
 
     series, costs, evidence, observed = fixture()
+    # Move only the latest 1m mark to a reachable pre-entry phase; the
+    # original fixture has only 0.312 ATR15 remaining to minimum RR target.
+    # It should NOT produce a late order that the market will outrun.
+    old = series['1m'][-1]
+    series['1m'][-1] = Candle(1025, 1026, 1024, 1025, old.time_ms)
     enabled = {sid: True for sid in a.PROFILES}
     hints = build_execution_feasibility(evidence, series, costs, observed, enabled)
     assert any(p['strategy_id'] == 'trend_continuation' for p in hints['choices'])
