@@ -76,7 +76,10 @@ def test_empty_ai_plans_can_still_produce_signed_nearby_b_limit_without_fake_fil
          x.get('zone_gap_atr15'), x.get('live_to_target_atr15'))
         for x in hints['choices']
     ]
-    assert audit['execution_fallback']['source'] == 'server_compiled_paper_b_limit'
+    assert audit['execution_fallback']['source'] == 'server_compiled_paper_conditional'
+    assert audit['execution_fallback']['strategy_id'] == 'trend_continuation'
+    assert audit['fallback_accepted'] >= 1
+    assert audit['ai_accepted'] == 0
     assert result['strategy_id'] == 'trend_continuation'
     assert result['decision'] == 'NO_TRADE'
     assert result['final_ai_decision'] == 'WAIT'
@@ -99,6 +102,66 @@ def test_empty_ai_plans_can_still_produce_signed_nearby_b_limit_without_fake_fil
                               late_now, late_now, enabled,
                               execution_feasibility=late_hints)
     assert late['analyst_summary']['accepted'] == 0
+
+
+@pytest.mark.parametrize('sid,live_mark', [
+    ('ict_reversal', 1025.0),
+    ('trend_continuation', 1025.0),
+    ('breakout_retest', 1019.0),
+])
+def test_empty_ai_plans_recovers_each_enabled_abc_strategy_independently(sid, live_mark):
+    from app.services.analyst_feasibility import build_execution_feasibility
+
+    series, costs, evidence, observed = fixture()
+    last = series['1m'][-1]
+    series['1m'][-1] = Candle(live_mark, live_mark + 1,
+                            live_mark - 1, live_mark, last.time_ms)
+    enabled = {x: x == sid for x in a.PROFILES}
+    hints = build_execution_feasibility(evidence, series, costs, observed, enabled)
+    assert any(p['strategy_id'] == sid for p in hints['choices'])
+    raw = {'plans': [], 'comparison_fa': 'صرفاً سناریوهای آینده'}
+    result = a.compile_response(raw, evidence, series, costs, observed, observed,
+                                enabled, execution_feasibility=hints)
+    summary = result['analyst_summary']
+    assert summary['proposed'] == 0
+    assert summary['ai_accepted'] == 0
+    assert summary['fallback_accepted'] == 1, hints['choices']
+    assert summary['execution_fallbacks'][0]['strategy_id'] == sid
+    assert result['strategy_id'] == sid
+    assert result['decision'] == 'NO_TRADE'
+    assert result['final_ai_decision'] == 'WAIT'
+    assert result['structural_confirmation_clear'] is False
+    assert v.plan_error(result, observed) is None
+    assert result['verified_trade_plan']['seed_confirmations'] == {}
+
+
+def test_ai_first_never_overridden_and_missing_strategy_can_be_recovered():
+    from app.services.analyst_feasibility import build_execution_feasibility
+
+    series, costs, evidence, now = fixture()
+    last = series['1m'][-1]
+    series['1m'][-1] = Candle(1025, 1026, 1024, 1025, last.time_ms)
+    enabled = {sid: True for sid in a.PROFILES}
+    hints = build_execution_feasibility(evidence, series, costs, now, enabled)
+    raw = {'plans': [proposal('trend_continuation')]}
+    result = a.compile_response(raw, evidence, series, costs, now, now,
+                                enabled, execution_feasibility=hints)
+    summary = result['analyst_summary']
+    assert summary['proposed'] == 1
+    assert summary['ai_accepted'] == 1
+    assert result['strategy_id'] == 'trend_continuation'
+    assert result['analyst_rank'] == 1
+    assert result['strategy_candidates']['ict_reversal']['analyst_rank'] == 2
+    assert summary['fallback_accepted'] >= 1
+
+    # Bad AI evidence must not be silently turned into a server endorsement.
+    bad = dict(proposal('ict_reversal'), zone_id='invented')
+    rejected = a.compile_response({'plans': [bad]}, evidence, series, costs,
+                                  now, now, enabled, execution_feasibility=hints)
+    assert 'unknown_evidence_id' in rejected['analyst_summary']['rejections']
+    assert 'ict_reversal' not in (
+        {rejected.get('strategy_id')} | set(rejected.get('strategy_candidates', {}))
+    )
 
 
 @pytest.mark.asyncio
