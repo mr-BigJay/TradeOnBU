@@ -502,6 +502,7 @@ async def _attempt_ready_paper_order(
     latest_closed_5m: Candle | None = None,
     market_data_verified: bool = False,
     closed_5m: list[Candle] | None = None,
+    structural_preorder: bool = False,
 ) -> bool:
     """Create paper order while READY; transition to PENDING_ENTRY only on success (atomic savepoint)."""
     from app.services.conditional_revision import objective_confirmations_satisfied_for_order
@@ -551,7 +552,7 @@ async def _attempt_ready_paper_order(
     conf_ok, reject_reason = objective_confirmations_satisfied_for_order(
         setup,
         allow_pre_entry_without_touch=allow_pre_entry,
-    )
+    ) if not structural_preorder else (True, None)
     if not conf_ok:
         setup.lifecycle_state = wait_state_for_direction(setup.direction)
         setup.last_rejection_reason = reject_reason or REASON_MISSING_CONFIRMATIONS
@@ -632,12 +633,14 @@ async def _attempt_ready_paper_order(
                 commit=False,
                 require_ai_flags=False,
                 allow_pre_entry_without_touch=allow_pre_entry,
+                allow_structural_preorder=structural_preorder,
                 entry_mode=order_engine,
                 verified_5m=closed_5m if market_data_verified else None,
                 as_of_ms=int(now.timestamp() * 1000),
             )
             if not auto.get("created"):
-                setup.lifecycle_state = ready_state_for_direction(direction)
+                setup.lifecycle_state = (wait_state_for_direction(direction) if structural_preorder
+                                         else ready_state_for_direction(direction))
                 reason = auto.get("reason") or "auto_open_skipped"
                 setup.last_rejection_reason = (REASON_AUTO_PAPER_DISABLED
                                                if reason in ("auto_open_disabled", "auto_paper_disabled")
@@ -648,6 +651,7 @@ async def _attempt_ready_paper_order(
                     "order_skipped_reason": reason,
                     "order_detail": auto.get("detail"),
                     "net_rr": net_rr,
+                    "structural_preorder": structural_preorder,
                 }
                 return False
             net_rr = auto.get("net_rr", net_rr)
@@ -657,14 +661,17 @@ async def _attempt_ready_paper_order(
                 "net_rr": net_rr,
                 "order_created_at": now.isoformat(),
             }
-            append_timeline_event(setup, "paper_order_created", net_rr=net_rr, at_ms=int(now.timestamp() * 1000))
+            append_timeline_event(setup, "paper_order_created", net_rr=net_rr,
+                                  structural_preorder=structural_preorder,
+                                  at_ms=int(now.timestamp() * 1000))
             await log_setup_event(
                 session, setup_id=setup.setup_id, event_type="order_created", payload=auto
             )
     except Exception:
         logger.exception("Paper order creation failed for setup %s", setup.setup_id)
         await session.refresh(setup)
-        setup.lifecycle_state = ready_state_for_direction(direction)
+        setup.lifecycle_state = (wait_state_for_direction(direction) if structural_preorder
+                                 else ready_state_for_direction(direction))
         setup.last_rejection_reason = "paper_order_creation_failed"
         setup.last_validation_result = {
             "ok": False,
@@ -1185,6 +1192,29 @@ class OpportunityMonitorService:
                         "missing": missing_list,
                         "ict_confirmed": False,
                     }
+                    # A signed B continuation plan is an executable pullback
+                    # *limit* proposal even before a directional rejection.
+                    # Without this resting order the first HTF zone visit may
+                    # happen before the monitor could ever create a limit.
+                    # A/C and legacy plans retain objective confirmation rules.
+                    from app.services.multi_setup_analyst import VERSION as ANALYST_VERSION
+                    contract = (setup.structured_snapshot or {}).get("verified_trade_plan") or {}
+                    is_signed_b = (
+                        contract.get("version") == ANALYST_VERSION
+                        and contract.get("strategy_id") == "trend_continuation"
+                    )
+                    if is_signed_b and new_bars and not gap_suspend:
+                        from app.services.ai_setup_quality_gates import pick_latest_closed_5m
+                        await _attempt_ready_paper_order(
+                            session, setup, now=now, summary=summary,
+                            entry_mode=live_engine, balanced_shadow=balanced_shadow,
+                            paper_entry_mode=paper_entry_mode,
+                            latest_closed_5m=pick_latest_closed_5m(
+                                list(bundle.closed or []), now_ms=now_ms
+                            ),
+                            market_data_verified=bool(bundle.data_complete and fresh),
+                            closed_5m=bundle.closed, structural_preorder=True,
+                        )
                     continue
 
                 rr_ok, net_rr = await _net_rr_ok(session, setup)
