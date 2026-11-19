@@ -17,6 +17,8 @@ FAILURE_BACKOFF_MINUTES = 15
 MIN_AI_INTERVAL_MINUTES = 60
 MAX_AI_INTERVAL_MINUTES = 360
 DEFAULT_AI_INTERVAL_MINUTES = MIN_AI_INTERVAL_MINUTES
+ANALYST_INTERVAL_MINUTES = 4 * 60
+ANALYST_CLOSE_GRACE_MINUTES = 5
 LEGACY_AUTO_MIGRATED_INTERVAL_MINUTES = 120
 
 
@@ -30,7 +32,8 @@ def _ensure_utc(dt: datetime) -> datetime:
 
 def _effective_interval_minutes(cfg: AiAnalysisSettings) -> int:
     from app.services.multi_setup_analyst import enabled as analyst_enabled
-    if analyst_enabled():return 60
+    if analyst_enabled():
+        return ANALYST_INTERVAL_MINUTES
     from app.services.verified_trade_plan import enabled
     if enabled():
         return 5
@@ -176,14 +179,25 @@ async def scheduling_allowed(
     return True, None
 
 
+def _analyst_slot(now: datetime) -> tuple[datetime, datetime]:
+    """Current closed 4H candle and earliest next safe analysis time (UTC)."""
+    now = _ensure_utc(now)
+    period = ANALYST_INTERVAL_MINUTES * 60
+    boundary = int(now.timestamp()) // period * period
+    close = datetime.fromtimestamp(boundary, tz=timezone.utc)
+    return close, close + timedelta(minutes=ANALYST_CLOSE_GRACE_MINUTES)
+
+
 def _next_regular_run_at(cfg: AiAnalysisSettings, now: datetime) -> datetime:
     interval = _effective_interval_minutes(cfg)
     period_seconds = interval * 60
     now = _ensure_utc(now)
-    # Fixed UTC boundaries plus 60 seconds; independent of completion time.
-    slot = int((now.timestamp() - 60) // period_seconds) + 1
+    from app.services.multi_setup_analyst import enabled as analyst_enabled
+    offset_seconds = ANALYST_CLOSE_GRACE_MINUTES * 60 if analyst_enabled() else 60
+    # Fixed UTC close boundaries plus grace, independent of completion time.
+    slot = int((now.timestamp() - offset_seconds) // period_seconds) + 1
     return datetime.fromtimestamp(
-        slot * period_seconds + 60, tz=timezone.utc
+        slot * period_seconds + offset_seconds, tz=timezone.utc
     )
 
 
@@ -207,6 +221,14 @@ def record_run_outcome(
 
     cfg.last_error = error_detail or "run_failed"
     if trigger != "scheduled":
+        return
+
+    from app.services.multi_setup_analyst import enabled as analyst_enabled
+    if analyst_enabled():
+        # At most one unattended paid attempt for each closed 4H candle.
+        # Failed paid runs can be inspected manually; no 15-minute API loop.
+        cfg.auto_retry_pending = False
+        cfg.next_run_at = _next_regular_run_at(cfg, now)
         return
 
     if not cfg.auto_retry_pending:
@@ -295,6 +317,25 @@ async def should_run_scheduled(session: AsyncSession) -> bool:
     ok, _ = await scheduling_allowed(session, cfg)
     if not ok:
         return False
+    if analyst_enabled():
+        now = _utc_now()
+        close, ready = _analyst_slot(now)
+        if now < ready:
+            return False
+        if cfg.last_run_at and _ensure_utc(cfg.last_run_at) >= close:
+            return False
+        # Crash-safe: a run can be journaled before cfg.last_run_at is saved.
+        # Count all scheduled starts in this slot, including failed/in-flight
+        # runs. The live scheduler lock still serializes admission.
+        from app.models import AiAnalysisRun
+        already_started = await session.scalar(
+            select(AiAnalysisRun.id)
+            .where(AiAnalysisRun.trigger == "scheduled")
+            .where(AiAnalysisRun.started_at >= close)
+            .where(AiAnalysisRun.started_at <= now)
+            .limit(1)
+        )
+        return already_started is None
     if cfg.next_run_at is None:
         return True
     from app.services.verified_trade_plan import enabled

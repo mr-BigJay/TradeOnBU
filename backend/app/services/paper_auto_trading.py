@@ -133,6 +133,30 @@ async def _has_position_for_setup(session: AsyncSession, setup_id: str) -> bool:
     return result.scalar_one_or_none() is not None
 
 
+async def _verified_freshness_minutes(symbol: str, *, since_ms: int, as_of_ms: int):
+    """Verify every closed 1m candle since structural confirmation before order.
+
+    New analyst contracts may live for 24h. A 120-minute snapshot is adequate
+    for fresh confirmations, but old valid READY setups need paginated history.
+    Incomplete or stale history still prevents paper order placement.
+    """
+    from app.services.market_data import MarketDataService
+
+    market = MarketDataService()
+    recent = await market.fetch_kline_bundle(symbol, "1m", 120)
+    if not recent.data_complete or not recent.closed:
+        return recent
+    if since_ms >= recent.closed[0].time_ms:
+        return recent
+    # Intraday-only backfill. Do not allow unlimited exchange pagination.
+    max_bars = (as_of_ms - since_ms) // 60_000 + 5
+    if not 20 <= max_bars <= 1600:
+        return recent
+    return await market.fetch_historical_closed(
+        symbol, "1m", since_ms, max_bars=max_bars
+    )
+
+
 async def maybe_auto_open_paper_position(
     session: AsyncSession,
     *,
@@ -178,14 +202,7 @@ async def maybe_auto_open_paper_position(
             return {**meta, 'skipped': True, 'reason': 'verified_market_data_invalid'}
         # API latency and scheduler delay must not turn a used zone into a fresh order.
         from app.services.market_data import MarketDataService
-        try:
-            minute_bundle = await MarketDataService().fetch_kline_bundle(symbol, '1m', 120)
-        except Exception:
-            return {**meta, 'skipped': True, 'reason': 'verified_freshness_unavailable'}
-        if not minute_bundle.data_complete or not verified.valid_bars(minute_bundle.closed, 60_000, as_of_ms, 20):
-            return {**meta, 'skipped': True, 'reason': 'verified_freshness_unavailable'}
         since = vplan['as_of_ms']//60_000*60_000
-        from app.services.multi_setup_analyst import VERSION as ANALYST_VERSION
         if vplan['version']==ANALYST_VERSION:
             from app.services.conditional_revision import objective_confirmations_satisfied_for_order
             confirmed,reason=objective_confirmations_satisfied_for_order(setup,allow_pre_entry_without_touch=True)
@@ -194,8 +211,19 @@ async def maybe_auto_open_paper_position(
             structural=[t for k,t in stamps.items() if k!='entry_zone_touch']
             if not structural:return {**meta,'skipped':True,'reason':'missing_confirmations'}
             since=max(structural)+verified.STEP
+        if since > as_of_ms:
+            return {**meta, 'skipped': True, 'reason': 'verified_freshness_unavailable'}
+        try:
+            minute_bundle = await _verified_freshness_minutes(
+                symbol, since_ms=since, as_of_ms=as_of_ms
+            )
+        except Exception:
+            return {**meta, 'skipped': True, 'reason': 'verified_freshness_unavailable'}
+        if not minute_bundle.data_complete or not verified.valid_bars(minute_bundle.closed, 60_000, as_of_ms, 20):
+            return {**meta, 'skipped': True, 'reason': 'verified_freshness_unavailable'}
         minutes = [b for b in minute_bundle.closed if b.time_ms >= since]
-        if since>as_of_ms or (since<as_of_ms//60_000*60_000 and (not minutes or minutes[0].time_ms != since)):
+        if (since < as_of_ms//60_000*60_000
+                and (not minutes or minutes[0].time_ms != since)):
             return {**meta, 'skipped': True, 'reason': 'verified_freshness_unavailable'}
         if any((b.low <= vplan['entry'] if vplan['direction']=='LONG' else b.high >= vplan['entry']) for b in minutes):
             return {**meta, 'skipped': True, 'reason': 'verified_pullback_already_used'}

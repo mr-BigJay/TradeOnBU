@@ -141,11 +141,12 @@ async def test_persists_three_setups_without_fabricating_confirmations(session,m
 @pytest.mark.asyncio
 async def test_paid_slot_is_consumed_even_when_request_fails(session):
     from app.models import AiAnalysisRun
-    now=datetime.now(timezone.utc)
+    now=datetime(2026,11,18,8,30,tzinfo=timezone.utc)
     allowed,slot=await a.review_allowed(session,now);assert allowed
     session.add(AiAnalysisRun(trigger='manual',status='failed',created_at=now,structured={'analyst_review':{'slot_ms':slot,'api_attempted':True}}))
     await session.flush()
     assert await a.review_allowed(session,now)==(False,slot)
+    assert (await a.review_allowed(session,now+timedelta(hours=1)))[0] is False
     assert (await a.review_allowed(session,now+timedelta(hours=4)))[0]
 
 
@@ -154,9 +155,9 @@ def test_four_hour_schedule_overrides_legacy_five_minute_setting(monkeypatch):
     from app.services.ai_analysis_scheduler import _effective_interval_minutes,_next_regular_run_at
     monkeypatch.setenv('MULTI_SETUP_ANALYST_ENABLED','1')
     cfg=AiAnalysisSettings(interval_minutes=5)
-    assert _effective_interval_minutes(cfg)==60
+    assert _effective_interval_minutes(cfg)==240
     nxt=_next_regular_run_at(cfg,datetime(2026,11,7,10,10,tzinfo=timezone.utc))
-    assert nxt==datetime(2026,11,7,11,1,tzinfo=timezone.utc)
+    assert nxt==datetime(2026,11,7,12,5,tzinfo=timezone.utc)
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('malformed',[False,True,'partial','quota'])
