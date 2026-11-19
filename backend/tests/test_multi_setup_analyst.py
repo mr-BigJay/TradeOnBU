@@ -167,6 +167,40 @@ def test_ai_first_never_overridden_and_missing_strategy_can_be_recovered():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('sid,mark', [
+    ('ict_reversal', 1025.0),
+    ('breakout_retest', 1019.0),
+])
+async def test_server_recovered_a_c_persist_waiting_for_real_5m(session, monkeypatch, sid, mark):
+    from app.models import AiAnalysisRun, SimPosition
+    from app.services.strategy_candidates import persist_strategy_candidates
+    from app.services.analyst_feasibility import build_execution_feasibility
+    from sqlalchemy import select
+
+    monkeypatch.setenv('MULTI_SETUP_ANALYST_ENABLED', '1')
+    from app.services import analyst_confirmation
+    monkeypatch.setattr(analyst_confirmation, 'recent_confirmations', lambda *_: {})
+    series, costs, evidence, now = fixture()
+    last = series['1m'][-1]
+    series['1m'][-1] = Candle(mark, mark + 1, mark - 1, mark, last.time_ms)
+    enabled = {x: x == sid for x in a.PROFILES}
+    hints = build_execution_feasibility(evidence, series, costs, now, enabled)
+    draft = a.compile_response({'plans': []}, evidence, series, costs, now, now,
+                               enabled, execution_feasibility=hints)
+    assert draft['analyst_summary']['fallback_accepted'] == 1
+    run = AiAnalysisRun(trigger='manual', status='completed', structured=draft)
+    session.add(run)
+    await session.flush()
+    rows, metadata = await persist_strategy_candidates(
+        session, run_id=run.id, symbol='BTCUSDT', structured=draft)
+    assert sid in rows, metadata
+    assert rows[sid].status == 'open'
+    assert rows[sid].lifecycle_state == 'WAIT_LONG'
+    assert not (rows[sid].confirmation_state or {}).get('confirmation_timestamps')
+    assert not (await session.execute(select(SimPosition))).scalars().all()
+
+
+@pytest.mark.asyncio
 async def test_signed_b_preorder_post_loss_needs_newer_thesis_not_fake_5m(session, monkeypatch):
     from app.services import ai_setup_quality_gates as quality
     from types import SimpleNamespace
