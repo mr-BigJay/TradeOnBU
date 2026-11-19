@@ -82,6 +82,50 @@ def test_empty_ai_plans_can_still_produce_signed_nearby_b_limit_without_fake_fil
     assert none['analyst_summary']['execution_fallback'] is None
 
 
+@pytest.mark.asyncio
+async def test_signed_b_preorder_post_loss_needs_newer_thesis_not_fake_5m(session, monkeypatch):
+    from app.services import ai_setup_quality_gates as quality
+    from types import SimpleNamespace
+
+    series, costs, evidence, observed = fixture()
+    plan = a.compile_plan(proposal('trend_continuation'), evidence,
+                          series, costs, observed, observed)
+    setup = SimpleNamespace(
+        symbol='BTCUSDT', direction='LONG', setup_id='fresh-b',
+        invalidation_level=plan['structural_invalidation_level'],
+        expires_at=datetime.fromtimestamp(
+            plan['verified_trade_plan']['expires_ms'] / 1000, timezone.utc),
+        structured_snapshot=plan,
+        confirmation_state={},
+    )
+    loss = SimpleNamespace()
+    monkeypatch.setattr(quality, '_recent_losing_sim_same_direction',
+                        AsyncMock(return_value=loss))
+    monkeypatch.setattr(quality, '_active_sim_same_direction_excluding_setup',
+                        AsyncMock(return_value=None))
+    monkeypatch.setattr(quality, 'sim_position_failure_ms',
+                        lambda _loss: observed - 300000)
+    bar = series['5m'][-1]
+    allowed, reason = await quality.validate_setup_quality_at_execution(
+        session, setup, latest_closed_5m=bar, market_data_verified=True,
+        now_ms=observed, allow_signed_b_preorder=True)
+    assert (allowed, reason) == (True, None)
+
+    denied, reason = await quality.validate_setup_quality_at_execution(
+        session, setup, latest_closed_5m=bar, market_data_verified=True,
+        now_ms=observed)
+    assert denied is False
+    assert reason == 'confirmations_not_after_prior_same_direction_loss'
+
+    monkeypatch.setattr(quality, 'sim_position_failure_ms',
+                        lambda _loss: observed + 1)
+    denied, reason = await quality.validate_setup_quality_at_execution(
+        session, setup, latest_closed_5m=bar, market_data_verified=True,
+        now_ms=observed, allow_signed_b_preorder=True)
+    assert denied is False
+    assert reason == 'confirmations_not_after_prior_same_direction_loss'
+
+
 @pytest.mark.parametrize('key,value,reason',[
     ('zone_id','invented','unknown_evidence_id'),('strategy_id',[], 'invalid_strategy_direction'),
     ('target_id','stop','target_requires_structural_level'),('invalidation_id','support_zone','invalidation_inside_zone'),
