@@ -285,6 +285,10 @@ async def test_real_monitor_confirms_then_places_limit_and_fills_later(session,m
     # this is not a fake fill. A/C still use their existing proof path.
     assert len(first_positions)==1
     assert all(p.status=='pending_entry' for p in first_positions)
+    assert first_positions[0].order_type == 'limit'
+    assert first_positions[0].extra.get('structural_preorder') is (sid == 'trend_continuation')
+    # A new resting B limit is an order, not a claimed historical fill.
+    assert first_positions[0].fill_price is None
     five.append(events[1]);now_ms=boundary+600000;refresh_minutes()
     await svc.monitor_setups(session)
     positions=(await session.execute(select(SimPosition))).scalars().all()
