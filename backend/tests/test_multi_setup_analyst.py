@@ -141,7 +141,7 @@ async def test_persists_three_setups_without_fabricating_confirmations(session,m
 @pytest.mark.asyncio
 async def test_paid_slot_is_consumed_even_when_request_fails(session):
     from app.models import AiAnalysisRun
-    now=datetime.now(timezone.utc)
+    now=datetime(2026,11,18,8,30,tzinfo=timezone.utc)
     allowed,slot=await a.review_allowed(session,now);assert allowed
     session.add(AiAnalysisRun(trigger='manual',status='failed',created_at=now,structured={'analyst_review':{'slot_ms':slot,'api_attempted':True}}))
     await session.flush()
