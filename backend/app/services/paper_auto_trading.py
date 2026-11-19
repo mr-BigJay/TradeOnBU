@@ -192,7 +192,7 @@ async def maybe_auto_open_paper_position(
     structural_preorder = bool(
         allow_structural_preorder
         and vplan and vplan.get("version") == ANALYST_VERSION
-        and vplan.get("strategy_id") in ("trend_continuation", "breakout_retest")
+        and vplan.get("strategy_id") == "trend_continuation"
         and (setup.lifecycle_state or "").upper() in ("WAIT_LONG", "WAIT_SHORT")
         and setup.status == "open"
     )
@@ -239,6 +239,16 @@ async def maybe_auto_open_paper_position(
             return {**meta, 'skipped': True, 'reason': 'verified_freshness_unavailable'}
         if any((b.low <= vplan['entry'] if vplan['direction']=='LONG' else b.high >= vplan['entry']) for b in minutes):
             return {**meta, 'skipped': True, 'reason': 'verified_pullback_already_used'}
+        if structural_preorder:
+            sign = 1 if vplan['direction'] == 'LONG' else -1
+            # A buy limit above market or sell limit below market is marketable.
+            # The paper candle engine cannot honestly emulate its immediate fill.
+            if not minutes or sign * (minutes[-1].close - vplan['entry']) <= 0:
+                return {**meta, 'skipped': True, 'reason': 'structural_limit_not_resting'}
+            if any((b.high >= vplan['target'] if sign == 1 else b.low <= vplan['target']) for b in minutes):
+                return {**meta, 'skipped': True, 'reason': 'target_already_reached_before_order'}
+            if any((b.low <= vplan['invalidation'] if sign == 1 else b.high >= vplan['invalidation']) for b in minutes):
+                return {**meta, 'skipped': True, 'reason': 'structural_invalidation_before_order'}
 
     settings: SimPositionSettings = await get_or_create_settings(session)
     if not settings.auto_open_paper_positions:
