@@ -58,10 +58,10 @@ when no executable plan passes the server rules. Never promise that an untouched
 plans is 0 to 3 *independently executable conditional proposals* ranked best first.
 Each plan: strategy_id (ict_reversal|trend_continuation|breakout_retest), direction (LONG|SHORT),
 zone_id, invalidation_id, target_id (exact supplied catalog IDs), reason_fa.
-At most one plan per strategy. Only enabled strategies. Empty plans is valid only when no structurally sound, fee-adjusted conditional setup exists; do not force market orders or forecasts.
+At most one plan per strategy. Only enabled strategies. Empty plans is valid when no structurally sound, fee-adjusted conditional setup exists. A and C may propose a monitorable conditional plan BEFORE their future closed-5m sweep/breakout trigger; the monitor, not the AI, will verify the trigger before submitting a limit. B may also place a resting signed HTF pullback LIMIT early. Do not force market orders or fabricate evidence.
 Select meaningful candle-backed areas; NEVER invent price levels, IDs, confidence probabilities or confirmations. Executable support/resistance and OB source zones MUST come from 1H or 4H; 5m/15m evidence is for FVG execution precision and candle confirmation, never an arbitrary micro support/resistance trade. Prefer stops supported by structural invalidation, not micro swings.
 For continuation, 4H confirmed swing structure determines the direction: bearish => SHORT on a rally/pullback into HTF resistance/OB; bullish => LONG on a decline/pullback into HTF support/OB. Opposing 1H structure can be the correction, NOT an automatic veto. If 4H is range/unclear, use directional 1H structure. For continuation, a signed and server-validated HTF pullback zone may receive a resting paper LIMIT before a 5m directional rejection, only if price has not already touched or invalidated it. A fill still requires a later independent exchange 1m touch after order creation. This is not an immediate market entry. EMA/RSI are context, not mandatory thresholds. Breakout uses resistance for LONG or support for SHORT.
-execution_feasibility contains server-checked geometry choices using actual paper costs and the nearest structural obstacle. It also includes zone_gap_atr15 and live_to_target_atr15: compare travel needed to reach an entry zone against the remaining room to the target. When trend-continuation B is far from current price while the target is close, do not repeatedly select an implausible B pullback; assess a valid same-direction breakout/retest C instead. For a structurally sound B LIMIT proposal, do NOT require the current price to already touch the HTF zone or the 5m candle to already reject it: the order is intentionally posted in advance. Review execution_feasibility.choices first: each has already passed compiler geometry, trend alignment, historical level confirmation and minimum net R:R. Prefer such nearby, still reachable B proposals when justified; do not invent IDs or turn watch-only forecasts into positions. If feasible choices are deliberately omitted, give a specific qualitative objection beyond mere distance or absent immediate 5m confirmation. This is advisory, not a new eligibility gate. Use these to avoid impossible entry/stop/target combinations, then assess market quality yourself. They are NOT confirmed signals or mandatory selections. You may propose other catalog combinations; all pass the same final validation. If no plan is selected, explain whether geometry or market evidence is the reason. Never invent a plan to meet a quota.
+execution_feasibility contains server-checked geometry choices using actual paper costs and the nearest structural obstacle. It also includes zone_gap_atr15 and live_to_target_atr15: compare travel needed to reach an entry zone against the remaining room to the target. When trend-continuation B is far from current price while the target is close, do not repeatedly select an implausible B pullback; assess a valid same-direction breakout/retest C instead. For a structurally sound B LIMIT proposal, do NOT require the current price to already touch the HTF zone or the 5m candle to already reject it: the order is intentionally posted in advance. For A/C conditional plans, the reversal sweep or breakout close is a future MONITOR trigger, not an AI proposal prerequisite. Review execution_feasibility.choices first: each has already passed compiler geometry, trend alignment, historical level confirmation and minimum net R:R. Prefer such nearby, still reachable B proposals when justified; do not invent IDs or turn watch-only forecasts into positions. If feasible choices are deliberately omitted, give a specific qualitative objection beyond mere distance or absent immediate 5m confirmation. This is advisory, not a new eligibility gate. Use these to avoid impossible entry/stop/target combinations, then assess market quality yourself. They are NOT confirmed signals or mandatory selections. You may propose other catalog combinations; all pass the same final validation. If no plan is selected, explain whether geometry or market evidence is the reason. Never invent a plan to meet a quota.
 Explain why each selected scenario is preferable and why alternatives were not selected.
 Server derives midpoint limit entry, ATR-buffered structural stop and cost-adjusted target before the nearest obstacle.
 Server checks one objective closed-5m trigger for promotion to READY: reversal=HTF liquidity sweep and strong reclaim; continuation=directional rejection at selected HTF pullback area; breakout=5m close crossing a HTF level. Signed continuation plans may additionally rest a LIMIT immediately on a still-fresh, untouched HTF zone with all original structural SL, risk and net R:R checks; no fill is assumed until an independent post-order exchange 1m touch. A/C retain their normal confirmation gates. Do not claim an additional MSS, retest confirmation or 5m micro support is mandatory for the new analyst contract. Legacy setups retain their own historical confirmation policies.
@@ -316,56 +316,89 @@ def compile_response(raw,evidence,series,costs,now_ms,observed_ms,strategies,*,o
             item=_proposal_diagnostic(p,evidence,series,rank,costs)
             item['reason']=reason
             rejected_plans.append(item)
-    # A model may correctly identify a 4H continuation, then return plans=[]
-    # solely because its untouched pullback has not happened yet. For PAPER
-    # execution, a fully recompiled and signed nearby B LIMIT is a conditional
-    # proposal, not an immediate position. Never fabricate A/C confirmations.
-    fallback_audit = None
-    if not accepted and not raw['plans'] and strategies.get('trend_continuation'):
-        hints = (execution_feasibility or {}).get('choices') or []
-        live = float(series['1m'][-1].close)
+    # The model may describe valid future setups but return plans=[] because
+    # their 5m trigger hasn't yet happened. Recover per missing strategy from
+    # already server-feasible geometry, while NEVER fabricating confirmations.
+    # A/C remain WAIT until real future 5m triggers; B can rest an HTF limit.
+    ai_accepted_count = len(accepted)
+    fallback_audits = []
+    hints = (execution_feasibility or {}).get('choices') or []
+    live = float(series['1m'][-1].close)
+    from math import isfinite
+
+    def _fallback_options(sid):
         options = []
         for item in hints:
-            if not isinstance(item, dict) or item.get('strategy_id') != 'trend_continuation':
+            if not isinstance(item, dict) or item.get('strategy_id') != sid:
                 continue
-            sign = 1 if item.get('direction') == 'LONG' else -1
-            if item.get('direction') not in ('LONG', 'SHORT'):
+            direction = item.get('direction')
+            if direction not in ('LONG', 'SHORT'):
                 continue
+            sign = 1 if direction == 'LONG' else -1
             try:
-                entry = float(item['entry'])
-                gap = float(item['zone_gap_atr15'])
-                room = float(item['live_to_target_atr15'])
-            except (KeyError, ValueError, TypeError):
+                entry, gap, room, stop_distance = (
+                    float(item[key]) for key in (
+                        'entry', 'zone_gap_atr15', 'live_to_target_atr15',
+                        'stop_distance',
+                    )
+                )
+            except (KeyError, TypeError, ValueError, OverflowError):
                 continue
-            # Only a truly resting order: no marketable-limit masquerade,
-            # no long-distance "signal" and no already exhausted target.
-            if sign * (live - entry) <= 0 or not 0 <= gap <= 2.5 or room <= 0.5:
+            if not all(isfinite(v) for v in (entry, gap, room, stop_distance)):
                 continue
-            options.append((gap, -room, item))
-        for _, _, item in sorted(options, key=lambda x: (x[0], x[1])):
+            # A marketable or already-spent B LIMIT is not executable in our
+            # forward-only pending-order model. For C, require the opposite:
+            # price must be BEFORE the structural breakout level.
+            if sid == 'trend_continuation' and sign * (live - entry) <= 0:
+                continue
+            if sid == 'breakout_retest' and sign * (live - entry) >= 0:
+                continue
+            # A is conditional reversal evidence, NOT a resting pre-order;
+            # monitor waits for a fresh sweep/reclaim before any limit.
+            if not 0 <= gap <= 2.5 or room <= 0.5:
+                continue
+            options.append((gap, -room, stop_distance, item))
+        return sorted(options, key=lambda x: (x[0], x[1], x[2]))
+
+    # Preserve AI's choices and rank. Avoid replacing a malformed AI proposal
+    # with a fallback for the *same* strategy: record its rejection instead.
+    # Distinct strategies may be monitored independently; portfolio-wide
+    # position and loss caps still decide whether their orders may execute.
+    for sid in ('trend_continuation', 'breakout_retest', 'ict_reversal'):
+        if sid in seen or sid in accepted or not strategies.get(sid):
+            continue
+        for _, _, _, item in _fallback_options(sid):
             suggestion = {k: item[k] for k in (
-                'strategy_id', 'direction', 'zone_id', 'invalidation_id', 'target_id'
+                'strategy_id', 'direction', 'zone_id',
+                'invalidation_id', 'target_id'
             ) if k in item}
+            condition = {
+                'trend_continuation': 'پولبک به ناحیهٔ ساختاری روند',
+                'breakout_retest': 'شکست معتبر سطح و بازآزمایی بعدی',
+                'ict_reversal': 'جاروب نقدینگی و بازپس‌گیری معتبر سطح',
+            }[sid]
             suggestion['reason_fa'] = (
-                'سفارش محدود آزمایشی Paper بر اساس ادامهٔ روند ۴ساعته، '
-                'سطوح ساختاری تأییدشده و هندسهٔ معتبر سرور؛ '
-                'ورود تنها با لمس واقعی قیمت پس از ثبت سفارش.'
+                'پلن مشروط آزمایشی Paper از هندسهٔ تأییدشدهٔ سرور برای '
+                + condition + '؛ هیچ تأیید ورود یا معاملهٔ انجام‌شده‌ای فرض نشده است.'
             )
             try:
-                plan = compile_plan(suggestion, evidence, series, costs, now_ms, observed_ms)
+                plan = compile_plan(suggestion, evidence, series, costs,
+                                    now_ms, observed_ms)
             except ValueError:
                 continue
-            plan['analyst_rank'] = 1
-            accepted['trend_continuation'] = plan
-            fallback_audit = dict(
-                source='server_compiled_paper_b_limit',
-                strategy_id='trend_continuation',
-                direction=item['direction'],
+            plan['analyst_rank'] = len(accepted) + 1
+            accepted[sid] = plan
+            fallback_audits.append(dict(
+                source='server_compiled_paper_conditional',
+                strategy_id=sid, direction=item['direction'],
                 zone_id=item['zone_id'],
                 zone_gap_atr15=item['zone_gap_atr15'],
-                ai_proposed=0,
-            )
+                ai_proposed=False,
+                order_policy=('preorder_resting_limit' if sid == 'trend_continuation'
+                              else 'wait_for_real_closed_5m_trigger'),
+            ))
             break
+    fallback_audit = fallback_audits[0] if fallback_audits else None
     result=next(iter(accepted.values())) if accepted else flat('پیشنهاد قابل اجرای معتبر وجود ندارد.')
     if not accepted:
         # A legacy flat() uses ict_reversal as a default label. An analyst
@@ -384,5 +417,8 @@ def compile_response(raw,evidence,series,costs,now_ms,observed_ms,strategies,*,o
         'forecast_scenarios':forecast,'forecast_rejections':forecast_rejected,
         'outlook_major_levels':major_levels,'outlook_major_policy':'major_htf_levels_v1',
         'execution_regime':executable_regime(series),
-        'execution_fallback':fallback_audit}
+        'execution_fallback':fallback_audit,
+        'execution_fallbacks':fallback_audits,
+        'ai_accepted':ai_accepted_count,
+        'fallback_accepted':len(fallback_audits)}
     return result
