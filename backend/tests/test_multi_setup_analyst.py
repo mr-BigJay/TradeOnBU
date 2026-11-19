@@ -71,11 +71,13 @@ def test_empty_ai_plans_can_still_produce_signed_nearby_b_limit_without_fake_fil
                                 enabled, execution_feasibility=hints)
     audit = result['analyst_summary']
     assert audit['proposed'] == 0
-    assert audit['accepted'] == 1, [
-        (x.get('strategy_id'), x.get('direction'), x.get('entry'),
-         x.get('zone_gap_atr15'), x.get('live_to_target_atr15'))
-        for x in hints['choices']
-    ]
+    # Both A (future sweep trigger) and B (resting pullback limit) are
+    # independently valid at the same near-market HTF support. C long would
+    # be a marketable pre-breakout limit and is intentionally excluded.
+    assert audit['accepted'] == 2, audit['execution_fallbacks']
+    assert set(x['strategy_id'] for x in audit['execution_fallbacks']) == {
+        'ict_reversal', 'trend_continuation'
+    }
     assert audit['execution_fallback']['source'] == 'server_compiled_paper_conditional'
     assert audit['execution_fallback']['strategy_id'] == 'trend_continuation'
     assert audit['fallback_accepted'] >= 1
