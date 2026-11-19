@@ -281,9 +281,9 @@ async def test_real_monitor_confirms_then_places_limit_and_fills_later(session,m
     svc=monitor.OpportunityMonitorService(MarketDataService())
     await svc.monitor_setups(session)
     first_positions=(await session.execute(select(SimPosition))).scalars().all()
-    # A sweep/reclaim or C breakout can place a *resting* limit after one
-    # closed candle; B's first red candle is not a valid bullish rejection.
-    assert len(first_positions)==(0 if sid=='trend_continuation' else 1)
+    # Signed B now rests a structural pullback LIMIT before the rejection;
+    # this is not a fake fill. A/C still use their existing proof path.
+    assert len(first_positions)==1
     assert all(p.status=='pending_entry' for p in first_positions)
     five.append(events[1]);now_ms=boundary+600000;refresh_minutes()
     await svc.monitor_setups(session)
@@ -302,7 +302,9 @@ async def test_real_monitor_confirms_then_places_limit_and_fills_later(session,m
         adverse_exit=pos.stop_loss*(1-settings.slippage_bps/10000)
         stop_cost=quantity*(pos.entry_price-adverse_exit+pos.entry_price*settings.maker_fee_rate+adverse_exit*settings.taker_fee_rate)
         assert stop_cost<=pos.extra['verified_risk_budget']['equity']*.0025
-    assert set(row.confirmation_state['confirmation_timestamps'].values())==({boundary+300000} if sid=='trend_continuation' else {boundary})
+    assert set((row.confirmation_state or {}).get('confirmation_timestamps', {}).values())==(
+        set() if sid=='trend_continuation' else {boundary}
+    )
     assert pos.extra['verified_risk_budget']['risk_fraction']==.0025
     touch_ms=max(now_ms,(pos.monitor_from_ms//60000+1)*60000)
     now_ms=touch_ms+60000;refresh_minutes()
