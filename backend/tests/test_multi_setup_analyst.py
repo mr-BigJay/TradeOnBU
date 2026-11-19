@@ -90,6 +90,16 @@ def test_empty_ai_plans_can_still_produce_signed_nearby_b_limit_without_fake_fil
     assert none['analyst_summary']['accepted'] == 0
     assert none['analyst_summary']['execution_fallback'] is None
 
+    # A geometrically valid plan is NOT automatically executable after most
+    # of the move is already spent. This avoids more missed-target limits.
+    late_series, late_costs, late_evidence, late_now = fixture()
+    late_hints = build_execution_feasibility(
+        late_evidence, late_series, late_costs, late_now, enabled)
+    late = a.compile_response(raw, late_evidence, late_series, late_costs,
+                              late_now, late_now, enabled,
+                              execution_feasibility=late_hints)
+    assert late['analyst_summary']['accepted'] == 0
+
 
 @pytest.mark.asyncio
 async def test_signed_b_preorder_post_loss_needs_newer_thesis_not_fake_5m(session, monkeypatch):
