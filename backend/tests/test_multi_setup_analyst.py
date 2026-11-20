@@ -246,8 +246,91 @@ async def test_signed_b_preorder_post_loss_needs_newer_thesis_not_fake_5m(sessio
 
 @pytest.mark.parametrize('key,value,reason',[
     ('zone_id','invented','unknown_evidence_id'),('strategy_id',[], 'invalid_strategy_direction'),
-    ('target_id','stop','target_requires_structural_level'),('invalidation_id','support_zone','invalidation_inside_zone'),
+    ('target_id','stop','target_requires_structural_level'),
     ('direction','UP','invalid_strategy_direction')])
+def test_confirmed_htf_zone_distal_edge_is_valid_structural_invalidation():
+    from app.services.execution_model_sim import auto_paper_rr_from_settings
+
+    series, costs, evidence, now = fixture()
+    for sid in a.PROFILES:
+        p = proposal(sid)
+        p['invalidation_id'] = p['zone_id']
+        approved = a.compile_plan(p, evidence, series, costs, now, now)
+        c = approved['verified_trade_plan']
+        assert c['evidence']['invalidation_source'] == 'zone_distal_edge'
+        assert c['evidence']['zone']['id'] == c['evidence']['invalidation']['id']
+        assert approved['stop_loss'] < approved['structural_invalidation_level']
+        assert approved['structural_invalidation_level'] == 1020.0
+        assert (approved['entry_price'] - approved['stop_loss']
+                >= .5 * a.atr(series['15m']))
+        assert v.plan_error(approved, now) is None
+        rr = auto_paper_rr_from_settings(
+            costs, direction='LONG', entry=approved['entry_price'],
+            sl=approved['stop_loss'], tp=approved['take_profit'],
+            min_net_rr=1.5,
+        )
+        assert rr.acceptable
+
+        # A's new sweep trigger must clear the lower HTF zone EDGE,
+        # not the easier midpoint; no AI claims to have seen the sweep.
+        if sid == 'ict_reversal':
+            assert c['confirmation_reference']['liquidity_price'] == 1020.
+            assert not approved['structural_confirmation_clear']
+
+
+def test_distinct_invalidation_inside_zone_still_rejected():
+    series, costs, evidence, now = fixture()
+    nested = {
+        'id': 'nested_stop', 'kind': 'support', 'timeframe': '1h',
+        'time_ms': now-14400000, 'low': 1020., 'high': 1022.,
+        'price': 1021.,
+    }
+    evidence.append(nested)
+    p = dict(proposal('ict_reversal'), invalidation_id='nested_stop')
+    with pytest.raises(ValueError, match='invalidation_inside_zone'):
+        a.compile_plan(p, evidence, series, costs, now, now)
+
+
+def test_near_htf_zone_edge_is_prioritized_over_implausibly_remote_stop():
+    from app.services.analyst_feasibility import build_execution_feasibility
+
+    series, costs, evidence, now = fixture()
+    evidence.append({
+        'id': 'remote_stop', 'kind': 'support', 'timeframe': '4h',
+        'time_ms': now-14400000, 'low': 850., 'high': 860.,
+        'price': 855.,
+    })
+    # This was the observed failure mode: remote 4H invalidation implies
+    # a stop far beyond volatility and cannot satisfy net reward geometry.
+    far = dict(proposal('trend_continuation'), invalidation_id='remote_stop')
+    with pytest.raises(ValueError, match='stop_too_wide'):
+        a.compile_plan(far, evidence, series, costs, now, now)
+
+    enabled = {sid: sid == 'trend_continuation' for sid in a.PROFILES}
+    scan = build_execution_feasibility(evidence, series, costs, now, enabled)
+    choices = [x for x in scan['choices']
+               if x['strategy_id'] == 'trend_continuation']
+    assert choices, scan['strategy_diagnostics']
+    assert choices[0]['invalidation_id'] == 'support_zone'
+    assert choices[0]['invalidation_source'] == 'zone_distal_edge'
+    assert choices[0]['stop_distance'] <= choices[0]['stop_distance_limit']
+    assert scan['strategy_diagnostics']['trend_continuation']['status'] == (
+        'feasible_geometry_available')
+    assert 'trend_continuation:stop_too_wide' in scan['rejection_counts']
+    nearest = scan['rejection_examples']['trend_continuation:stop_too_wide']
+    assert nearest['stop_distance'] > nearest['stop_distance_limit']
+
+
+def test_zone_edge_risk_reward_is_not_bypassed_for_close_target():
+    series, costs, evidence, now = fixture()
+    # A source-zone-derived stop must obey the same fee-adjusted net RR
+    # and the nearest obstacle, not accept any tiny projected profit.
+    evidence[-1]['price'] = 1023.
+    p = dict(proposal('ict_reversal'), invalidation_id='support_zone')
+    with pytest.raises(ValueError, match='insufficient_net_reward_before_obstacle'):
+        a.compile_plan(p, evidence, series, costs, now, now)
+
+
 def test_bad_ai_proposal_is_rejected_without_losing_siblings(key,value,reason):
     s,c,e,n=fixture();bad=proposal('ict_reversal');bad[key]=value
     r=a.compile_response({'plans':[bad,proposal('breakout_retest')]},e,s,c,n,n,{sid:True for sid in a.PROFILES})
