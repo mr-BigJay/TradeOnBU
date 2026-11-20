@@ -131,6 +131,10 @@ class BitunixMicroDataCollector:
             except asyncio.TimeoutError:
                 pass
             self._persistence_wakeup.clear()
+            if not self._running:
+                # stop() woke the worker; a single final flush below is
+                # sufficient and avoids a duplicate shutdown flush.
+                break
             try:
                 await self._flush_trades()
             except Exception:
