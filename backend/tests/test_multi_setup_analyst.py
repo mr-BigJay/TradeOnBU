@@ -244,10 +244,6 @@ async def test_signed_b_preorder_post_loss_needs_newer_thesis_not_fake_5m(sessio
     assert reason == 'confirmations_not_after_prior_same_direction_loss'
 
 
-@pytest.mark.parametrize('key,value,reason',[
-    ('zone_id','invented','unknown_evidence_id'),('strategy_id',[], 'invalid_strategy_direction'),
-    ('target_id','stop','target_requires_structural_level'),
-    ('direction','UP','invalid_strategy_direction')])
 def test_confirmed_htf_zone_distal_edge_is_valid_structural_invalidation():
     from app.services.execution_model_sim import auto_paper_rr_from_settings
 
@@ -331,6 +327,10 @@ def test_zone_edge_risk_reward_is_not_bypassed_for_close_target():
         a.compile_plan(p, evidence, series, costs, now, now)
 
 
+@pytest.mark.parametrize('key,value,reason',[
+    ('zone_id','invented','unknown_evidence_id'),('strategy_id',[], 'invalid_strategy_direction'),
+    ('target_id','stop','target_requires_structural_level'),
+    ('direction','UP','invalid_strategy_direction')])
 def test_bad_ai_proposal_is_rejected_without_losing_siblings(key,value,reason):
     s,c,e,n=fixture();bad=proposal('ict_reversal');bad[key]=value
     r=a.compile_response({'plans':[bad,proposal('breakout_retest')]},e,s,c,n,n,{sid:True for sid in a.PROFILES})
