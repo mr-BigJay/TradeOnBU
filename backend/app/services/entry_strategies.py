@@ -95,6 +95,19 @@ def validate_strategy_plan(data: dict[str, Any]) -> str | None:
             return "strategy_profile_mismatch"
     elif profile != PROFILES[sid]:
         return "strategy_profile_mismatch"
+    # New signed analyst plans may anchor invalidation exactly at the distal
+    # boundary of their independently confirmed HTF entry zone. Do NOT relax
+    # the legacy rule for unsigned/changed or unrelated invalidation levels.
+    contract_evidence = (contract.get('evidence') or {}) if analyst_verified else {}
+    zone_evidence = contract_evidence.get('zone') or {}
+    invalidation_evidence = contract_evidence.get('invalidation') or {}
+    signed_distal_edge = (
+        analyst_verified
+        and contract_evidence.get('invalidation_source') == 'zone_distal_edge'
+        and zone_evidence.get('id') is not None
+        and zone_evidence.get('id') == invalidation_evidence.get('id')
+        and zone_evidence.get('timeframe') in ('1h', '4h')
+    )
     expected_sequence = ANALYST_SEQUENCES[profile] if analyst_verified else SEQUENCES[profile]
     if "confirmation_sequence" in data and data["confirmation_sequence"] != expected_sequence:
         return "strategy_profile_mismatch"
@@ -117,11 +130,11 @@ def validate_strategy_plan(data: dict[str, Any]) -> str | None:
         if not all(math.isfinite(v) and v > 0 for v in values) or lo >= hi:
             return "invalid_strategy_levels"
         if direction == "LONG":
-            if not sl < lo < hi < tp or inv >= lo:
+            if not sl < lo < hi < tp or (inv > lo if signed_distal_edge else inv >= lo):
                 return "invalid_strategy_levels"
             rr = (tp - hi) / (hi - sl)
         else:
-            if not tp < lo < hi < sl or inv <= hi:
+            if not tp < lo < hi < sl or (inv < hi if signed_distal_edge else inv <= hi):
                 return "invalid_strategy_levels"
             rr = (lo - tp) / (sl - lo)
         if rr < 2:
