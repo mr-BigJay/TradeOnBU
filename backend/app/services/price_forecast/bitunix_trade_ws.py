@@ -24,6 +24,7 @@ STALE_AFTER_MS = 5 * 60 * 1000
 # Only one subscription and one JSON ping per 20 seconds (<< 5 msg/s limit).
 APP_PING_INTERVAL_SECONDS = 20.0
 APP_PONG_TIMEOUT_SECONDS = 20.0
+PERSIST_INTERVAL_SECONDS = 60.0
 
 
 def heartbeat_ping_payload(timestamp_seconds: int) -> str:
@@ -48,6 +49,9 @@ class BitunixMicroDataCollector:
         )
         self._running = False
         self._task: asyncio.Task | None = None
+        self._persistence_task: asyncio.Task | None = None
+        self._persistence_wakeup = asyncio.Event()
+        self._flush_lock = asyncio.Lock()
         self.ws_connected = False
         self.last_trade_at_ms: int | None = None
         self.last_flush_at_ms: int | None = None
@@ -58,6 +62,7 @@ class BitunixMicroDataCollector:
         self.last_app_pong_at_ms: int | None = None
         self.heartbeat_timeout_count = 0
         self.last_disconnect_reason: str | None = None
+        self.last_app_pong_delay_ms: int | None = None
 
     def status_payload(self) -> dict[str, Any]:
         now_ms = int(time.time() * 1000)
@@ -79,12 +84,19 @@ class BitunixMicroDataCollector:
             "last_app_pong_at_ms": self.last_app_pong_at_ms,
             "heartbeat_timeout_count": self.heartbeat_timeout_count,
             "last_disconnect_reason": self.last_disconnect_reason,
+            "last_app_pong_delay_ms": self.last_app_pong_delay_ms,
+            "persistence_worker_alive": (
+                self._persistence_task is not None and not self._persistence_task.done()
+            ),
         }
 
     def start(self) -> None:
         if self._running:
             return
         self._running = True
+        # DB commits and the 10s depth HTTP call MUST NOT block reading WS
+        # trade messages or Bitunix application-level heartbeat acknowledgments.
+        self._persistence_task = asyncio.create_task(self._persistence_loop())
         self._task = asyncio.create_task(self._run_loop())
 
     async def stop(self) -> None:
@@ -95,6 +107,43 @@ class BitunixMicroDataCollector:
                 await self._task
             except asyncio.CancelledError:
                 pass
+        self._persistence_wakeup.set()
+        if self._persistence_task:
+            # Do not cancel in-flight SQLite commits: cancellation between
+            # commit and in-memory subtraction could double-count rollups.
+            await self._persistence_task
+        else:
+            await self._flush_trades()
+
+    async def _persistence_loop(self) -> None:
+        """One serialized persistence worker, independent of socket receive.
+
+        A reconnect wakes an immediate trade flush. HTTP depth snapshots are
+        periodic only; a reconnect must not spam the Bitunix REST endpoint.
+        """
+        next_periodic = time.monotonic() + PERSIST_INTERVAL_SECONDS
+        while self._running:
+            try:
+                await asyncio.wait_for(
+                    self._persistence_wakeup.wait(),
+                    timeout=max(0.0, next_periodic - time.monotonic()),
+                )
+            except asyncio.TimeoutError:
+                pass
+            self._persistence_wakeup.clear()
+            try:
+                await self._flush_trades()
+            except Exception:
+                logger.exception("Bitunix trade WS persistence flush failed")
+            if time.monotonic() >= next_periodic:
+                try:
+                    await self._snapshot_depth()
+                except Exception:
+                    logger.exception("Bitunix depth snapshot worker failed")
+                next_periodic = time.monotonic() + PERSIST_INTERVAL_SECONDS
+
+        # Normal graceful shutdown still persists any partial trade bucket.
+        await self._flush_trades()
 
     async def _stream_connected(self, ws) -> None:
         """Collect trades with a documented Bitunix application-level heartbeat.
@@ -104,7 +153,6 @@ class BitunixMicroDataCollector:
         """
         sub = {"op": "subscribe", "args": [{"symbol": self.symbol, "ch": "trade"}]}
         await ws.send(json.dumps(sub))
-        flush_at = time.monotonic() + 60
         next_ping_at = time.monotonic() + APP_PING_INTERVAL_SECONDS
         pending_ping: int | None = None
         pending_since: float | None = None
@@ -123,10 +171,6 @@ class BitunixMicroDataCollector:
                 pending_since = time.monotonic()
                 next_ping_at = pending_since + APP_PING_INTERVAL_SECONDS
 
-            if time.monotonic() >= flush_at:
-                await self._flush_trades()
-                await self._snapshot_depth()
-                flush_at = time.monotonic() + 60
             try:
                 raw = await asyncio.wait_for(ws.recv(), timeout=5.0)
             except asyncio.TimeoutError:
@@ -137,6 +181,9 @@ class BitunixMicroDataCollector:
             if msg.get("op") == "ping":
                 if matching_heartbeat_pong(msg, pending_ping):
                     self.last_app_pong_at_ms = int(time.time() * 1000)
+                    self.last_app_pong_delay_ms = int(
+                        max(0.0, time.monotonic() - pending_since) * 1000
+                    ) if pending_since is not None else None
                     pending_ping = None
                     pending_since = None
                 continue
@@ -172,10 +219,14 @@ class BitunixMicroDataCollector:
                     logger.exception("Bitunix trade WS reconnecting")
             finally:
                 self.ws_connected = False
-                # A reconnect must not drop a partial 5m trade bucket. This
-                # upsert adds only currently unflushed events; failed DB writes
-                # remain in memory and are retried on the next flush.
-                await self._flush_trades()
+                # Do not run SQLite I/O in the WebSocket receive task.
+                # Ask the separate worker to flush partial 5m buckets.
+                if self._persistence_task and not self._persistence_task.done():
+                    self._persistence_wakeup.set()
+                else:
+                    # Compatibility for direct invocation when start() was
+                    # not used, or when persistence worker is unavailable.
+                    await self._flush_trades()
             if self._running:
                 await asyncio.sleep(5)
 
@@ -223,28 +274,31 @@ class BitunixMicroDataCollector:
                 del self._trade_buckets[bucket_ms]
 
     async def _flush_trades(self) -> None:
-        if not self._trade_buckets:
-            return
-        pending = self._snapshot_pending_buckets()
-        if not pending:
-            return
-        async with SessionLocal() as session:
-            try:
-                for bucket_ms, stats in pending.items():
-                    await upsert_trade_bucket(
-                        session,
-                        symbol=self.symbol,
-                        bucket_start_ms=bucket_ms,
-                        buy_volume=float(stats["buy_volume"]),
-                        sell_volume=float(stats["sell_volume"]),
-                        trade_count=int(stats["trade_count"]),
-                    )
-                await session.commit()
-            except Exception:
-                await session.rollback()
+        # Serialize periodic, reconnect and shutdown flushes. Concurrent
+        # snapshots of the same in-memory bucket would double-count volume.
+        async with self._flush_lock:
+            if not self._trade_buckets:
                 return
-        self._subtract_flushed(pending)
-        self.last_flush_at_ms = int(time.time() * 1000)
+            pending = self._snapshot_pending_buckets()
+            if not pending:
+                return
+            async with SessionLocal() as session:
+                try:
+                    for bucket_ms, stats in pending.items():
+                        await upsert_trade_bucket(
+                            session,
+                            symbol=self.symbol,
+                            bucket_start_ms=bucket_ms,
+                            buy_volume=float(stats["buy_volume"]),
+                            sell_volume=float(stats["sell_volume"]),
+                            trade_count=int(stats["trade_count"]),
+                        )
+                    await session.commit()
+                except Exception:
+                    await session.rollback()
+                    return
+            self._subtract_flushed(pending)
+            self.last_flush_at_ms = int(time.time() * 1000)
 
     async def _snapshot_depth(self) -> None:
         import httpx
