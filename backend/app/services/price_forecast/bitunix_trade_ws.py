@@ -20,6 +20,22 @@ logger = logging.getLogger(__name__)
 BUCKET_5M_MS = 5 * 60 * 1000
 BUCKET_1M_MS = 60 * 1000
 STALE_AFTER_MS = 5 * 60 * 1000
+# Bitunix documents JSON application ping/pong in addition to WS control frames.
+# Only one subscription and one JSON ping per 20 seconds (<< 5 msg/s limit).
+APP_PING_INTERVAL_SECONDS = 20.0
+APP_PONG_TIMEOUT_SECONDS = 20.0
+
+
+def heartbeat_ping_payload(timestamp_seconds: int) -> str:
+    return json.dumps({"op": "ping", "ping": timestamp_seconds}, separators=(",", ":"))
+
+
+def matching_heartbeat_pong(message: dict[str, Any], expected_ping: int | None) -> bool:
+    if expected_ping is None or message.get("op") != "ping":
+        return False
+    pong = message.get("pong")
+    return type(pong) is int and pong == expected_ping
+
 
 
 class BitunixMicroDataCollector:
@@ -38,6 +54,10 @@ class BitunixMicroDataCollector:
         self.last_disconnect_at_ms: int | None = None
         self.disconnect_count = 0
         self.gap_detected = False
+        self.last_app_ping_at_ms: int | None = None
+        self.last_app_pong_at_ms: int | None = None
+        self.heartbeat_timeout_count = 0
+        self.last_disconnect_reason: str | None = None
 
     def status_payload(self) -> dict[str, Any]:
         now_ms = int(time.time() * 1000)
@@ -55,6 +75,10 @@ class BitunixMicroDataCollector:
             "disconnect_count": self.disconnect_count,
             "gap_detected": self.gap_detected,
             "pending_buckets": len(self._trade_buckets),
+            "last_app_ping_at_ms": self.last_app_ping_at_ms,
+            "last_app_pong_at_ms": self.last_app_pong_at_ms,
+            "heartbeat_timeout_count": self.heartbeat_timeout_count,
+            "last_disconnect_reason": self.last_disconnect_reason,
         }
 
     def start(self) -> None:
@@ -72,35 +96,87 @@ class BitunixMicroDataCollector:
             except asyncio.CancelledError:
                 pass
 
+    async def _stream_connected(self, ws) -> None:
+        """Collect trades with a documented Bitunix application-level heartbeat.
+
+        WS control-frame pings from the library are not a substitute for the
+        exchange's JSON ping. Never interpret a ping/pong response as a trade.
+        """
+        sub = {"op": "subscribe", "args": [{"symbol": self.symbol, "ch": "trade"}]}
+        await ws.send(json.dumps(sub))
+        flush_at = time.monotonic() + 60
+        next_ping_at = time.monotonic() + APP_PING_INTERVAL_SECONDS
+        pending_ping: int | None = None
+        pending_since: float | None = None
+
+        while self._running:
+            now = time.monotonic()
+            if pending_ping is not None and pending_since is not None:
+                if now - pending_since >= APP_PONG_TIMEOUT_SECONDS:
+                    self.heartbeat_timeout_count += 1
+                    raise TimeoutError("bitunix_app_pong_timeout")
+            if now >= next_ping_at and pending_ping is None:
+                stamp = int(time.time())
+                await ws.send(heartbeat_ping_payload(stamp))
+                self.last_app_ping_at_ms = int(time.time() * 1000)
+                pending_ping = stamp
+                pending_since = time.monotonic()
+                next_ping_at = pending_since + APP_PING_INTERVAL_SECONDS
+
+            if time.monotonic() >= flush_at:
+                await self._flush_trades()
+                await self._snapshot_depth()
+                flush_at = time.monotonic() + 60
+            try:
+                raw = await asyncio.wait_for(ws.recv(), timeout=5.0)
+            except asyncio.TimeoutError:
+                continue
+            msg = json.loads(raw)
+            if not isinstance(msg, dict):
+                continue
+            if msg.get("op") == "ping":
+                if matching_heartbeat_pong(msg, pending_ping):
+                    self.last_app_pong_at_ms = int(time.time() * 1000)
+                    pending_ping = None
+                    pending_since = None
+                continue
+            if msg.get("ch") != "trade" or msg.get("symbol") not in (None, self.symbol):
+                continue
+            for tr in msg.get("data") or []:
+                if isinstance(tr, dict):
+                    self._ingest_trade(tr)
+
     async def _run_loop(self) -> None:
         url = "wss://fapi.bitunix.com/public/"
         while self._running:
             try:
-                async with websockets.connect(url, ping_interval=20, ping_timeout=20) as ws:
+                async with websockets.connect(
+                    url, ping_interval=20, ping_timeout=20
+                ) as ws:
                     self.ws_connected = True
                     self.gap_detected = self.disconnect_count > 0
-                    sub = {"op": "subscribe", "args": [{"symbol": self.symbol, "ch": "trade"}]}
-                    await ws.send(json.dumps(sub))
-                    flush_at = time.monotonic() + 60
-                    while self._running:
-                        if time.monotonic() >= flush_at:
-                            await self._flush_trades()
-                            await self._snapshot_depth()
-                            flush_at = time.monotonic() + 60
-                        try:
-                            raw = await asyncio.wait_for(ws.recv(), timeout=5.0)
-                        except asyncio.TimeoutError:
-                            continue
-                        msg = json.loads(raw)
-                        if msg.get("ch") != "trade":
-                            continue
-                        for tr in msg.get("data") or []:
-                            self._ingest_trade(tr)
-            except Exception:
-                self.ws_connected = False
+                    self.last_disconnect_reason = None
+                    await self._stream_connected(ws)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
                 self.last_disconnect_at_ms = int(time.time() * 1000)
                 self.disconnect_count += 1
-                logger.exception("Bitunix trade WS reconnecting")
+                self.gap_detected = True
+                self.last_disconnect_reason = str(exc)[:180] or type(exc).__name__
+                if isinstance(exc, (TimeoutError, websockets.exceptions.ConnectionClosed)):
+                    logger.warning(
+                        "Bitunix trade WS reconnecting: %s", self.last_disconnect_reason
+                    )
+                else:
+                    logger.exception("Bitunix trade WS reconnecting")
+            finally:
+                self.ws_connected = False
+                # A reconnect must not drop a partial 5m trade bucket. This
+                # upsert adds only currently unflushed events; failed DB writes
+                # remain in memory and are retried on the next flush.
+                await self._flush_trades()
+            if self._running:
                 await asyncio.sleep(5)
 
     def _ingest_trade(self, tr: dict[str, Any]) -> None:
