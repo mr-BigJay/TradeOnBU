@@ -58,6 +58,15 @@ when no executable plan passes the server rules. Never promise that an untouched
 plans is 0 to 3 *independently executable conditional proposals* ranked best first.
 Each plan: strategy_id (ict_reversal|trend_continuation|breakout_retest), direction (LONG|SHORT),
 zone_id, invalidation_id, target_id (exact supplied catalog IDs), reason_fa.
+When no nearby distinct confirmed invalidation exists, invalidation_id MAY equal zone_id:
+the server will use that independently confirmed 1H/4H zone's distal edge
+(below support/OB for LONG, above resistance/OB for SHORT, and the opposite
+edge of the broken 1H/4H level for breakout/retest) with an ATR-buffered
+structural stop. This is not an arbitrary or micro-candle stop. The same
+strict net 1.5R, nearest intervening HTF obstacle, stop-width safety and
+position-risk sizing remain in force. Favor the closest defensible structural
+invalidation over a distant unrelated 4H swing. Never tighten the stop to
+manufacture R:R or treat another zone's remote high/low as obligatory.
 At most one plan per strategy. Only enabled strategies. Empty plans is valid when no structurally sound, fee-adjusted conditional setup exists. A and C may propose a monitorable conditional plan BEFORE their future closed-5m sweep/breakout trigger; the monitor, not the AI, will verify the trigger before submitting a limit. B may also place a resting signed HTF pullback LIMIT early. Do not force market orders or fabricate evidence.
 Select meaningful candle-backed areas; NEVER invent price levels, IDs, confidence probabilities or confirmations. Executable support/resistance and OB source zones MUST come from 1H or 4H; 5m/15m evidence is for FVG execution precision and candle confirmation, never an arbitrary micro support/resistance trade. Prefer stops supported by structural invalidation, not micro swings.
 For continuation, 4H confirmed swing structure determines the direction: bearish => SHORT on a rally/pullback into HTF resistance/OB; bullish => LONG on a decline/pullback into HTF support/OB. Opposing 1H structure can be the correction, NOT an automatic veto. If 4H is range/unclear, use directional 1H structure. For continuation, a signed and server-validated HTF pullback zone may receive a resting paper LIMIT before a 5m directional rejection, only if price has not already touched or invalidated it. A fill still requires a later independent exchange 1m touch after order creation. This is not an immediate market entry. EMA/RSI are context, not mandatory thresholds. Breakout uses resistance for LONG or support for SHORT.
@@ -157,10 +166,19 @@ def proposal_geometry(direction, zone, invalidation, target, evidence, series, c
     live = float(series["1m"][-1].close)
     zone_gap = max(float(zone["low"]) - live, live - float(zone["high"]), 0.0)
     reference = invalidation["low"] if sign == 1 else invalidation["high"]
-    stop = _tick(reference - sign * max(.25 * vol, .1), sign)
-    if sign * (entry - stop) < vol:
-        stop = _tick(entry - sign * vol, sign)
+    # A confirmed 1H/4H zone can itself supply structural invalidation at its
+    # distal edge. An unrelated remote swing isn't required as a stop anchor.
+    # Keep an explicit ATR-scaled minimum stop distance to prevent tiny stops.
+    buffer = max(.25 * vol, .1)
+    minimum_stop_distance = max(vol, .5 * vol15)
+    stop = _tick(reference - sign * buffer, sign)
+    if sign * (entry - stop) < minimum_stop_distance:
+        stop = _tick(entry - sign * minimum_stop_distance, sign)
+    source = ("zone_distal_edge" if invalidation["id"] == zone["id"]
+              else "separate_confirmed_level")
     result = dict(entry=entry, invalidation_price=reference, stop=stop,
+                  invalidation_source=source, stop_atr_buffer=buffer,
+                  minimum_stop_distance=minimum_stop_distance,
                   atr5m=vol, atr15m=vol15, atr1h=vol1h,
                   stop_distance_limit=max(3 * vol15, vol1h),
                   stop_distance=sign * (entry-stop),
@@ -207,7 +225,8 @@ def compile_plan(proposal, evidence, series, costs, now_ms, observed_ms, *, seed
         raise ValueError('execution_requires_major_structure')
     if inv['timeframe'] not in ('1h', '4h') or inv['kind'] not in ('support', 'resistance', 'OB'):
         raise ValueError('stop_requires_major_structure')
-    if inv['kind'] in ('support','resistance') and inv['kind'] != ('support' if sign==1 else 'resistance'):
+    same_zone_invalidation = z['id'] == inv['id']
+    if not same_zone_invalidation and inv['kind'] in ('support','resistance') and inv['kind'] != ('support' if sign==1 else 'resistance'):
         raise ValueError('invalidation_level_wrong_side')
     # A level is not eligible until its confirming candles have closed.
     for item in (z, inv, target):
@@ -219,7 +238,8 @@ def compile_plan(proposal, evidence, series, costs, now_ms, observed_ms, *, seed
     if z.get('direction') and z['direction']!=direction:raise ValueError('zone_direction_conflict')
     entry=round((z['low']+z['high'])/2,1)
     invalidation=inv['low'] if sign==1 else inv['high']
-    if sign*((z['low'] if sign==1 else z['high'])-invalidation)<=0:raise ValueError('invalidation_inside_zone')
+    if not same_zone_invalidation and sign*((z['low'] if sign==1 else z['high'])-invalidation)<=0:
+        raise ValueError('invalidation_inside_zone')
     if sign*(series['1m'][-1].close-invalidation)<=0:raise ValueError('already_invalidated')
     if target['kind']!=('resistance' if sign==1 else 'support') or target['timeframe'] not in ('1h','4h'):raise ValueError('target_requires_structural_level')
     geometry = proposal_geometry(direction, z, inv, target, evidence, series, costs)
@@ -240,12 +260,18 @@ def compile_plan(proposal, evidence, series, costs, now_ms, observed_ms, *, seed
            formed_ms=observed_ms,expires_ms=expiry,breakout_level=z['price'] if sid=='breakout_retest' else None,
            evidence={'zone':z,'invalidation':inv,'target':target,'atr14':vol,'obstacle':obstacle,
                      'stop_distance_limit':stop_limit,
+                     'invalidation_source':geometry['invalidation_source'],
+                     'stop_atr_buffer':geometry['stop_atr_buffer'],
+                     'minimum_stop_distance':geometry['minimum_stop_distance'],
                      'hourly_regime':regime,'four_hour_regime':higher,'confirmed':False})
     if sid=='ict_reversal':
         # A single *closed* sweep/reclaim of the server-supplied major
         # invalidation level replaces the old mandatory sweep-plus-MSS chain.
-        c['confirmation_reference']={'liquidity_price':inv['price'], 'liquidity_id':inv['id'],
-            'liquidity_timeframe':inv['timeframe']}
+        # For the zone's own distal edge, prove a real sweep through that
+        # structural boundary, not merely a wick through its midpoint.
+        liquidity_price = (invalidation if same_zone_invalidation else inv['price'])
+        c['confirmation_reference']={'liquidity_price':liquidity_price,
+            'liquidity_id':inv['id'], 'liquidity_timeframe':inv['timeframe']}
     from app.services.analyst_confirmation import recent_confirmations
     c['seed_confirmations']=recent_confirmations(c,series['5m'],observed_ms) if seed else {}
     c['opportunity_id']=f"{VERSION}:{sid}:{direction}:{z['id']}:{observed_ms//14400000}"
