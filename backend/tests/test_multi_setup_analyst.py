@@ -338,7 +338,7 @@ def test_near_htf_zone_edge_is_prioritized_over_implausibly_remote_stop():
     series, costs, evidence, now = fixture()
     evidence.append({
         'id': 'remote_stop', 'kind': 'support', 'timeframe': '4h',
-        'time_ms': now-14400000, 'low': 850., 'high': 860.,
+        'time_ms': now-72*3600000, 'low': 850., 'high': 860.,
         'price': 855.,
     })
     # This was the observed failure mode: remote 4H invalidation implies
