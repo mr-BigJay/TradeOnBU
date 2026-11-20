@@ -260,6 +260,8 @@ def test_confirmed_htf_zone_distal_edge_is_valid_structural_invalidation():
         assert (approved['entry_price'] - approved['stop_loss']
                 >= .5 * a.atr(series['15m']))
         assert v.plan_error(approved, now) is None
+        from app.services.entry_strategies import validate_strategy_plan
+        assert validate_strategy_plan(approved) is None
         rr = auto_paper_rr_from_settings(
             costs, direction='LONG', entry=approved['entry_price'],
             sl=approved['stop_loss'], tp=approved['take_profit'],
@@ -272,6 +274,49 @@ def test_confirmed_htf_zone_distal_edge_is_valid_structural_invalidation():
         if sid == 'ict_reversal':
             assert c['confirmation_reference']['liquidity_price'] == 1020.
             assert not approved['structural_confirmation_clear']
+
+
+@pytest.mark.asyncio
+async def test_all_three_signed_zone_edge_plans_survive_persistence(session, monkeypatch):
+    from app.models import AiAnalysisRun
+    from app.services.strategy_candidates import persist_strategy_candidates
+
+    monkeypatch.setenv('MULTI_SETUP_ANALYST_ENABLED', '1')
+    series, costs, evidence, now = fixture()
+    proposals = []
+    for sid in a.PROFILES:
+        item = proposal(sid)
+        item['invalidation_id'] = item['zone_id']
+        proposals.append(item)
+    result = a.compile_response({'plans': proposals}, evidence, series, costs,
+                                now, now, {sid: True for sid in a.PROFILES})
+    assert result['analyst_summary']['accepted'] == 3, result['analyst_summary']
+    run = AiAnalysisRun(trigger='manual', status='completed', structured=result)
+    session.add(run)
+    await session.flush()
+    rows, meta = await persist_strategy_candidates(
+        session, run_id=run.id, symbol='BTCUSDT', structured=result)
+    assert set(rows) == set(a.PROFILES), meta
+    for sid, row in rows.items():
+        assert row.lifecycle_state == 'WAIT_LONG'
+        assert row.invalidation_level == 1020.0
+        assert not (row.confirmation_state or {}).get('confirmation_timestamps')
+        assert row.structured_snapshot['verified_trade_plan']['evidence'][
+            'invalidation_source'] == 'zone_distal_edge'
+
+
+def test_unsigned_plan_cannot_use_zone_distal_edge_loophole():
+    from app.services.entry_strategies import validate_strategy_plan
+
+    series, costs, evidence, now = fixture()
+    p = dict(proposal('trend_continuation'), invalidation_id='support_zone')
+    plan = a.compile_plan(p, evidence, series, costs, now, now)
+    # Even a complete signed plan loses approval if its evidence binding is
+    # altered to claim an unrelated or falsified distal-edge stop.
+    tampered = deepcopy(plan)
+    tampered['verified_trade_plan']['evidence']['invalidation_source'] = 'forged'
+    assert v.plan_error(tampered) == 'verified_plan_contract_changed'
+    assert validate_strategy_plan(tampered) == 'strategy_profile_mismatch'
 
 
 def test_distinct_invalidation_inside_zone_still_rejected():
