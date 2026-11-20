@@ -362,6 +362,58 @@ def test_near_htf_zone_edge_is_prioritized_over_implausibly_remote_stop():
     assert nearest['stop_distance'] > nearest['stop_distance_limit']
 
 
+def test_bearish_4h_continuation_uses_local_resistance_not_remote_swing():
+    """Reproduce the 65k resistance / 76k remote stop failure pattern."""
+    from app.services.analyst_feasibility import build_execution_feasibility
+
+    now = int(datetime.now(timezone.utc).timestamp() * 1000)
+    series = {}
+    for tf, step in a.STEPS.items():
+        boundary = now // step * step
+        prices = [67500 - i * 21 + 110 * math.sin(i * math.pi / 4)
+                  for i in range(48)]
+        series[tf] = [
+            Candle(p, p + 20, p - 20, p, boundary - (48 - i) * step)
+            for i, p in enumerate(prices)
+        ]
+    costs = fixture()[1]
+    evidence = [
+        dict(id='htf_resistance', kind='resistance', timeframe='4h',
+             time_ms=now - 72 * 3600000, low=66420., high=66580.,
+             price=66500.),
+        dict(id='far_resistance', kind='resistance', timeframe='4h',
+             time_ms=now - 72 * 3600000, low=76000., high=76359.,
+             price=76179.5),
+        dict(id='target_support', kind='support', timeframe='1h',
+             time_ms=now - 6 * 3600000, low=65980., high=66020.,
+             price=66000.),
+    ]
+    proposal_short = {
+        'strategy_id': 'trend_continuation', 'direction': 'SHORT',
+        'zone_id': 'htf_resistance', 'invalidation_id': 'htf_resistance',
+        'target_id': 'target_support',
+        'reason_fa': 'فروش روی پولبک به مقاومت معتبر چهار ساعته',
+    }
+    plan = a.compile_plan(proposal_short, evidence, series, costs, now, now)
+    assert plan['market_regime'] == 'bearish'
+    assert plan['stop_loss'] > 66580.
+    assert plan['stop_loss'] < 67000.
+    assert plan['take_profit'] < plan['entry_price']
+    assert v.plan_error(plan, now) is None
+
+    remote = dict(proposal_short, invalidation_id='far_resistance')
+    with pytest.raises(ValueError, match='stop_too_wide'):
+        a.compile_plan(remote, evidence, series, costs, now, now)
+
+    enabled = {sid: sid == 'trend_continuation' for sid in a.PROFILES}
+    scan = build_execution_feasibility(evidence, series, costs, now, enabled)
+    assert scan['feasible_counts']['trend_continuation:SHORT'] >= 1
+    assert any(
+        x['invalidation_source'] == 'zone_distal_edge'
+        and x['direction'] == 'SHORT' for x in scan['choices']
+    )
+
+
 def test_zone_edge_risk_reward_is_not_bypassed_for_close_target():
     series, costs, evidence, now = fixture()
     # A source-zone-derived stop must obey the same fee-adjusted net RR
