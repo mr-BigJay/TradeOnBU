@@ -379,7 +379,7 @@ def test_bearish_4h_continuation_uses_local_resistance_not_remote_swing():
     costs = fixture()[1]
     evidence = [
         dict(id='htf_resistance', kind='resistance', timeframe='4h',
-             time_ms=now - 72 * 3600000, low=66420., high=66580.,
+             time_ms=now - 72 * 3600000, low=66390., high=66610.,
              price=66500.),
         dict(id='far_resistance', kind='resistance', timeframe='4h',
              time_ms=now - 72 * 3600000, low=76000., high=76359.,
@@ -396,7 +396,7 @@ def test_bearish_4h_continuation_uses_local_resistance_not_remote_swing():
     }
     plan = a.compile_plan(proposal_short, evidence, series, costs, now, now)
     assert plan['market_regime'] == 'bearish'
-    assert plan['stop_loss'] > 66580.
+    assert plan['stop_loss'] > 66610.
     assert plan['stop_loss'] < 67000.
     assert plan['take_profit'] < plan['entry_price']
     assert v.plan_error(plan, now) is None
