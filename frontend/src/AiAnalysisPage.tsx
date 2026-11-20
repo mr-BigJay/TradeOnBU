@@ -238,9 +238,13 @@ export function AiAnalysisPage({ onOpenPaperPosition }: Props) {
                   ایجاد پوزیشن تمرینی
                 </button>
               )}
-              <IndicatorContext features={(detail.structured?._artifacts as Record<string, unknown> | undefined)?.strategy_features} />
-              <StrategyDiagnostics structured={detail.structured} />
-              <pre>{detail.report_fa || ""}</pre>
+              <pre dir="rtl">{detail.report_fa || ""}</pre>
+              <details className="card" dir="rtl">
+                <summary>جزئیات فنی (اندیکاتورها، وضعیت ثبت ستاپ‌ها و شناسه‌ها)</summary>
+                <p className="hint">اطلاعات کامل برای بررسی تخصصی محفوظ است؛ خلاصهٔ بالا ملاک نمایش اصلی است.</p>
+                <StrategyDiagnostics structured={detail.structured} />
+                <IndicatorContext features={(detail.structured?._artifacts as Record<string, unknown> | undefined)?.strategy_features} />
+              </details>
             </div>
           </div>
         </div>

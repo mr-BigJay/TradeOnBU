@@ -606,49 +606,16 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
             structured['verified_plan_review'] = verified_review_meta
         review = structure_shadow.validate_review(shadow_candidates, structured.pop("shadow_review", None))
         structured = prepare_structured_for_user_report(structured)
-        structured["report_fa"] = finalize_user_report(structured, symbol=symbol, live=live)
         if analyst_mode:
-            overview=structured['analyst_summary']
-            reports=[structured['report_fa']]+[finalize_user_report(p,symbol=symbol,live=live) for p in structured.get('strategy_candidates',{}).values()]
-            frames = overview['execution_regime']['timeframes']
-            regime_names = {'bullish': 'صعودی', 'bearish': 'نزولی',
-                             'range': 'رنج', 'ranging': 'رنج', 'unclear': 'نامشخص'}
-            regime_head = ("روند ساختاری بر اساس Swingهای تأییدشده: "
-                           f"1H={regime_names.get(frames['1h']['trend'], 'نامشخص')}؛ "
-                           f"4H={regime_names.get(frames['4h']['trend'], 'نامشخص')}.")
-            from app.services.analyst_outlook import (
-                format_forecasts_fa, format_major_levels_fa,
-                format_market_features_fa, safe_model_narrative_fa,
-            )
-            outlook_text = format_forecasts_fa(overview['forecast_scenarios'])
-            major_text = format_major_levels_fa(overview.get('outlook_major_levels', []))
-            market_text = safe_model_narrative_fa(overview.get('market_summary_fa'))
-            if not market_text:
-                market_text = format_market_features_fa(features, overview.get('execution_regime') or {})
-            comparison_text = safe_model_narrative_fa(overview.get('comparison_fa'))
-            fallback_setups = overview.get('execution_fallbacks') or []
-            fallback_text = ''
-            if fallback_setups:
-                names = {
-                    'ict_reversal': 'A (برگشت ICT)',
-                    'trend_continuation': 'B (ادامه‌روند)',
-                    'breakout_retest': 'C (شکست و بازآزمایی)',
-                }
-                selected = '، '.join(names.get(f.get('strategy_id'), '?')
-                                     for f in fallback_setups)
-                fallback_text = (
-                    'پلن‌های مشروط ساختاریِ سرور (نه پیشنهاد مستقیم AI): '
-                    + selected
-                    + '. برای A و C ابتدا تأیید واقعی کندل ۵دقیقه‌ای لازم است؛ '
-                      'برای B امکان سفارش Limit پیش از آن وجود دارد. '
-                      'هیچ سفارش پرشده یا پوزیشن بازشده‌ای فرض نشده است.'
-                )
-            structured['report_fa'] = '\n\n'.join(
-                part for part in (
-                    regime_head, market_text, major_text, outlook_text,
-                    comparison_text, fallback_text, *reports
-                )
-                if part
+            # The model still receives the *complete* evidence/indicator payload.
+            # Only the user-visible analyst report is compact. Every signed
+            # A/B/C trade level, strategy candidate and forecast remains in
+            # structured JSON and passes through the unchanged paper gates.
+            from app.services.analyst_brief_report import compact_analyst_report_fa
+            structured["report_fa"] = compact_analyst_report_fa(structured, live=live)
+        else:
+            structured["report_fa"] = finalize_user_report(
+                structured, symbol=symbol, live=live
             )
         safety = _paper_safety_notes(structured, live)
         draft.decision = str(structured.get("decision", "NO_TRADE")).upper()
