@@ -28,29 +28,52 @@ def build_execution_feasibility(evidence, series, costs, observed_ms, strategies
                     rejected[sid + ":no_structural_target"] += 1
                     continue
                 target = min(targets, key=lambda x: sign*x["price"])
-                for inv in major:
-                    if inv["kind"] != ("support" if sign == 1 else "resistance") and inv["kind"] != "OB":
+                # Check the zone's own *confirmed HTF distal edge* first.
+                # Separate support/resistance/OB levels remain alternatives,
+                # but remote 4H pivots no longer dominate the stop search.
+                for inv in [zone] + [x for x in major if x["id"] != zone["id"]]:
+                    same_zone = inv["id"] == zone["id"]
+                    if not same_zone and inv["kind"] != (
+                        "support" if sign == 1 else "resistance"
+                    ) and inv["kind"] != "OB":
                         continue
-                    # Impossible same/inner levels never reach the compiler.
                     edge = inv["low"] if sign == 1 else inv["high"]
                     zone_edge = zone["low"] if sign == 1 else zone["high"]
-                    if sign*(zone_edge-edge) <= 0:
+                    if not same_zone and sign * (zone_edge - edge) <= 0:
                         continue
-                    proposal = dict(strategy_id=sid, direction=direction, zone_id=zone["id"],
-                        invalidation_id=inv["id"], target_id=target["id"],
-                        reason_fa="نمونهٔ هندسه برای ارزیابی تحلیل‌گر؛ تأیید ورود نیست.")
+                    proposal = dict(
+                        strategy_id=sid, direction=direction,
+                        zone_id=zone["id"], invalidation_id=inv["id"],
+                        target_id=target["id"],
+                        reason_fa="نمونهٔ هندسه برای ارزیابی تحلیل‌گر؛ تأیید ورود نیست.",
+                    )
+                    geometry = proposal_geometry(
+                        direction, zone, inv, target, evidence, series, costs
+                    )
                     try:
-                        compile_plan(proposal, evidence, series, costs,
-                                            observed_ms, observed_ms, seed=False)
+                        compile_plan(
+                            proposal, evidence, series, costs,
+                            observed_ms, observed_ms, seed=False
+                        )
                     except ValueError as exc:
                         key = sid + ":" + str(exc)
                         rejected[key] += 1
-                        if key not in examples:
-                            examples[key] = proposal_geometry(
-                                direction, zone, inv, target, evidence, series, costs)
+                        # Record the *closest* rejected structural stop rather
+                        # than the first arbitrarily far 4H stop in the catalog.
+                        old = examples.get(key)
+                        if old is None or geometry["stop_distance"] < old["stop_distance"]:
+                            examples[key] = geometry | {
+                                "zone_id": zone["id"],
+                                "invalidation_id": inv["id"],
+                                "target_id": target["id"],
+                                "zone_timeframe": zone["timeframe"],
+                                "invalidation_timeframe": inv["timeframe"],
+                            }
                         continue
-                    geometry = proposal_geometry(direction, zone, inv, target, evidence, series, costs)
-                    group.append({k:v for k,v in proposal.items() if k != "reason_fa"} | geometry)
+                    group.append(
+                        {k: v for k, v in proposal.items() if k != "reason_fa"}
+                        | geometry
+                    )
             counts[sid + ":" + direction] = len(group)
             # Keep prompt size bounded, diversify entry areas. This is NOT an allowlist.
             group.sort(key=lambda p: (abs(p["entry"]-series["1m"][-1].close), p["stop_distance"]))
@@ -62,8 +85,29 @@ def build_execution_feasibility(evidence, series, costs, observed_ms, strategies
                 choices.append(item)
                 if len(seen_zones) == 4:
                     break
-    return dict(policy="advisory_geometry_v1", confirmed=False,
-                note="Examples only, not an allowlist or orders. Other catalog combinations remain allowed. "
-                     "Counts are geometry combinations, not distinct signals. Signed B pullback PAPER limits may rest before a 5m reaction; all LIMITs require a real later post-registration 1m price touch for fill. A/C still need closed-5m proof.",
-                choices=choices, feasible_counts=dict(counts), rejection_counts=dict(rejected),
-                rejection_examples=examples)
+    # Make it explicit whether the missing signal is due to no signed HTF
+    # geometry versus a downstream WAIT/order gate. Counts are combinations.
+    blocked = {}
+    for sid in PROFILES:
+        if not strategies.get(sid):
+            continue
+        valid = sum(counts.get(sid + ":" + direction, 0)
+                    for direction in ("LONG", "SHORT"))
+        if valid:
+            blocked[sid] = {"status": "feasible_geometry_available", "valid_combinations": valid}
+            continue
+        relevant = {
+            key.split(":", 1)[1]: value for key, value in rejected.items()
+            if key.startswith(sid + ":")
+        }
+        blocked[sid] = {
+            "status": "no_feasible_structural_geometry",
+            "top_rejections": sorted(
+                relevant.items(), key=lambda item: (-item[1], item[0])
+            )[:5],
+        }
+    return dict(policy="nearest_confirmed_htf_invalidation_v2", confirmed=False,
+                note="Candidate geometry only, NOT orders or fills. Invalidation may use the confirmed 1H/4H source zone distal edge with ATR floor or a separate nearby confirmed HTF level. Net fee-adjusted >=1.5R, stop width, obstacles and live-price checks remain enforced. A/C require a later genuine 5m trigger; B may rest a signed paper LIMIT before rejection, with a real later 1m touch for fill.",
+                choices=choices, feasible_counts=dict(counts),
+                rejection_counts=dict(rejected), rejection_examples=examples,
+                strategy_diagnostics=blocked)
