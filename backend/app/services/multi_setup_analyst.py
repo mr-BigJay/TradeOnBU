@@ -14,7 +14,7 @@ from app.services.analyst_outlook import compile_forecasts
 from app.services.analyst_major_levels import select_major_levels, minimum_forecast_gap
 
 VERSION = 'multi_setup_analyst_v1'
-PROMPT_VERSION = 9
+PROMPT_VERSION = 10
 STEPS = {'1m':60000,'5m':300000,'15m':900000,'1h':3600000,'4h':14400000}
 # Signed intraday opportunities may wait for an HTF pullback across six 4H bars.
 # The monitor still retires on structural invalidation or target-before-order.
@@ -69,7 +69,7 @@ invalidation over a distant unrelated 4H swing. Never tighten the stop to
 manufacture R:R or treat another zone's remote high/low as obligatory.
 At most one plan per strategy. Only enabled strategies. Empty plans is valid when no structurally sound, fee-adjusted conditional setup exists. A and C may propose a monitorable conditional plan BEFORE their future closed-5m sweep/breakout trigger; the monitor, not the AI, will verify the trigger before submitting a limit. B may also place a resting signed HTF pullback LIMIT early. Do not force market orders or fabricate evidence.
 Select meaningful candle-backed areas; NEVER invent price levels, IDs, confidence probabilities or confirmations. Executable support/resistance and OB source zones MUST come from 1H or 4H; 5m/15m evidence is for FVG execution precision and candle confirmation, never an arbitrary micro support/resistance trade. Prefer stops supported by structural invalidation, not micro swings.
-For continuation, 4H confirmed swing structure determines the direction: bearish => SHORT on a rally/pullback into HTF resistance/OB; bullish => LONG on a decline/pullback into HTF support/OB. Opposing 1H structure can be the correction, NOT an automatic veto. If 4H is range/unclear, use directional 1H structure. For continuation, a signed and server-validated HTF pullback zone may receive a resting paper LIMIT before a 5m directional rejection, only if price has not already touched or invalidated it. A fill still requires a later independent exchange 1m touch after order creation. This is not an immediate market entry. EMA/RSI are context, not mandatory thresholds. Breakout uses resistance for LONG or support for SHORT.
+For continuation, also compare fresh directional 5m/15m FVG pullbacks on the resting side of price with a separately confirmed HTF invalidation and structural target. Prefer the nearest executable pullback. For continuation, 4H confirmed swing structure determines the direction: bearish => SHORT on a rally/pullback into HTF resistance/OB; bullish => LONG on a decline/pullback into HTF support/OB. Opposing 1H structure can be the correction, NOT an automatic veto. If 4H is range/unclear, use directional 1H structure. For continuation, a signed and server-validated HTF pullback zone may receive a resting paper LIMIT before a 5m directional rejection, only if price has not already touched or invalidated it. A fill still requires a later independent exchange 1m touch after order creation. This is not an immediate market entry. EMA/RSI are context, not mandatory thresholds. Breakout uses resistance for LONG or support for SHORT.
 execution_feasibility contains server-checked geometry choices using actual paper costs and the nearest structural obstacle. It also includes zone_gap_atr15 and live_to_target_atr15: compare travel needed to reach an entry zone against the remaining room to the target. When trend-continuation B is far from current price while the target is close, do not repeatedly select an implausible B pullback; assess a valid same-direction breakout/retest C instead. For a structurally sound B LIMIT proposal, do NOT require the current price to already touch the HTF zone or the 5m candle to already reject it: the order is intentionally posted in advance. For A/C conditional plans, the reversal sweep or breakout close is a future MONITOR trigger, not an AI proposal prerequisite. Review execution_feasibility.choices first: each has already passed compiler geometry, trend alignment, historical level confirmation and minimum net R:R. Prefer such nearby, still reachable B proposals when justified; do not invent IDs or turn watch-only forecasts into positions. If feasible choices are deliberately omitted, give a specific qualitative objection beyond mere distance or absent immediate 5m confirmation. This is advisory, not a new eligibility gate. Use these to avoid impossible entry/stop/target combinations, then assess market quality yourself. They are NOT confirmed signals or mandatory selections. You may propose other catalog combinations; all pass the same final validation. If no plan is selected, explain whether geometry or market evidence is the reason. Never invent a plan to meet a quota.
 Explain why each selected scenario is preferable and why alternatives were not selected.
 Server derives midpoint limit entry, ATR-buffered structural stop and cost-adjusted target before the nearest obstacle.
@@ -156,6 +156,14 @@ async def review_allowed(session, now):
                 and int(usage.get('output_tokens') or 0)<5000),slot
 
 
+def fresh_pullback_gap(zone, direction, live):
+    """A confirmed untested imbalance entirely on the pullback side of price."""
+    return (zone["kind"] == "FVG" and zone["timeframe"] in ("5m", "15m")
+            and zone.get("status") == "fresh" and zone.get("confirmed_ms") is not None
+            and zone.get("direction") == direction
+            and (live > zone["high"] if direction == "LONG" else live < zone["low"]))
+
+
 def proposal_geometry(direction, zone, invalidation, target, evidence, series, costs=None):
     """One price/risk calculation for compilation, preflight and diagnostics."""
     from app.domain.paper_execution_policy import HARD_MIN_AUTO_PAPER_NET_RR
@@ -216,13 +224,12 @@ def compile_plan(proposal, evidence, series, costs, now_ms, observed_ms, *, seed
     aligned='bullish' if sign==1 else 'bearish';opposed='bearish' if sign==1 else 'bullish'
     if sid=='trend_continuation' and continuation_direction(frames)!=direction:raise ValueError('continuation_trend_conflict')
     if sid=='breakout_retest' and z['kind']!=('resistance' if sign==1 else 'support'):raise ValueError('breakout_requires_level')
-    if sid in ('ict_reversal','trend_continuation') and z['kind'] not in (('support' if sign==1 else 'resistance'),'OB'):raise ValueError('reversal_continuation_requires_support_resistance')
-    # Do not promote arbitrary lower-timeframe pivots or OBs to primary trade levels.
-    # LTF FVGs may still refine entry when the 1H trend and structural stop support it.
-    if z['kind'] in ('support', 'resistance', 'OB') and z['timeframe'] not in ('1h', '4h'):
-        raise ValueError('execution_requires_major_structure')
-    if z['timeframe'] not in ('1h', '4h') or z['kind'] not in ('support', 'resistance', 'OB'):
-        raise ValueError('execution_requires_major_structure')
+    shallow = sid == 'trend_continuation' and fresh_pullback_gap(z, direction, series['1m'][-1].close)
+    if not shallow:
+        if sid in ('ict_reversal','trend_continuation') and z['kind'] not in (('support' if sign==1 else 'resistance'),'OB'):
+            raise ValueError('reversal_continuation_requires_support_resistance')
+        if z['timeframe'] not in ('1h', '4h') or z['kind'] not in ('support', 'resistance', 'OB'):
+            raise ValueError('execution_requires_major_structure')
     if inv['timeframe'] not in ('1h', '4h') or inv['kind'] not in ('support', 'resistance', 'OB'):
         raise ValueError('stop_requires_major_structure')
     same_zone_invalidation = z['id'] == inv['id']
@@ -279,6 +286,8 @@ def compile_plan(proposal, evidence, series, costs, now_ms, observed_ms, *, seed
     c.update(as_of_ms=observed_ms,approved_at_ms=now_ms)
     trade_regime = higher if sid == 'trend_continuation' and higher in ('bullish', 'bearish') else regime
     trigger=TRIGGERS[sid]
+    if shallow:
+        trigger = f"سفارش Limit روی اصلاح در FVG تایم {z['timeframe']} با حد ضرر ساختاری 1H/4H؛ ورود پس از لمس قیمت سفارش."
     if sid=='ict_reversal':
         ref=c['confirmation_reference']
         trigger=f"Sweep و بازپس‌گیری معتبر سطح {ref['liquidity_price']:g} با کندل بستهٔ 5m؛ ثبت سفارش Limit برای پولبک بعدی."
