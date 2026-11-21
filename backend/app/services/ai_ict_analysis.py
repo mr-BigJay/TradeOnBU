@@ -133,6 +133,12 @@ def _candles_from_payload(market: dict[str, Any], interval: str = "15m") -> list
 def _levels_for_chart(structured: dict[str, Any]) -> dict[str, float] | None:
     decision = str(structured.get("decision", "NO_TRADE")).upper()
     if decision not in ("LONG", "SHORT"):
+        plan = structured.get("verified_trade_plan") or {}
+        result = ((structured.get("_artifacts") or {}).get("strategy_persistence") or {}).get(structured.get("strategy_id")) or {}
+        if result.get("chart_levels"):
+            return result["chart_levels"]
+        if plan and (result.get("created") or result.get("updated")):
+            return {"entry": plan["entry"], "stop_loss": plan["stop"], "take_profit": plan["target"]}
         return None
     try:
         return {
@@ -238,6 +244,10 @@ async def _deliver_ai_telegram(
         symbol=symbol, live=live, decision=draft.decision, structured=draft.structured,
         validation=draft.validation, report_fa=draft.report_fa, analyzed_at=analyzed_at,
     )
+    decisions = (draft.structured.get("_artifacts") or {}).get("strategy_persistence") or {}
+    notes = [item["idea_fa"] for item in decisions.values() if item.get("idea_fa")]
+    if notes:
+        full_text = "\n".join(notes) + "\n\n" + full_text
     caption = build_ai_telegram_caption(
         symbol=symbol, live=live, decision=draft.decision, structured=draft.structured,
         validation=draft.validation, analyzed_at=analyzed_at,
