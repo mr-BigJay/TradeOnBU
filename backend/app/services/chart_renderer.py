@@ -194,6 +194,21 @@ def render_ict_chart_png(
                 ha="left",
             )
 
+    if trade_levels and live_price > 0:
+        entry, target = trade_levels.get("entry"), trade_levels.get("take_profit")
+        if entry and target and entry > 0 and target > 0:
+            bottom, top = ax.get_ylim()
+            bottom = min(bottom, live_price, entry, target, trade_levels.get("stop_loss") or entry)
+            top = max(top, live_price, entry, target, trade_levels.get("stop_loss") or entry)
+            padding = (top - bottom) * 0.06
+            ax.set_ylim(bottom - padding, top + padding)
+            step = max(4, len(df) // 10)
+            ax.plot([last_x, last_x + step, last_x + 2 * step],
+                    [live_price, entry, target], "--o", color="#e9d5ff",
+                    linewidth=1.5, markersize=4, label="Possible path: price → entry → TP")
+            ax.set_xlim(ax.get_xlim()[0], last_x + 2 * step + 2)
+            ax.legend(loc="upper left")
+
     # Liquidity levels from structure analysis
     for lvl in overlays.get("liquidity_levels") or []:
         try:
