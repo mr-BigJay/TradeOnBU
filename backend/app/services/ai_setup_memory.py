@@ -812,6 +812,36 @@ async def _find_duplicate_open(
     return None
 
 
+def _idea_origin(contract):
+    from app.services.multi_setup_analyst import VERSION
+    if contract.get("version") != VERSION:
+        return None
+    zone = (contract.get("evidence") or {}).get("zone") or {}
+    if not zone.get("time_ms"):
+        return None
+    return (contract.get("strategy_id"), zone.get("kind"), zone.get("timeframe"), zone["time_ms"])
+
+
+async def _previous_idea(session, symbol, direction, contract, origin):
+    zone = contract["evidence"]["zone"]
+    rows = (await session.scalars(select(AiProposedSetup).where(
+        AiProposedSetup.symbol == symbol, AiProposedSetup.direction == direction,
+        AiProposedSetup.structured_snapshot["verified_trade_plan"]["evidence"]["zone"]["time_ms"].as_integer() == zone["time_ms"],
+    ).order_by(AiProposedSetup.id.desc()))).all()
+    for row in rows:
+        previous = (row.structured_snapshot or {}).get("verified_trade_plan") or {}
+        if _idea_origin(previous) != origin:
+            continue
+        stamps = (contract.get("seed_confirmations") or {}).get("confirmation_timestamps") or {}
+        event = {"ict_reversal": "htf_sweep_reclaim", "breakout_retest": "breakout_close"}.get(origin[0])
+        old_stamps = (row.confirmation_state or {}).get("confirmation_timestamps") or {}
+        boundary = max(previous.get("formed_ms") or 0, old_stamps.get(event) or 0)
+        if event and stamps.get(event, 0) > boundary and row.lifecycle_state not in ACTIVE_MONITOR_STATES:
+            return None
+        return row
+    return None
+
+
 async def _persist_conditional_setup(
     session: AsyncSession,
     *,
@@ -834,7 +864,20 @@ async def _persist_conditional_setup(
     )
 
     direction = plan["potential_direction"]
-    dup = await _find_duplicate_open(session, symbol=symbol, direction=direction, entry=plan["proposed_entry_mid"], candidate_strategy=structured.get("strategy_id", "ict_reversal"))
+    contract = structured.get("verified_trade_plan") or {}
+    origin = _idea_origin(contract)
+    if origin:
+        previous = await _previous_idea(session, symbol, direction, contract, origin)
+        if previous:
+            return None, {**meta, "skipped": True, "reason": "existing_structural_idea",
+                          "setup_id": previous.setup_id, "lifecycle_state": previous.lifecycle_state,
+                          "chart_levels": {"entry": previous.entry_price, "stop_loss": previous.stop_loss,
+                                           "take_profit": previous.take_profit}
+                          if previous.lifecycle_state in ACTIVE_MONITOR_STATES and previous.lifecycle_state != POSITION_OPEN else None,
+                          "idea_fa": f"ادامهٔ ایدهٔ شمارهٔ {previous.id}؛ وضعیت {previous.lifecycle_state}."}
+        dup = None
+    else:
+        dup = await _find_duplicate_open(session, symbol=symbol, direction=direction, entry=plan["proposed_entry_mid"], candidate_strategy=structured.get("strategy_id", "ict_reversal"))
     if dup:
         from app.services.entry_strategies import strategy_id
         if strategy_id(dup.structured_snapshot or {}) != strategy_id(structured):
@@ -937,6 +980,9 @@ async def _persist_conditional_setup(
     _store_original_forecast(row)
     meta["created"] = True
     meta["setup_id"] = row.setup_id
+    if origin:
+        zone = contract["evidence"]["zone"]
+        meta["idea_fa"] = f"ایدهٔ شمارهٔ {row.id} بر اساس ناحیهٔ {zone['timeframe']} در قیمت {row.entry_price:,.1f} ثبت شد."
     meta["reason"] = "conditional_created"
     meta["quality_audit"] = quality_audit
     return row, meta
