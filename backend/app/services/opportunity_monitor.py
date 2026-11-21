@@ -449,12 +449,21 @@ async def _monitor_pending_structural_invalidation(
     setup.last_monitor_at = now
 
 
+def _signed_analyst_setup(setup):
+    from app.services.multi_setup_analyst import VERSION
+    contract = (setup.structured_snapshot or {}).get("verified_trade_plan") or {}
+    return contract.get("version") == VERSION
+
+
 def _promotion_confirmations_met(
     *,
     live_engine: str,
     policy,
     conf_state: dict[str, Any],
+    signed_analyst: bool = False,
 ) -> bool:
+    if signed_analyst:
+        return promotion_ready(policy, conf_state, allow_pre_entry=True)
     if live_engine == ENTRY_MODE_STRICT:
         return strict_promotion_ready(policy=policy, confirmation_state=conf_state)
     return balanced_promotion_ready(
@@ -525,7 +534,7 @@ async def _attempt_ready_paper_order(
     conf_state = setup.confirmation_state or {}
     policy = policy_for_setup(setup, sequence)
     allow_pre_entry = (
-        order_engine == ENTRY_MODE_BALANCED
+        (order_engine == ENTRY_MODE_BALANCED or _signed_analyst_setup(setup))
         and promotion_ready(policy, conf_state, allow_pre_entry=True)
         and not promotion_ready(policy, conf_state, allow_pre_entry=False)
     )
@@ -1071,7 +1080,7 @@ class OpportunityMonitorService:
             inv_reason: str | None = None
 
             from app.services.multi_setup_analyst import VERSION as ANALYST_VERSION
-            analyst_5m=(structured.get('verified_trade_plan') or {}).get('version')==ANALYST_VERSION
+            analyst_5m = _signed_analyst_setup(setup)
             if live_engine == ENTRY_MODE_BALANCED and new_1m and not analyst_5m:
                 progress_1m = process_balanced_new_closed_1m_bars(
                     direction=setup.direction,
@@ -1185,6 +1194,7 @@ class OpportunityMonitorService:
                     live_engine=live_engine,
                     policy=policy,
                     conf_state=conf_state,
+                    signed_analyst=analyst_5m,
                 ):
                     setup.last_rejection_reason = REASON_MISSING_CONFIRMATIONS
                     setup.last_validation_result = {
@@ -1264,6 +1274,7 @@ class OpportunityMonitorService:
                     live_engine=live_engine,
                     policy=policy,
                     conf_state=conf_state,
+                    signed_analyst=analyst_5m,
                 ):
                     setup.lifecycle_state = wait_state_for_direction(setup.direction)
                     setup.last_rejection_reason = REASON_MISSING_CONFIRMATIONS
@@ -1291,6 +1302,7 @@ class OpportunityMonitorService:
                     live_engine=live_engine,
                     policy=policy,
                     conf_state=conf_state,
+                    signed_analyst=analyst_5m,
                 ):
                     setup.lifecycle_state = wait_state_for_direction(setup.direction)
                     setup.last_rejection_reason = REASON_MISSING_CONFIRMATIONS
@@ -1305,7 +1317,7 @@ class OpportunityMonitorService:
 
                 order_engine = live_order_engine_mode(paper_entry_mode, balanced_shadow)
                 allow_pre = (
-                    order_engine == ENTRY_MODE_BALANCED
+                    (order_engine == ENTRY_MODE_BALANCED or analyst_5m)
                     and promotion_ready(policy, conf_state, allow_pre_entry=True)
                     and not promotion_ready(policy, conf_state, allow_pre_entry=False)
                 )
