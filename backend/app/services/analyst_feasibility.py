@@ -1,7 +1,7 @@
 """Non-binding geometry hints; final proposals still use the full compiler."""
 from collections import Counter
 
-from app.services.multi_setup_analyst import PROFILES, compile_plan, proposal_geometry
+from app.services.multi_setup_analyst import PROFILES, compile_plan, fresh_pullback_gap, proposal_geometry
 
 
 def build_execution_feasibility(evidence, series, costs, observed_ms, strategies):
@@ -14,10 +14,11 @@ def build_execution_feasibility(evidence, series, costs, observed_ms, strategies
             continue
         for direction, sign in (("LONG", 1), ("SHORT", -1)):
             group = []
-            for zone in major:
+            shallow = [z for z in evidence if fresh_pullback_gap(z, direction, series["1m"][-1].close)] if sid == "trend_continuation" else []
+            for zone in major + shallow:
                 zone_kind = ("resistance" if sign == 1 else "support") if sid == "breakout_retest" else (
                     "support" if sign == 1 else "resistance")
-                if zone["kind"] != zone_kind and not (sid != "breakout_retest" and zone["kind"] == "OB"):
+                if zone["kind"] not in (zone_kind, "FVG") and not (sid != "breakout_retest" and zone["kind"] == "OB"):
                     continue
                 if zone.get("direction") and zone["direction"] != direction:
                     continue
@@ -31,7 +32,7 @@ def build_execution_feasibility(evidence, series, costs, observed_ms, strategies
                 # Check the zone's own *confirmed HTF distal edge* first.
                 # Separate support/resistance/OB levels remain alternatives,
                 # but remote 4H pivots no longer dominate the stop search.
-                for inv in [zone] + [x for x in major if x["id"] != zone["id"]]:
+                for inv in ([zone] if zone["kind"] != "FVG" else []) + [x for x in major if x["id"] != zone["id"]]:
                     same_zone = inv["id"] == zone["id"]
                     if not same_zone and inv["kind"] != (
                         "support" if sign == 1 else "resistance"
