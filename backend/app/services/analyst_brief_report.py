@@ -166,3 +166,58 @@ def compact_analyst_report_fa(structured: dict, *, live: float = 0) -> str:
             if sid == "trend_continuation":
                 lines.append("B: امکان ثبت Limit روی پولبک معتبر؛ Fill فقط با لمس بعدی قیمت")
     return drop_forbidden_lines("\n".join(lines)).strip()
+
+
+def telegram_analyst_brief(structured, *, symbol, live, analyzed_at):
+    """Four-hour reader view, using only the primary plan for prices."""
+    import re
+    from app.domain.tehran_time import format_tehran
+    from app.services.telegram_message_format import format_persian_report_for_telegram
+
+    summary = structured["analyst_summary"]
+    lines = [f"{symbol} | {format_tehran(analyzed_at)} تهران | قیمت {_price(live)}"]
+    prior = summary.get("previous_review") or {}
+    if prior.get("status_fa"):
+        level = prior.get("level") or {}
+        lines.append(f"پیگیری ناحیهٔ {_zone(level.get('low'), level.get('high'))} | {prior['status_fa']}")
+    frames = (summary.get("execution_regime") or {}).get("timeframes") or {}
+    trend = [_REGIMES.get((frames.get(tf) or {}).get("trend"), "نامشخص") for tf in ("4h","1h")]
+    lines.append(f"روند چهارساعته {trend[0]} و روند یک‌ساعته {trend[1]} است.")
+    narrative = summary.get("market_summary_fa") or ""
+    # Only complete short sentences; a decimal point is not a sentence ending.
+    sentences = re.split(r"(?<=[.!؟])\s+", narrative.strip(), maxsplit=1)
+    if sentences and sentences[0].endswith((".", "!", "؟")) and len(sentences[0]) <= 220:
+        lines.append(sentences[0].strip())
+    plans = _plans(structured)
+    primary = plans.get(structured.get("strategy_id"))
+    records = (structured.get("_artifacts") or {}).get("strategy_persistence") or {}
+    for sid, label in _LABELS.items():
+        plan = plans.get(sid)
+        if not plan:
+            lines.append(f"{label} | پلن مشروطی ثبت نشده.")
+            continue
+        direction = "لانگ" if plan["potential_direction"] == "LONG" else "شورت"
+        lines.append(f"{label} | {'سناریوی اصلی، ' if plan is primary else ''}{direction} مشروط")
+    if primary:
+        entry, stop, target = (primary.get(k) for k in ("entry_price","stop_loss","take_profit"))
+        lines.append(f"ورود {_price(entry)} | حد ضرر {_price(stop)} | هدف {_price(target)}")
+        if all(_price(x) != "—" for x in (entry,stop,target)) and float(entry) != float(stop):
+            rr = abs((float(target)-float(entry))/(float(entry)-float(stop)))
+            lines.append(f"ریسک به بازده پیش از هزینه‌ها ۱ به {rr:.2f}")
+        record = records.get(primary["strategy_id"]) or {}
+        state = record.get("lifecycle_state")
+        statuses = {"PENDING_ENTRY":"سفارش آزمایشی در انتظار پرشدن است.", "POSITION_OPEN":"پوزیشن آزمایشی باز است.",
+                    "POSITION_CLOSED":"پوزیشن آزمایشی بسته شده است.", "EXPIRED":"ایده منقضی شده است.",
+                    "INVALIDATED":"ایده باطل شده است."}
+        if state in statuses:
+            lines.append(statuses[state])
+        elif record.get("skipped"):
+            lines.append("در این نوبت ستاپ تازه‌ای ثبت نشد.")
+        else:
+            lines.append("در صورت فعال‌شدن پلن و پرشدن سفارش در ناحیهٔ ورود، هدف بالا پیگیری می‌شود.")
+    else:
+        forecasts = summary.get("forecast_scenarios") or []
+        if forecasts:
+            area = forecasts[0].get("level") or {}
+            lines.append(f"ناحیهٔ تحت نظر برای تحلیل بعدی: {_zone(area.get('low'),area.get('high'))}")
+    return format_persian_report_for_telegram("\n".join(lines))
