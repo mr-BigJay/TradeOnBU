@@ -121,7 +121,7 @@ def render_ict_chart_png(
     overlays: dict[str, Any] | None,
     live_price: float,
     decision: str,
-    trade_levels: dict[str, float] | None,
+    trade_levels: dict[str, Any] | None,
     analyzed_at: datetime,
 ) -> None:
     """Render candlestick PNG with ICT overlays and optional trade levels."""
@@ -194,6 +194,18 @@ def render_ict_chart_png(
                 ha="left",
             )
 
+    forecast = (trade_levels or {}).get("forecast")
+    if forecast and live_price > 0:
+        level, target = forecast["level"], forecast["target"]["price"]
+        path = [live_price, level["price"], target]
+        if forecast["scenario_type"] in ("support_break", "resistance_break"):
+            sign = 1 if forecast["direction"] == "LONG" else -1
+            edge = level["high"] if sign == 1 else level["low"]
+            path.insert(1, edge + sign*(level["high"]-level["low"])*.5)
+        ax.axhspan(level["low"], level["high"], color="#a78bfa", alpha=.15)
+        ax.plot([last_x + i*6 for i in range(len(path))], path, "--o",
+                color="#e9d5ff", label="4H conditional outlook")
+        ax.legend(loc="upper left")
     if trade_levels and live_price > 0:
         entry, target = trade_levels.get("entry"), trade_levels.get("take_profit")
         if entry and target and entry > 0 and target > 0:
@@ -203,10 +215,38 @@ def render_ict_chart_png(
             padding = (top - bottom) * 0.06
             ax.set_ylim(bottom - padding, top + padding)
             step = max(4, len(df) // 10)
-            ax.plot([last_x, last_x + step, last_x + 2 * step],
-                    [live_price, entry, target], "--o", color="#e9d5ff",
-                    linewidth=1.5, markersize=4, label="Possible path: price → entry → TP")
-            ax.set_xlim(ax.get_xlim()[0], last_x + 2 * step + 2)
+            path = [live_price, entry, target]
+            label = "Possible path: price → entry → TP"
+            if "zone_low" in trade_levels:
+                lo, hi = trade_levels["zone_low"], trade_levels["zone_high"]
+                ax.axhspan(lo, hi, color="#fbbf24", alpha=.16, label="Retest area")
+                line = trade_levels.get("pattern_zone")
+                if line:
+                    from app.services.breakout_boundaries import line_price
+                    points = [(i,line_price(line,b.time_ms)) for i,b in enumerate(clean) if b.time_ms >= line["first_ms"]]
+                    if points:
+                        xs, ys = zip(*points)
+                        ax.plot(xs, ys, color="#fbbf24", linewidth=1, label=line["pattern"])
+                for key, marker in (("origin_ms", "o"), ("last_touch_ms", "s")):
+                    stamp = trade_levels.get(key)
+                    if stamp:
+                        duration = 3600000 if trade_levels["timeframe"] == "1h" else 14400000
+                        candles_in_zone = [(i,b) for i,b in enumerate(clean) if stamp <= b.time_ms < stamp+duration]
+                        if key == "origin_ms":
+                            price = trade_levels["origin_price"]
+                            matches = [(i,price) for i,b in candles_in_zone if b.low <= price <= b.high]
+                        else:
+                            matches = [(i,min(hi,max(lo,b.close))) for i,b in candles_in_zone if b.low <= hi and b.high >= lo]
+                        if matches:
+                            ax.scatter(*matches[0], marker=marker, color="#fbbf24", label=key.replace("_ms", ""))
+                sign = 1 if target > entry else -1
+                if not trade_levels.get("breakout_confirmed"):
+                    edge = hi if sign == 1 else lo
+                    path.insert(1, edge + sign * (hi-lo)*.5)
+                    label = "Scenario: break → retest → TP"
+            positions = [last_x + i * step for i in range(len(path))]
+            ax.plot(positions, path, "--o", color="#e9d5ff", linewidth=1.5, markersize=4, label=label)
+            ax.set_xlim(ax.get_xlim()[0], positions[-1] + 2)
             ax.legend(loc="upper left")
 
     # Liquidity levels from structure analysis

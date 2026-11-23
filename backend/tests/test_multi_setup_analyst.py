@@ -253,10 +253,11 @@ def test_confirmed_htf_zone_distal_edge_is_valid_structural_invalidation():
         p['invalidation_id'] = p['zone_id']
         approved = a.compile_plan(p, evidence, series, costs, now, now)
         c = approved['verified_trade_plan']
-        assert c['evidence']['invalidation_source'] == 'zone_distal_edge'
-        assert c['evidence']['zone']['id'] == c['evidence']['invalidation']['id']
+        separate = sid == "breakout_retest"
+        assert c["evidence"]["invalidation_source"] == ("separate_confirmed_level" if separate else "zone_distal_edge")
+        assert c["evidence"]["invalidation"]["id"] == ("stop" if separate else p["zone_id"])
         assert approved['stop_loss'] < approved['structural_invalidation_level']
-        assert approved['structural_invalidation_level'] == 1020.0
+        assert approved['structural_invalidation_level'] == (1017.0 if separate else 1020.0)
         assert (approved['entry_price'] - approved['stop_loss']
                 >= .5 * a.atr(series['15m']))
         assert v.plan_error(approved, now) is None
@@ -299,10 +300,11 @@ async def test_all_three_signed_zone_edge_plans_survive_persistence(session, mon
     assert set(rows) == set(a.PROFILES), meta
     for sid, row in rows.items():
         assert row.lifecycle_state == 'WAIT_LONG'
-        assert row.invalidation_level == 1020.0
+        separate = sid == 'breakout_retest'
+        assert row.invalidation_level == (1017.0 if separate else 1020.0)
         assert not (row.confirmation_state or {}).get('confirmation_timestamps')
         assert row.structured_snapshot['verified_trade_plan']['evidence'][
-            'invalidation_source'] == 'zone_distal_edge'
+            'invalidation_source'] == ('separate_confirmed_level' if separate else 'zone_distal_edge')
 
 
 def test_unsigned_plan_cannot_use_zone_distal_edge_loophole():

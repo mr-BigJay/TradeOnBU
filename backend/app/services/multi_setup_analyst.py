@@ -14,7 +14,7 @@ from app.services.analyst_outlook import compile_forecasts
 from app.services.analyst_major_levels import select_major_levels, minimum_forecast_gap
 
 VERSION = 'multi_setup_analyst_v1'
-PROMPT_VERSION = 10
+PROMPT_VERSION = 11
 STEPS = {'1m':60000,'5m':300000,'15m':900000,'1h':3600000,'4h':14400000}
 # Signed intraday opportunities may wait for an HTF pullback across six 4H bars.
 # The monitor still retires on structural invalidation or target-before-order.
@@ -23,7 +23,7 @@ PROFILES = {'ict_reversal':'htf_sweep_reclaim', 'trend_continuation':'htf_pullba
 TRIGGERS = {
  'ict_reversal':'Sweep و بازپس‌گیری سطح معتبر 1H/4H با یک کندل بستهٔ 5m؛ سفارش Limit برای بازگشت بعدی.',
  'trend_continuation':'سفارش Paper Limit روی ناحیهٔ اصلاح 1H/4H معتبر و هنوز لمس‌نشده؛ Fill فقط با برخورد واقعی قیمت بعد از ثبت سفارش. واکنش 5m برای اجرای Limit اولیه اجباری نیست.',
- 'breakout_retest':'شکست قطعی حمایت/مقاومت 1H/4H با بسته‌شدن کندل 5m؛ سفارش Limit منتظر بازآزمایی بعدی.',
+ 'breakout_retest':'شکست قطعی حمایت/مقاومت 1H/4H با بسته‌شدن کندل ۱۵ یا ۵ دقیقه بیرون ناحیه؛ سفارش Limit روی بازآزمایی همان سطح.',
 }
 INSTRUCTIONS = '''You are a multi-scenario BTCUSDT analyst, not a reviewer of preselected reversal candidates.
 Compare trend continuation, reversal, and breakout/retest using 4H/1H context and 15m/5m execution. Prefer trend-continuation pullbacks, then breakout opportunities, then countertrend reversals where evidence supports them; NEVER manufacture a setup to meet a quota.
@@ -58,10 +58,7 @@ when no executable plan passes the server rules. Never promise that an untouched
 plans is 0 to 3 *independently executable conditional proposals* ranked best first.
 Each plan: strategy_id (ict_reversal|trend_continuation|breakout_retest), direction (LONG|SHORT),
 zone_id, invalidation_id, target_id (exact supplied catalog IDs), reason_fa.
-When no nearby distinct confirmed invalidation exists, invalidation_id MAY equal zone_id:
-the server will use that independently confirmed 1H/4H zone's distal edge
-(below support/OB for LONG, above resistance/OB for SHORT, and the opposite
-edge of the broken 1H/4H level for breakout/retest) with an ATR-buffered
+For C choose the broken boundary as the entry and the latest confirmed opposite swing beyond the entire entry zone as invalidation. Prefer an established HTF zone with independent reactions. A/B may use their own confirmed zone edge as a
 structural stop. This is not an arbitrary or micro-candle stop. The same
 strict net 1.5R, nearest intervening HTF obstacle, stop-width safety and
 position-risk sizing remain in force. Favor the closest defensible structural
@@ -71,6 +68,7 @@ At most one plan per strategy. Only enabled strategies. Empty plans is valid whe
 Select meaningful candle-backed areas; NEVER invent price levels, IDs, confidence probabilities or confirmations. Executable support/resistance and OB source zones MUST come from 1H or 4H; 5m/15m evidence is for FVG execution precision and candle confirmation, never an arbitrary micro support/resistance trade. Prefer stops supported by structural invalidation, not micro swings.
 For continuation, also compare fresh directional 5m/15m FVG pullbacks on the resting side of price with a separately confirmed HTF invalidation and structural target. Prefer the nearest executable pullback. For continuation, 4H confirmed swing structure determines the direction: bearish => SHORT on a rally/pullback into HTF resistance/OB; bullish => LONG on a decline/pullback into HTF support/OB. Opposing 1H structure can be the correction, NOT an automatic veto. If 4H is range/unclear, use directional 1H structure. For continuation, a signed and server-validated HTF pullback zone may receive a resting paper LIMIT before a 5m directional rejection, only if price has not already touched or invalidated it. A fill still requires a later independent exchange 1m touch after order creation. This is not an immediate market entry. EMA/RSI are context, not mandatory thresholds. Breakout uses resistance for LONG or support for SHORT.
 execution_feasibility contains server-checked geometry choices using actual paper costs and the nearest structural obstacle. It also includes zone_gap_atr15 and live_to_target_atr15: compare travel needed to reach an entry zone against the remaining room to the target. When trend-continuation B is far from current price while the target is close, do not repeatedly select an implausible B pullback; assess a valid same-direction breakout/retest C instead. For a structurally sound B LIMIT proposal, do NOT require the current price to already touch the HTF zone or the 5m candle to already reject it: the order is intentionally posted in advance. For A/C conditional plans, the reversal sweep or breakout close is a future MONITOR trigger, not an AI proposal prerequisite. Review execution_feasibility.choices first: each has already passed compiler geometry, trend alignment, historical level confirmation and minimum net R:R. Prefer such nearby, still reachable B proposals when justified; do not invent IDs or turn watch-only forecasts into positions. If feasible choices are deliberately omitted, give a specific qualitative objection beyond mere distance or absent immediate 5m confirmation. This is advisory, not a new eligibility gate. Use these to avoid impossible entry/stop/target combinations, then assess market quality yourself. They are NOT confirmed signals or mandatory selections. You may propose other catalog combinations; all pass the same final validation. If no plan is selected, explain whether geometry or market evidence is the reason. Never invent a plan to meet a quota.
+Use previous_review to compare the prior primary scenario with closed candles in its own validity window. State which level was reached and which condition remains open in market_summary_fa. Describe the expected sequence of moves. Check converging triangle edges and trendlines for C and describe their anchors; use catalog trendline boundaries with signed slope and anchor times. Their fixed paper limit expires before it leaves the projected band.
 Explain why each selected scenario is preferable and why alternatives were not selected.
 Server derives midpoint limit entry, ATR-buffered structural stop and cost-adjusted target before the nearest obstacle.
 Server checks one objective closed-5m trigger for promotion to READY: reversal=HTF liquidity sweep and strong reclaim; continuation=directional rejection at selected HTF pullback area; breakout=5m close crossing a HTF level. Signed continuation plans may additionally rest a LIMIT immediately on a still-fresh, untouched HTF zone with all original structural SL, risk and net R:R checks; no fill is assumed until an independent post-order exchange 1m touch. A/C retain their normal confirmation gates. Do not claim an additional MSS, retest confirmation or 5m micro support is mandatory for the new analyst contract. Legacy setups retain their own historical confirmation policies.
@@ -112,6 +110,26 @@ def catalog(series, now_ms):
             'touch_count':len(touches),'last_touch_ms':touches[-1] if touches else None,
             'confirmed_ms':confirmed_ms,'age_ms':now_ms-confirmed_ms,
         })
+    # A just-broken hourly swing disappears from the ordinary unbroken-level catalog.
+    # Rebuild the levels known before the previous four-hour review window for C only.
+    cutoff = now_ms//STEPS["5m"]*STEPS["5m"] - STEPS["4h"]
+    historical = {tf: [b for b in series[tf] if b.time_ms+STEPS[tf] <= cutoff] for tf in ("1h","4h")}
+    present = {(x["timeframe"], x["kind"], x["time_ms"]) for x in items}
+    for level in market_zones(historical)["support_resistance"]:
+        tf, role, stamp = level["timeframe"], level["kind"], level["time_ms"]
+        if (tf,role,stamp) in present:
+            continue
+        price = level["price"]
+        width = max(.15*atr(historical[tf]), .1)
+        direction = "LONG" if role == "resistance" else "SHORT"
+        add("recent_break",tf,stamp,price-width,price+width,direction,price,
+            {"confirmed_ms":stamp+3*STEPS[tf],"original_kind":role})
+    from app.services.breakout_boundaries import boundaries
+    for tf in ("1h", "4h"):
+        width = max(.15*atr(series[tf]), .1)
+        for direction, line in boundaries(series[tf], STEPS[tf], now_ms, width).items():
+            price = line["price"]
+            add("trendline", tf, line["time_ms"], price-width, price+width, direction, price, line)
     for x in zones['order_blocks']:
         if x['status']!='invalidated':
             later=[b for b in series[x['timeframe']] if b.time_ms>x['confirmed_ms']]
@@ -162,6 +180,14 @@ def fresh_pullback_gap(zone, direction, live):
             and zone.get("status") == "fresh" and zone.get("confirmed_ms") is not None
             and zone.get("direction") == direction
             and (live > zone["high"] if direction == "LONG" else live < zone["low"]))
+
+
+def breakout_stop_anchor(zone, evidence, direction):
+    long = direction == "LONG"
+    kind = "support" if long else "resistance"
+    swings = [x for x in evidence if x["kind"] == kind and x["timeframe"] in ("15m", "1h", "4h")
+              and (x["price"] < zone["low"] if long else x["price"] > zone["high"])]
+    return max(swings, key=lambda x: x["time_ms"], default=None)
 
 
 def proposal_geometry(direction, zone, invalidation, target, evidence, series, costs=None):
@@ -223,14 +249,19 @@ def compile_plan(proposal, evidence, series, costs, now_ms, observed_ms, *, seed
     frames=executable_regime(series)['timeframes'];regime=frames['1h']['trend'];higher=frames['4h']['trend']
     aligned='bullish' if sign==1 else 'bearish';opposed='bearish' if sign==1 else 'bullish'
     if sid=='trend_continuation' and continuation_direction(frames)!=direction:raise ValueError('continuation_trend_conflict')
-    if sid=='breakout_retest' and z['kind']!=('resistance' if sign==1 else 'support'):raise ValueError('breakout_requires_level')
+    if sid=='breakout_retest' and z['kind'] not in ('trendline', 'recent_break', 'resistance' if sign==1 else 'support'):raise ValueError('breakout_requires_level')
     shallow = sid == 'trend_continuation' and fresh_pullback_gap(z, direction, series['1m'][-1].close)
     if not shallow:
         if sid in ('ict_reversal','trend_continuation') and z['kind'] not in (('support' if sign==1 else 'resistance'),'OB'):
             raise ValueError('reversal_continuation_requires_support_resistance')
-        if z['timeframe'] not in ('1h', '4h') or z['kind'] not in ('support', 'resistance', 'OB'):
+        if z['timeframe'] not in ('1h', '4h') or z['kind'] not in ('support', 'resistance', 'OB', 'trendline', 'recent_break'):
             raise ValueError('execution_requires_major_structure')
-    if inv['timeframe'] not in ('1h', '4h') or inv['kind'] not in ('support', 'resistance', 'OB'):
+    if sid == 'breakout_retest':
+        anchor = breakout_stop_anchor(z, evidence, direction)
+        if anchor is None:
+            raise ValueError('breakout_requires_opposite_swing')
+        inv = anchor
+    if inv['timeframe'] not in (('15m','1h','4h') if sid=='breakout_retest' else ('1h','4h')) or inv['kind'] not in ('support', 'resistance', 'OB'):
         raise ValueError('stop_requires_major_structure')
     same_zone_invalidation = z['id'] == inv['id']
     if not same_zone_invalidation and inv['kind'] in ('support','resistance') and inv['kind'] != ('support' if sign==1 else 'resistance'):
@@ -259,6 +290,8 @@ def compile_plan(proposal, evidence, series, costs, now_ms, observed_ms, *, seed
     if tp is None:raise ValueError('insufficient_net_reward_before_obstacle')
     if sign*(series['1m'][-1].close-tp)>=0:raise ValueError('target_already_reached')
     expiry=observed_ms+ANALYST_PLAN_TTL_MS
+    if z.get("valid_until_ms"):
+        expiry = min(expiry, z["valid_until_ms"])
     if now_ms>=expiry:raise ValueError('proposal_expired')
     reason=str(proposal.get('reason_fa') or '')[:1600]
     if not reason.strip():raise ValueError('missing_reason')
@@ -271,6 +304,9 @@ def compile_plan(proposal, evidence, series, costs, now_ms, observed_ms, *, seed
                      'stop_atr_buffer':geometry['stop_atr_buffer'],
                      'minimum_stop_distance':geometry['minimum_stop_distance'],
                      'hourly_regime':regime,'four_hour_regime':higher,'confirmed':False})
+    if sid == 'breakout_retest':
+        c['breakout_zone_confirmation'] = True
+        c['boundary_known_ms'] = z.get('confirmed_ms', z['time_ms']+3*STEPS[z['timeframe']])
     if sid=='ict_reversal':
         # A single *closed* sweep/reclaim of the server-supplied major
         # invalidation level replaces the old mandatory sweep-plus-MSS chain.
@@ -281,6 +317,8 @@ def compile_plan(proposal, evidence, series, costs, now_ms, observed_ms, *, seed
             'liquidity_id':inv['id'], 'liquidity_timeframe':inv['timeframe']}
     from app.services.analyst_confirmation import recent_confirmations
     c['seed_confirmations']=recent_confirmations(c,series['5m'],observed_ms) if seed else {}
+    if seed and z['kind'] == 'recent_break' and not c['seed_confirmations']:
+        raise ValueError('breakout_retest_already_spent_or_unconfirmed')
     c['opportunity_id']=f"{VERSION}:{sid}:{direction}:{z['id']}:{observed_ms//14400000}"
     c['candidate_id']=hashlib.sha256(json.dumps(c,sort_keys=True).encode()).hexdigest()[:24]
     c.update(as_of_ms=observed_ms,approved_at_ms=now_ms)
@@ -386,7 +424,7 @@ def compile_response(raw,evidence,series,costs,now_ms,observed_ms,strategies,*,o
             # price must be BEFORE the structural breakout level.
             if sid == 'trend_continuation' and sign * (live - entry) <= 0:
                 continue
-            if sid == 'breakout_retest' and sign * (live - entry) >= 0:
+            if sid == 'breakout_retest' and sign * (live - entry) >= 0 and not item.get('recent_break'):
                 continue
             # A is conditional reversal evidence, NOT a resting pre-order;
             # monitor waits for a fresh sweep/reclaim before any limit.

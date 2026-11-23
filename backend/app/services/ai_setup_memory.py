@@ -869,10 +869,13 @@ async def _persist_conditional_setup(
     if origin:
         previous = await _previous_idea(session, symbol, direction, contract, origin)
         if previous:
+            from app.services.breakout_boundaries import chart_zone
             return None, {**meta, "skipped": True, "reason": "existing_structural_idea",
                           "setup_id": previous.setup_id, "lifecycle_state": previous.lifecycle_state,
                           "chart_levels": {"entry": previous.entry_price, "stop_loss": previous.stop_loss,
-                                           "take_profit": previous.take_profit}
+                                           "take_profit": previous.take_profit,
+                                           **chart_zone((previous.structured_snapshot or {}).get("verified_trade_plan") or {},
+                                                        (previous.confirmation_state or {}).get("confirmation_timestamps"))}
                           if previous.lifecycle_state in ACTIVE_MONITOR_STATES and previous.lifecycle_state != POSITION_OPEN else None,
                           "idea_fa": f"ادامهٔ ایدهٔ شمارهٔ {previous.id}؛ وضعیت {previous.lifecycle_state}."}
         dup = None

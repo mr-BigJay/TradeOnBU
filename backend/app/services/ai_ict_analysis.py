@@ -130,7 +130,7 @@ def _candles_from_payload(market: dict[str, Any], interval: str = "15m") -> list
     return out
 
 
-def _levels_for_chart(structured: dict[str, Any]) -> dict[str, float] | None:
+def _levels_for_chart(structured: dict[str, Any]) -> dict[str, Any] | None:
     decision = str(structured.get("decision", "NO_TRADE")).upper()
     if decision not in ("LONG", "SHORT"):
         plan = structured.get("verified_trade_plan") or {}
@@ -138,7 +138,14 @@ def _levels_for_chart(structured: dict[str, Any]) -> dict[str, float] | None:
         if result.get("chart_levels"):
             return result["chart_levels"]
         if plan and (result.get("created") or result.get("updated")):
-            return {"entry": plan["entry"], "stop_loss": plan["stop"], "take_profit": plan["target"]}
+            levels = {"entry": plan["entry"], "stop_loss": plan["stop"], "take_profit": plan["target"]}
+            from app.services.breakout_boundaries import chart_zone
+            levels.update(chart_zone(plan))
+            return levels
+        forecasts = (structured.get("analyst_summary") or {}).get("forecast_scenarios") or []
+        if forecasts and forecasts[0].get("target"):
+            item = forecasts[0]
+            return {"forecast": item}
         return None
     try:
         return {
@@ -532,8 +539,16 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
             from app.services.analyst_feasibility import build_execution_feasibility
             feasibility = build_execution_feasibility(
                 evidence, candles_by_interval, costs, observed_ms, enabled_strategies)
+            async with SessionLocal() as prior_session:
+                previous = (await prior_session.execute(select(AiAnalysisRun.structured).where(
+                    AiAnalysisRun.id < run_id,
+                    AiAnalysisRun.status.in_(("completed", "completed_with_warnings")),
+                    AiAnalysisRun.structured["analyst_summary"]["forecast_scenarios"].as_string().is_not(None)
+                ).order_by(AiAnalysisRun.id.desc()).limit(1))).scalar_one_or_none()
+            from app.services.analyst_outlook import review_previous
+            prior_review = review_previous(previous, candles_by_interval["5m"], observed_ms)
             user_payload, analyst_payload_audit = build_analyst_payload(
-                market=market_payload,
+                market={**market_payload, "previous_review": prior_review},
                 evidence_catalog=evidence,
                 outlook_major_levels=outlook_major_levels,
                 market_intelligence=market_intelligence,
@@ -601,6 +616,7 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
                 int(datetime.now(timezone.utc).timestamp()*1000),observed_ms,enabled_strategies,
                 outlook_major_levels=outlook_major_levels,
                 execution_feasibility=feasibility)
+            structured["analyst_summary"]["previous_review"] = prior_review
             structured["analyst_summary"]["execution_feasibility"] = feasibility
             if direct_mode:
                 structured["analyst_summary"]["ai_direct_proposal"] = (

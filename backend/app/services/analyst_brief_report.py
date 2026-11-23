@@ -103,6 +103,9 @@ def compact_analyst_report_fa(structured: dict, *, live: float = 0) -> str:
             )
     lines.append("سطوح اصلی: " + (" | ".join(areas) if areas else "سطح عمدهٔ تأییدشده‌ای در فهرست گزارش نیست"))
 
+    prior = summary.get("previous_review")
+    if prior:
+        lines.append(f"پیگیری تحلیل قبل | {_zone(prior['level']['low'], prior['level']['high'])} | {prior['status_fa']}")
     forecasts = summary.get("forecast_scenarios") or []
     if forecasts and isinstance(forecasts[0], dict):
         item = forecasts[0]

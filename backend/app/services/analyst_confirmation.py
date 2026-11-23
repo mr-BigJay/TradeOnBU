@@ -21,7 +21,8 @@ def recent_confirmations(contract, bars, observed_ms):
     reference=contract.get('confirmation_reference')
     if reference and reference.get('break_confirmed_ms') is not None:
         known.append(reference['break_confirmed_ms'])
-    start=max(observed_ms//STEP*STEP-3*STEP,*known)
+    lookback = STEPS["4h"] if contract.get("breakout_zone_confirmation") else 3*STEP
+    start=max(observed_ms//STEP*STEP-lookback,*known)
     state={}
     closed=[b for b in bars if b.time_ms+STEP<=observed_ms]
     for i,bar in enumerate(closed):

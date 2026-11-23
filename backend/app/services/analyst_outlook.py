@@ -303,3 +303,24 @@ def format_forecasts_fa(forecasts):
     lines.append("هیچ سناریوی تحت نظر، بدون قرارداد اجرایی مستقل و تأیید کندلی، سفارش Paper ایجاد نمی‌کند.")
     return "\n".join(lines)
 
+
+
+def review_previous(previous, bars, now_ms):
+    scenarios = ((previous or {}).get("analyst_summary") or {}).get("forecast_scenarios") or []
+    if not scenarios:
+        return None
+    scenario = scenarios[0]
+    start, end = scenario.get("as_of_ms"), scenario.get("valid_until_ms")
+    if not isinstance(start, int) or not isinstance(end, int):
+        return None
+    level, target = scenario["level"], scenario.get("target")
+    observed = [b for b in bars if start <= b.time_ms and b.time_ms + 300000 <= min(end, now_ms)]
+    touched = next((b for b in observed if b.low <= level["high"] and b.high >= level["low"]), None)
+    after = bool(target and touched and any(b.time_ms > touched.time_ms and
+                 b.low <= target["high"] and b.high >= target["low"] for b in observed))
+    complete = len(observed) == max(0, min(end, now_ms)//300000 - (start+299999)//300000)
+    status = ("دادهٔ کامل در دسترس نیست" if not observed or not complete else
+              "ناحیه لمس شد و در کندل بعدی یا دیرتر قیمت به مقصد رسید" if after else
+              "ناحیه لمس شد؛ رسیدن بعدی به مقصد ثبت نشد" if touched else "قیمت به ناحیه نرسید")
+    return dict(as_of_ms=start, valid_until_ms=end, scenario_type=scenario["scenario_type"],
+                level=level, target=target, status_fa=status)
