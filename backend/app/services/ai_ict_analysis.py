@@ -137,13 +137,14 @@ def _levels_for_chart(structured: dict[str, Any]) -> dict[str, Any] | None:
         result = ((structured.get("_artifacts") or {}).get("strategy_persistence") or {}).get(structured.get("strategy_id")) or {}
         if result.get("chart_levels"):
             return result["chart_levels"]
-        if plan and (result.get("created") or result.get("updated")):
+        if plan and all(plan.get(k) for k in ("entry", "stop", "target")) and (structured.get("analyst_summary") or result.get("created") or result.get("updated")):
             levels = {"entry": plan["entry"], "stop_loss": plan["stop"], "take_profit": plan["target"]}
             from app.services.breakout_boundaries import chart_zone
             levels.update(chart_zone(plan))
+            levels["analytical_only"] = not (result.get("created") or result.get("updated"))
             return levels
         forecasts = (structured.get("analyst_summary") or {}).get("forecast_scenarios") or []
-        if forecasts and forecasts[0].get("target"):
+        if forecasts and forecasts[0].get("level"):
             item = forecasts[0]
             return {"forecast": item}
         return None
@@ -173,9 +174,9 @@ def _merge_artifacts(structured: dict[str, Any], artifacts: dict[str, Any]) -> d
 
 def _chart_overlays_from_ai(structured: dict[str, Any]) -> dict[str, Any]:
     raw = structured.get("chart_overlays")
-    if isinstance(raw, dict):
-        return raw
-    return {}
+    overlays = dict(raw) if isinstance(raw, dict) else {}
+    overlays["chart_patterns"] = (structured.get("analyst_summary") or {}).get("chart_patterns") or []
+    return overlays
 
 
 async def _generate_chart_for_run(

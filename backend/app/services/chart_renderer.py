@@ -178,6 +178,27 @@ def render_ict_chart_png(
     }
     last_x = len(df) - 1
 
+    pattern_count = 0
+    colors = ("#22d3ee", "#fb923c", "#c084fc", "#a3e635", "#f472b6", "#60a5fa", "#fde047", "#34d399")
+    for pattern in overlays.get("chart_patterns") or []:
+        color = colors[pattern_count % len(colors)]
+        for side in ("upper", "lower"):
+            edge = pattern[side]
+            start, price = edge["anchors"][0]
+            points = [(i, price+(bar.time_ms-start)*edge["slope"]) for i,bar in enumerate(clean)
+                      if start <= bar.time_ms <= pattern["as_of_ms"]]
+            if len(points) >= 2:
+                xs, ys = zip(*points)
+                label = f"{pattern['timeframe']} {pattern['kind'].replace('_',' ')}" if side == "upper" else None
+                ax.plot(xs, ys, color=color, linewidth=1.1, label=label)
+                for stamp, anchor in edge["anchors"]:
+                    if clean[0].time_ms <= stamp <= clean[-1].time_ms:
+                        idx = df.index.get_indexer([pd.to_datetime(stamp,unit="ms",utc=True)],method="nearest")[0]
+                        ax.scatter(idx,anchor,color=color,s=12)
+        pattern_count += 1
+    if pattern_count:
+        ax.legend(loc="upper left", fontsize=7, ncol=2)
+
     if trade_levels:
         for key, color in level_colors.items():
             val = trade_levels.get(key)
@@ -196,8 +217,10 @@ def render_ict_chart_png(
 
     forecast = (trade_levels or {}).get("forecast")
     if forecast and live_price > 0:
-        level, target = forecast["level"], forecast["target"]["price"]
-        path = [live_price, level["price"], target]
+        level, target = forecast["level"], forecast.get("target")
+        path = [live_price, level["price"]]
+        if target:
+            path.append(target["price"])
         if forecast["scenario_type"] in ("support_break", "resistance_break"):
             sign = 1 if forecast["direction"] == "LONG" else -1
             edge = level["high"] if sign == 1 else level["low"]
@@ -316,6 +339,8 @@ def render_ict_chart_png(
         structure_bits.append(f"MSS {mss}")
     structure_line = " · ".join(structure_bits) if structure_bits else "Structure n/a"
 
+    if (trade_levels or {}).get("analytical_only"):
+        decision_u = "CONDITIONAL OUTLOOK"
     title = f"TradeOnBU · {symbol} · {interval} · {decision_u}"
     subtitle = f"{structure_line} · Live {_format_price(live_price)} · {ts_label} · PAPER ONLY"
     fig.suptitle(title, color="#f1f5f9", fontsize=12, fontweight="bold", y=0.98)
