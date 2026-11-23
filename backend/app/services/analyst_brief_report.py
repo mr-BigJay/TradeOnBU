@@ -185,9 +185,23 @@ def telegram_analyst_brief(structured, *, symbol, live, analyzed_at):
     lines.append(f"روند چهارساعته {trend[0]} و روند یک‌ساعته {trend[1]} است.")
     narrative = summary.get("market_summary_fa") or ""
     # Only complete short sentences; a decimal point is not a sentence ending.
-    sentences = re.split(r"(?<=[.!؟])\s+", narrative.strip(), maxsplit=1)
-    if sentences and sentences[0].endswith((".", "!", "؟")) and len(sentences[0]) <= 220:
-        lines.append(sentences[0].strip())
+    def excerpt(text, budget):
+        selected = []
+        for sentence in re.split(r"(?<=[.!؟])\s+", " ".join(str(text or "").split())):
+            if not sentence.endswith((".", "!", "؟")) or sum(map(len, selected))+len(sentence)>budget:
+                break
+            selected.append(sentence)
+            if len(selected)==3:
+                break
+        return " ".join(selected)
+
+    outlook = excerpt(narrative, 650)
+    if outlook:
+        lines.append(outlook)
+    from app.services.chart_patterns import NAMES, POSITIONS
+    for pattern in (summary.get("chart_patterns") or [])[:3]:
+        lines.append(f"{NAMES[pattern['kind']]} ({pattern['timeframe']})، {POSITIONS[pattern['position']]}؛ "
+                     f"بین {_price(pattern['lower']['price'])} و {_price(pattern['upper']['price'])}.")
     plans = _plans(structured)
     primary = plans.get(structured.get("strategy_id"))
     records = (structured.get("_artifacts") or {}).get("strategy_persistence") or {}
@@ -197,9 +211,19 @@ def telegram_analyst_brief(structured, *, symbol, live, analyzed_at):
             lines.append(f"{label} | پلن مشروطی ثبت نشده.")
             continue
         direction = "لانگ" if plan["potential_direction"] == "LONG" else "شورت"
-        lines.append(f"{label} | {'سناریوی اصلی، ' if plan is primary else ''}{direction} مشروط")
+        reason = excerpt(plan.get("trade_reason"), 230)
+        if not reason:
+            reason = {"ict_reversal":"سناریو به جارو شدن سطح و بازپس‌گیری آن وابسته است.",
+                      "trend_continuation":"ورود روی اصلاح به ناحیهٔ پیشنهادی در جهت روند بررسی می‌شود.",
+                      "breakout_retest":"پس از تأیید شکست، برگشت به همان مرز برای ورود بررسی می‌شود."}[sid]
+        lines.append(f"{label} | {'سناریوی اصلی، ' if plan is primary else ''}{direction} مشروط. {reason}")
     if primary:
-        entry, stop, target = (primary.get(k) for k in ("entry_price","stop_loss","take_profit"))
+        record = records.get(primary["strategy_id"]) or {}
+        levels = record.get("chart_levels") or {}
+        entry = levels.get("entry", primary.get("entry_price"))
+        stop = levels.get("stop_loss", primary.get("stop_loss"))
+        target = levels.get("take_profit", primary.get("take_profit"))
+        lines.append("مسیر مشروط از قیمت فعلی تا ناحیهٔ ورود است؛ در صورت واکنش هم‌جهت، مقصد بعدی هدف پلن است.")
         lines.append(f"ورود {_price(entry)} | حد ضرر {_price(stop)} | هدف {_price(target)}")
         if all(_price(x) != "—" for x in (entry,stop,target)) and float(entry) != float(stop):
             rr = abs((float(target)-float(entry))/(float(entry)-float(stop)))
