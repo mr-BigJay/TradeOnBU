@@ -103,6 +103,10 @@ def compact_analyst_report_fa(structured: dict, *, live: float = 0) -> str:
             )
     lines.append("سطوح اصلی: " + (" | ".join(areas) if areas else "سطح عمدهٔ تأییدشده‌ای در فهرست گزارش نیست"))
 
+    from app.services.chart_patterns import NAMES, POSITIONS
+    for pattern in summary.get("chart_patterns") or []:
+        lines.append(f"{NAMES[pattern['kind']]} ({pattern['timeframe']}) | {POSITIONS[pattern['position']]} | "
+                     f"کف {_price(pattern['lower']['price'])}، سقف {_price(pattern['upper']['price'])}")
     prior = summary.get("previous_review")
     if prior:
         lines.append(f"پیگیری تحلیل قبل | {_zone(prior['level']['low'], prior['level']['high'])} | {prior['status_fa']}")

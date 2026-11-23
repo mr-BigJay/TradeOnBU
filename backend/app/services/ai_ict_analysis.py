@@ -547,8 +547,10 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
                 ).order_by(AiAnalysisRun.id.desc()).limit(1))).scalar_one_or_none()
             from app.services.analyst_outlook import review_previous
             prior_review = review_previous(previous, candles_by_interval["5m"], observed_ms)
+            from app.services.chart_patterns import pattern_context
+            patterns = pattern_context(candles_by_interval, observed_ms)
             user_payload, analyst_payload_audit = build_analyst_payload(
-                market={**market_payload, "previous_review": prior_review},
+                market={**market_payload, "previous_review": prior_review, "chart_patterns": patterns},
                 evidence_catalog=evidence,
                 outlook_major_levels=outlook_major_levels,
                 market_intelligence=market_intelligence,
@@ -616,6 +618,7 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
                 int(datetime.now(timezone.utc).timestamp()*1000),observed_ms,enabled_strategies,
                 outlook_major_levels=outlook_major_levels,
                 execution_feasibility=feasibility)
+            structured["analyst_summary"]["chart_patterns"] = patterns
             structured["analyst_summary"]["previous_review"] = prior_review
             structured["analyst_summary"]["execution_feasibility"] = feasibility
             if direct_mode:
