@@ -103,6 +103,31 @@ def _avg_range(candles: list[Candle], n: int = 10) -> float:
     return sum(c.high - c.low for c in window) / len(window)
 
 
+def _breakout_frame(window, lo, hi, direction, known_ms, zone=None):
+    """Use aligned closed 5m components. Prefer a complete directional 15m body."""
+    bar = window[-1]
+    edge = hi if direction == "LONG" else lo
+    def boundary(timestamp):
+        if not zone or zone.get("kind") != "trendline":
+            return edge
+        from app.services.breakout_boundaries import line_price
+        return line_price(zone, timestamp) + edge - zone["price"]
+
+    def crosses(first):
+        sign = 1 if direction == "LONG" else -1
+        return (sign*(first.open-boundary(first.time_ms)) <= 0
+                and sign*(bar.close-boundary(bar.time_ms+300000)) > 0
+                and sign*(bar.close-first.open) > 0)
+    if (len(window) >= 3 and window[-3].time_ms % 900000 == 0
+            and window[-3].time_ms >= known_ms
+            and window[-2].time_ms == window[-3].time_ms + 300000
+            and bar.time_ms == window[-2].time_ms + 300000 and crosses(window[-3])):
+        return "15m"
+    if bar.time_ms >= known_ms and crosses(bar):
+        return "5m"
+    return None
+
+
 def _fvg_retest_from_snapshot(bar: Candle, structured: dict[str, Any]) -> bool:
     overlays = structured.get("chart_overlays") or {}
     zones = overlays.get("fvg_zones") or structured.get("ict_fvg") or []
@@ -184,6 +209,9 @@ def _token_on_bar(
         if not math.isfinite(level) or level <= 0:
             return False
         if token == "breakout_close":
+            plan = structured.get("verified_trade_plan") or {}
+            if plan.get("breakout_zone_confirmation"):
+                return bool(_breakout_frame(window, zone_lo, zone_hi, d, plan["boundary_known_ms"], plan["evidence"]["zone"]))
             if len(window) < 2:
                 return False
             return (window[-2].close <= level < bar.close) if d == "LONG" else (bar.close < level <= window[-2].close)
@@ -303,7 +331,11 @@ def process_bar_sequential(
         timestamps[nxt] = bar.time_ms
         evidence[nxt] = {'bar_low': float(bar.low), 'bar_high': float(bar.high),
                          'bar_close': float(bar.close), 'bar_ms': bar.time_ms}
-        reference=(structured.get('verified_trade_plan') or {}).get('confirmation_reference')
+        plan = structured.get("verified_trade_plan") or {}
+        if nxt == "breakout_close" and plan.get("breakout_zone_confirmation"):
+            evidence[nxt]["timeframe"] = _breakout_frame(window, zone_lo, zone_hi, direction,
+                plan["boundary_known_ms"], plan["evidence"]["zone"])
+        reference=plan.get('confirmation_reference')
         if reference and nxt in ('liquidity_sweep','mss'):
             evidence[nxt]['reference_price']=reference['liquidity_price' if nxt=='liquidity_sweep' else 'break_price']
         # A POI retest and a touch of that same entry zone are concurrent

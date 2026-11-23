@@ -1,7 +1,7 @@
 """Non-binding geometry hints; final proposals still use the full compiler."""
 from collections import Counter
 
-from app.services.multi_setup_analyst import PROFILES, compile_plan, fresh_pullback_gap, proposal_geometry
+from app.services.multi_setup_analyst import PROFILES, breakout_stop_anchor, compile_plan, fresh_pullback_gap, proposal_geometry
 
 
 def build_execution_feasibility(evidence, series, costs, observed_ms, strategies):
@@ -15,10 +15,11 @@ def build_execution_feasibility(evidence, series, costs, observed_ms, strategies
         for direction, sign in (("LONG", 1), ("SHORT", -1)):
             group = []
             shallow = [z for z in evidence if fresh_pullback_gap(z, direction, series["1m"][-1].close)] if sid == "trend_continuation" else []
-            for zone in major + shallow:
+            lines = [x for x in evidence if x["kind"] in ("trendline","recent_break")] if sid == "breakout_retest" else []
+            for zone in major + shallow + lines:
                 zone_kind = ("resistance" if sign == 1 else "support") if sid == "breakout_retest" else (
                     "support" if sign == 1 else "resistance")
-                if zone["kind"] not in (zone_kind, "FVG") and not (sid != "breakout_retest" and zone["kind"] == "OB"):
+                if zone["kind"] not in (zone_kind, "FVG", "trendline", "recent_break") and not (sid != "breakout_retest" and zone["kind"] == "OB"):
                     continue
                 if zone.get("direction") and zone["direction"] != direction:
                     continue
@@ -32,7 +33,14 @@ def build_execution_feasibility(evidence, series, costs, observed_ms, strategies
                 # Check the zone's own *confirmed HTF distal edge* first.
                 # Separate support/resistance/OB levels remain alternatives,
                 # but remote 4H pivots no longer dominate the stop search.
-                for inv in ([zone] if zone["kind"] != "FVG" else []) + [x for x in major if x["id"] != zone["id"]]:
+                anchors = ([zone] if zone["kind"] != "FVG" else []) + [x for x in major if x["id"] != zone["id"]]
+                if sid == "breakout_retest":
+                    anchor = breakout_stop_anchor(zone, evidence, direction)
+                    if anchor is None:
+                        rejected[sid + ":breakout_requires_opposite_swing"] += 1
+                        continue
+                    anchors = [anchor]
+                for inv in anchors:
                     same_zone = inv["id"] == zone["id"]
                     if not same_zone and inv["kind"] != (
                         "support" if sign == 1 else "resistance"
@@ -52,9 +60,9 @@ def build_execution_feasibility(evidence, series, costs, observed_ms, strategies
                         direction, zone, inv, target, evidence, series, costs
                     )
                     try:
-                        compile_plan(
+                        plan = compile_plan(
                             proposal, evidence, series, costs,
-                            observed_ms, observed_ms, seed=False
+                            observed_ms, observed_ms, seed=sid == "breakout_retest"
                         )
                     except ValueError as exc:
                         key = sid + ":" + str(exc)
@@ -73,7 +81,7 @@ def build_execution_feasibility(evidence, series, costs, observed_ms, strategies
                         continue
                     group.append(
                         {k: v for k, v in proposal.items() if k != "reason_fa"}
-                        | geometry
+                        | geometry | {"recent_break": bool(plan["verified_trade_plan"].get("seed_confirmations"))}
                     )
             counts[sid + ":" + direction] = len(group)
             # Keep prompt size bounded, diversify entry areas. This is NOT an allowlist.
