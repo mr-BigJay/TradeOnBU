@@ -121,3 +121,16 @@ def test_compact_fa_empty_analysis_does_not_invent_levels_or_position():
     assert "چشم‌انداز مشروط چهار‌ساعته" in text
     assert "سطوح اصلی:" in text
     assert "Entry: " not in text
+
+
+def test_telegram_brief_keeps_previous_review_and_one_primary_plan():
+    from datetime import datetime, timezone
+    from app.services.analyst_brief_report import telegram_analyst_brief
+    data = dict(strategy_id="trend_continuation", setup_mode="conditional", potential_direction="LONG",
+                entry_price=60511, stop_loss=58666.5, take_profit=63427.7,
+                analyst_summary={"previous_review":{"level":{"low":61000,"high":61200},"status_fa":"قیمت به ناحیه نرسید"},
+                                 "market_summary_fa":"بازگشت به حمایت محتمل است. " + "شاخص " * 150})
+    report = telegram_analyst_brief(data, symbol="BTCUSDT", live=62610, analyzed_at=datetime.now(timezone.utc))
+    assert "قیمت به ناحیه نرسید" in report and "بازگشت به حمایت محتمل است." in report
+    assert all(label in report for label in ("برگشت","ادامه‌روند","شکست و بازآزمایی"))
+    assert report.count("60,511") == 1 and "شاخص" not in report and len(report)<1000

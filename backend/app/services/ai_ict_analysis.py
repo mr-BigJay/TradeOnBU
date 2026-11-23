@@ -247,18 +247,24 @@ async def _deliver_ai_telegram(
     if not notifier.enabled:
         return
 
-    full_text = build_ai_telegram_summary(
-        symbol=symbol, live=live, decision=draft.decision, structured=draft.structured,
-        validation=draft.validation, report_fa=draft.report_fa, analyzed_at=analyzed_at,
-    )
-    decisions = (draft.structured.get("_artifacts") or {}).get("strategy_persistence") or {}
-    notes = [item["idea_fa"] for item in decisions.values() if item.get("idea_fa")]
-    if notes:
-        full_text = "\n".join(notes) + "\n\n" + full_text
-    caption = build_ai_telegram_caption(
-        symbol=symbol, live=live, decision=draft.decision, structured=draft.structured,
-        validation=draft.validation, analyzed_at=analyzed_at,
-    )
+    if draft.structured.get("analyst_summary") and not (draft.structured["analyst_summary"].get("ai_direct_paper") or {}).get("enabled"):
+        from app.services.analyst_brief_report import telegram_analyst_brief
+        from app.domain.tehran_time import format_tehran
+        full_text = telegram_analyst_brief(draft.structured, symbol=symbol, live=live, analyzed_at=analyzed_at)
+        caption = f"{symbol} | {format_tehran(analyzed_at)} تهران"
+    else:
+        full_text = build_ai_telegram_summary(
+            symbol=symbol, live=live, decision=draft.decision, structured=draft.structured,
+            validation=draft.validation, report_fa=draft.report_fa, analyzed_at=analyzed_at,
+        )
+        decisions = (draft.structured.get("_artifacts") or {}).get("strategy_persistence") or {}
+        notes = [item["idea_fa"] for item in decisions.values() if item.get("idea_fa")]
+        if notes:
+            full_text = "\n".join(notes) + "\n\n" + full_text
+        caption = build_ai_telegram_caption(
+            symbol=symbol, live=live, decision=draft.decision, structured=draft.structured,
+            validation=draft.validation, analyzed_at=analyzed_at,
+        )
     telegram_meta: dict[str, Any] = {"delivery_mode": "full_text"}
 
     if chart_path is not None:
