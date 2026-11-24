@@ -20,6 +20,16 @@ def _edge(stamps, candles, side):
     return {"anchors":[[a,p],[b,q]],"slope":(q-p)/(b-a)}
 
 
+def _broad_enough(kind, tf, upper, lower):
+    if kind != "descending_channel":
+        return True
+    # Six 4h intervals between the two highs and between the two lows.
+    return tf == "4h" and all(
+        edge["anchors"][1][0] - edge["anchors"][0][0] >= 6 * STEPS["4h"]
+        for edge in (upper, lower)
+    )
+
+
 def _position(pattern, bar, step, tolerance):
     stamp = bar.time_ms+step
     upper, lower = (_price(pattern[k],stamp) for k in ("upper","lower"))
@@ -42,6 +52,8 @@ def update_drawings(previous, proposals, series, now_ms):
     tolerance = {tf:.2*atr(bars) for tf,bars in closed.items()}
     for item in old.get("active",[]):
         tf = item["timeframe"]
+        if not _broad_enough(item["kind"], tf, item["upper"], item["lower"]):
+            continue
         pattern = {**item, "upper":dict(item["upper"]), "lower":dict(item["lower"])}
         for bar in closed[tf]:
             stamp = bar.time_ms+STEPS[tf]
@@ -57,7 +69,9 @@ def update_drawings(previous, proposals, series, now_ms):
                 break
         else:
             active.append(pattern)
-    for row in (proposals[:6] if isinstance(proposals,list) else []):
+    candidates = proposals[:6] if isinstance(proposals,list) else []
+    channel_proposals = sum(isinstance(row,dict) and row.get("kind") in ("ascending_channel","descending_channel") for row in candidates)
+    for row in candidates:
         if not isinstance(row,dict):
             continue
         tf,kind = row.get("timeframe"),row.get("kind")
@@ -69,7 +83,7 @@ def update_drawings(previous, proposals, series, now_ms):
         candles = {b.time_ms:b for b in bars}
         upper = _edge(row.get("upper"),candles,"high")
         lower = _edge(row.get("lower"),candles,"low")
-        if not upper or not lower:
+        if not upper or not lower or not _broad_enough(kind, tf, upper, lower):
             continue
         first = max(e["anchors"][0][0] for e in (upper,lower))
         last = min(e["anchors"][1][0] for e in (upper,lower))
@@ -91,4 +105,4 @@ def update_drawings(previous, proposals, series, now_ms):
             edge["price"] = _price(edge,pattern["as_of_ms"])
         pattern["position"] = _position(pattern,bars[-1],STEPS[tf],tolerance[tf])
         active.append(pattern)
-    return dict(active=active,ended=ended,replacement_after=cutoffs)
+    return dict(active=active,ended=ended,replacement_after=cutoffs,channel_proposals=channel_proposals)

@@ -556,3 +556,18 @@ async def test_send_photo_failure_does_not_block_text():
                 text_id = await notifier.send_ai_report("body")
     assert photo_id is None
     assert text_id == 42
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("patterns", [[], [{"timeframe":"4h"}], [{"timeframe":"1h"}]])
+async def test_analyst_chart_always_requests_hourly_candles(tmp_path, patterns):
+    from datetime import datetime, timezone
+    from app.services import ai_ict_analysis as ai
+    with patch.object(ai, "chart_path_for_run", return_value=tmp_path/"preview.png"), \
+         patch.object(ai, "_candles_from_payload", return_value=[]) as read, \
+         patch.object(ai, "render_ict_chart_png") as render:
+        await ai._generate_chart_for_run(run_id=1, symbol="BTCUSDT", market_payload={},
+            structured={"analyst_summary":{"chart_patterns":patterns}}, live=100, decision="NO_TRADE",
+            analyzed_at=datetime.now(timezone.utc))
+        read.assert_called_once_with({}, "1h")
+        assert render.call_args.kwargs["interval"] == "1h"

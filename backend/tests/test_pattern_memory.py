@@ -18,3 +18,16 @@ def test_ai_channel_keeps_anchors_then_retires_on_closed_hour():
     broken=review(follow,[request],bars+[Candle(130,155,129,152,30*h)])
     assert not broken["active"] and broken["ended"][0]["position"]=="above"
     assert not review({},[dict(request,timeframe="5m"),dict(request,upper=[h,99*h])],bars)["active"]
+
+
+def test_descending_channel_requires_broad_four_hour_edges_even_when_carried():
+    for tf,step,span,expected in (("1h",3600000,12,False),("4h",14400000,5,False),("4h",14400000,6,True)):
+        bars=[Candle(150-i,155-i,145-i,150-i,i*step) for i in range(20)]
+        row=dict(kind="descending_channel",timeframe=tf,upper=[step,(1+span)*step],
+                 lower=[2*step,(2+span)*step])
+        result=update_drawings({},[row],{tf:bars},20*step)
+        assert bool(result["active"]) == expected
+        if expected:
+            old=dict(result["active"][0],timeframe="1h")
+            previous={"analyst_summary":{"drawing_memory":{"active":[old]}}}
+            assert not update_drawings(previous,[],{},20*step)["active"]
