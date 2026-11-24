@@ -175,7 +175,7 @@ def telegram_analyst_brief(structured, *, symbol, live, analyzed_at):
     from app.services.telegram_message_format import format_persian_report_for_telegram
 
     summary = structured["analyst_summary"]
-    lines = [f"{symbol} | {format_tehran(analyzed_at)} تهران | قیمت {_price(live)}"]
+    lines = [f"نماد {symbol} | زمان تهران {format_tehran(analyzed_at)}", f"قیمت زمان تحلیل {_price(live)}"]
     prior = summary.get("previous_review") or {}
     if prior.get("status_fa"):
         level = prior.get("level") or {}
@@ -199,6 +199,10 @@ def telegram_analyst_brief(structured, *, symbol, live, analyzed_at):
     if outlook:
         lines.append(outlook)
     from app.services.chart_patterns import NAMES, POSITIONS
+    memory = summary.get("drawing_memory") or {}
+    if "channel_proposals" in memory and not any(p["kind"].endswith("_channel") for p in memory["active"]):
+        lines.append("کانال پیشنهادی با کندل‌ها تأیید نشد." if memory["channel_proposals"]
+                     else "در این نوبت تحلیلگر کانال تازه‌ای پیشنهاد نکرد و کانال فعالی ثبت نشده است.")
     for ended in (summary.get("drawing_memory") or {}).get("ended", [])[:2]:
         event = {"above":"کندل بالای سقف بسته شد", "below":"کندل زیر کف بسته شد",
                  "converged":"دو مرز به هم رسیدند"}[ended["position"]]
@@ -210,6 +214,7 @@ def telegram_analyst_brief(structured, *, symbol, live, analyzed_at):
     primary = plans.get(structured.get("strategy_id"))
     records = (structured.get("_artifacts") or {}).get("strategy_persistence") or {}
     for sid, label in _LABELS.items():
+        label = f"استراتژی {label}"
         plan = plans.get(sid)
         if not plan:
             lines.append(f"{label} | پلن مشروطی ثبت نشده.")

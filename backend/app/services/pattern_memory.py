@@ -57,7 +57,9 @@ def update_drawings(previous, proposals, series, now_ms):
                 break
         else:
             active.append(pattern)
-    for row in (proposals[:6] if isinstance(proposals,list) else []):
+    candidates = proposals[:6] if isinstance(proposals,list) else []
+    channel_proposals = sum(isinstance(row,dict) and row.get("kind") in ("ascending_channel","descending_channel") for row in candidates)
+    for row in candidates:
         if not isinstance(row,dict):
             continue
         tf,kind = row.get("timeframe"),row.get("kind")
@@ -91,4 +93,4 @@ def update_drawings(previous, proposals, series, now_ms):
             edge["price"] = _price(edge,pattern["as_of_ms"])
         pattern["position"] = _position(pattern,bars[-1],STEPS[tf],tolerance[tf])
         active.append(pattern)
-    return dict(active=active,ended=ended,replacement_after=cutoffs)
+    return dict(active=active,ended=ended,replacement_after=cutoffs,channel_proposals=channel_proposals)

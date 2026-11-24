@@ -120,3 +120,12 @@ def test_normalize_collapses_excessive_blank_lines():
     norm = normalize_report_layout_for_telegram(raw)
     assert "\n\n\n" not in norm
     assert "قیمت: 100" in norm
+
+
+def test_mixed_report_lines_have_rtl_base_and_isolated_strategy_and_indicators():
+    from app.services.telegram_message_format import format_persian_report_for_telegram
+    text = "نماد BTCUSDT\nاستراتژی A · برگشت ICT\nقیمت 59,710.9 زیر EMA20"
+    result = format_persian_report_for_telegram(text)
+    assert all(line.startswith("\u200f") for line in result.splitlines())
+    assert all("\u2066"+token+"\u2069" in result for token in ("BTCUSDT","A","EMA20","59,710.9"))
+    assert format_persian_report_for_telegram(result) == result

@@ -191,9 +191,7 @@ async def _generate_chart_for_run(
 ) -> tuple[Path | None, dict[str, Any]]:
     try:
         chart_path = chart_path_for_run(run_id)
-        drawings = (structured.get("analyst_summary") or {}).get("chart_patterns") or []
-        frames = {p.get("timeframe") for p in drawings}
-        interval = "1h" if "1h" in frames else "4h" if "4h" in frames else "15m"
+        interval = "1h" if "analyst_summary" in structured else "15m"
         candles = _candles_from_payload(market_payload, interval)
         overlays = _chart_overlays_from_ai(structured)
         trade_levels = _levels_for_chart(structured)
@@ -255,7 +253,8 @@ async def _deliver_ai_telegram(
         from app.services.analyst_brief_report import telegram_analyst_brief
         from app.domain.tehran_time import format_tehran
         full_text = telegram_analyst_brief(draft.structured, symbol=symbol, live=live, analyzed_at=analyzed_at)
-        caption = f"{symbol} | {format_tehran(analyzed_at)} تهران"
+        from app.services.telegram_message_format import format_persian_report_for_telegram
+        caption = format_persian_report_for_telegram(f"نمودار {symbol} | زمان تهران {format_tehran(analyzed_at)}")
     else:
         full_text = build_ai_telegram_summary(
             symbol=symbol, live=live, decision=draft.decision, structured=draft.structured,

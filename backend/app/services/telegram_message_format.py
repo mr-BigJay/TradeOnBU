@@ -66,7 +66,8 @@ _LTR_ISLAND_RE = re.compile(
     r"-?\d+(?:\.\d+)?%|"
     r"\b\d+(?:\.\d+)?[mhdHDM]\b|"
     r"-?\d+\.\d+|"
-    r"1:\d+(?:\.\d+)?"
+    r"1:\d+(?:\.\d+)?|"
+    r"(?<![A-Za-z0-9])(?:[ABC]|Paper|EMA[0-9]+|RSI[0-9]+|ATR[0-9]+|ADX[0-9]+)(?![A-Za-z0-9])"
     r")"
 )
 
@@ -233,7 +234,7 @@ def apply_line_bidi(line: str) -> str:
     if not line or _already_has_bidi_controls(line):
         return line
     if _contains_persian(line):
-        return isolate_ltr_tokens_in_persian(line)
+        return "\u200f" + isolate_ltr_tokens_in_persian(line).lstrip("\u200f")
     return line
 
 
