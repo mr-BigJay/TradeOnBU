@@ -191,7 +191,10 @@ async def _generate_chart_for_run(
 ) -> tuple[Path | None, dict[str, Any]]:
     try:
         chart_path = chart_path_for_run(run_id)
-        candles = _candles_from_payload(market_payload, "15m")
+        drawings = (structured.get("analyst_summary") or {}).get("chart_patterns") or []
+        frames = {p.get("timeframe") for p in drawings}
+        interval = "1h" if "1h" in frames else "4h" if "4h" in frames else "15m"
+        candles = _candles_from_payload(market_payload, interval)
         overlays = _chart_overlays_from_ai(structured)
         trade_levels = _levels_for_chart(structured)
         try:
@@ -199,7 +202,7 @@ async def _generate_chart_for_run(
                 render_ict_chart_png,
                 output_path=chart_path,
                 symbol=symbol,
-                interval="15m",
+                interval=interval,
                 candles=candles,
                 overlays=overlays,
                 live_price=live,
@@ -554,10 +557,11 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
                 ).order_by(AiAnalysisRun.id.desc()).limit(1))).scalar_one_or_none()
             from app.services.analyst_outlook import review_previous
             prior_review = review_previous(previous, candles_by_interval["5m"], observed_ms)
-            from app.services.chart_patterns import pattern_context
-            patterns = pattern_context(candles_by_interval, observed_ms)
+            from app.services.pattern_memory import update_drawings
+            drawings = update_drawings(previous, [], candles_by_interval, observed_ms)
+            patterns = drawings["active"]
             user_payload, analyst_payload_audit = build_analyst_payload(
-                market={**market_payload, "previous_review": prior_review, "chart_patterns": patterns},
+                market={**market_payload, "previous_review": prior_review, "chart_patterns": patterns, "ended_patterns": drawings["ended"]},
                 evidence_catalog=evidence,
                 outlook_major_levels=outlook_major_levels,
                 market_intelligence=market_intelligence,
@@ -621,11 +625,13 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
         structured = _extract_json(analysis.text)
         direct_proposal = structured.get("trade_now") if direct_mode else None
         if analyst_mode:
+            drawings = update_drawings(previous, structured.get("new_drawings"), candles_by_interval, observed_ms)
             structured=analyst.compile_response(structured,evidence,candles_by_interval,costs,
                 int(datetime.now(timezone.utc).timestamp()*1000),observed_ms,enabled_strategies,
                 outlook_major_levels=outlook_major_levels,
                 execution_feasibility=feasibility)
-            structured["analyst_summary"]["chart_patterns"] = patterns
+            structured["analyst_summary"]["drawing_memory"] = drawings
+            structured["analyst_summary"]["chart_patterns"] = drawings["active"]
             structured["analyst_summary"]["previous_review"] = prior_review
             structured["analyst_summary"]["execution_feasibility"] = feasibility
             if direct_mode:

@@ -199,6 +199,10 @@ def telegram_analyst_brief(structured, *, symbol, live, analyzed_at):
     if outlook:
         lines.append(outlook)
     from app.services.chart_patterns import NAMES, POSITIONS
+    for ended in (summary.get("drawing_memory") or {}).get("ended", [])[:2]:
+        event = {"above":"کندل بالای سقف بسته شد", "below":"کندل زیر کف بسته شد",
+                 "converged":"دو مرز به هم رسیدند"}[ended["position"]]
+        lines.append(f"پیگیری {NAMES[ended['kind']]} ({ended['timeframe']})؛ {event}.")
     for pattern in (summary.get("chart_patterns") or [])[:3]:
         lines.append(f"{NAMES[pattern['kind']]} ({pattern['timeframe']})، {POSITIONS[pattern['position']]}؛ "
                      f"بین {_price(pattern['lower']['price'])} و {_price(pattern['upper']['price'])}.")
