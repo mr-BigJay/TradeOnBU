@@ -559,8 +559,15 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
             from app.services.pattern_memory import update_drawings
             drawings = update_drawings(previous, [], candles_by_interval, observed_ms)
             patterns = drawings["active"]
+            from app.services.ict_structure import find_swings
+            four_hour_bars = [bar for bar in candles_by_interval.get("4h", [])
+                              if bar.time_ms + 14_400_000 <= observed_ms]
+            channel_swings = [
+                {"time_ms": swing.time_ms, "kind": swing.kind, "price": swing.price}
+                for swing in find_swings(four_hour_bars, left=3, right=3)
+            ]
             user_payload, analyst_payload_audit = build_analyst_payload(
-                market={**market_payload, "previous_review": prior_review, "chart_patterns": patterns, "ended_patterns": drawings["ended"]},
+                market={**market_payload, "channel_swings_4h": channel_swings, "previous_review": prior_review, "chart_patterns": patterns, "ended_patterns": drawings["ended"]},
                 evidence_catalog=evidence,
                 outlook_major_levels=outlook_major_levels,
                 market_intelligence=market_intelligence,
