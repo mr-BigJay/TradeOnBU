@@ -107,7 +107,8 @@ async def build_raw_market_payload(
     for interval in AI_TIMEFRAMES:
         limit = limits[interval]
         try:
-            bundle = await market.fetch_kline_bundle(symbol, interval, limit)
+            requested = limit + 1 if interval == "4h" else limit
+            bundle = await market.fetch_kline_bundle(symbol, interval, requested)
         except Exception as exc:
             raise MarketContextError("market_fetch_failed", f"{interval}: {exc}") from exc
 
