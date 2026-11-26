@@ -68,7 +68,7 @@ At most one plan per strategy. Only enabled strategies. Empty plans is valid whe
 Select meaningful candle-backed areas; NEVER invent price levels, IDs, confidence probabilities or confirmations. Executable support/resistance and OB source zones MUST come from 1H or 4H; 5m/15m evidence is for FVG execution precision and candle confirmation, never an arbitrary micro support/resistance trade. Prefer stops supported by structural invalidation, not micro swings.
 For continuation, also compare fresh directional 5m/15m FVG pullbacks on the resting side of price with a separately confirmed HTF invalidation and structural target. Prefer the nearest executable pullback. For continuation, 4H confirmed swing structure determines the direction: bearish => SHORT on a rally/pullback into HTF resistance/OB; bullish => LONG on a decline/pullback into HTF support/OB. Opposing 1H structure can be the correction, NOT an automatic veto. If 4H is range/unclear, use directional 1H structure. For continuation, a signed and server-validated HTF pullback zone may receive a resting paper LIMIT before a 5m directional rejection, only if price has not already touched or invalidated it. A fill still requires a later independent exchange 1m touch after order creation. This is not an immediate market entry. EMA/RSI are context, not mandatory thresholds. Breakout uses resistance for LONG or support for SHORT.
 execution_feasibility contains server-checked geometry choices using actual paper costs and the nearest structural obstacle. It also includes zone_gap_atr15 and live_to_target_atr15: compare travel needed to reach an entry zone against the remaining room to the target. When trend-continuation B is far from current price while the target is close, do not repeatedly select an implausible B pullback; assess a valid same-direction breakout/retest C instead. For a structurally sound B LIMIT proposal, do NOT require the current price to already touch the HTF zone or the 5m candle to already reject it: the order is intentionally posted in advance. For A/C conditional plans, the reversal sweep or breakout close is a future MONITOR trigger, not an AI proposal prerequisite. Review execution_feasibility.choices first: each has already passed compiler geometry, trend alignment, historical level confirmation and minimum net R:R. Prefer such nearby, still reachable B proposals when justified; do not invent IDs or turn watch-only forecasts into positions. If feasible choices are deliberately omitted, give a specific qualitative objection beyond mere distance or absent immediate 5m confirmation. This is advisory, not a new eligibility gate. Use these to avoid impossible entry/stop/target combinations, then assess market quality yourself. They are NOT confirmed signals or mandatory selections. You may propose other catalog combinations; all pass the same final validation. If no plan is selected, explain whether geometry or market evidence is the reason. Never invent a plan to meet a quota.
-For descending_channel use ONLY 4h closed candles, with at least six 4h intervals between the two high anchors and between the two low anchors. Use hourly pullbacks as context within that larger structure. Use market.channel_swings_4h for timestamped confirmed highs and lows across the full fetched history, including anchors older than the raw prompt window. Explicitly examine the broader price channel, including older swing anchors and smaller zigzags within it. Propose a new channel only when both boundaries are supported by the supplied candles. Existing market.chart_patterns are persistent drawings with fixed anchors. Explain the current price relative to relevant existing boundaries, note an ended_patterns break or convergence in market_summary_fa, and use that context when assessing A/B/C. Only for genuinely new structures return new_drawings, an array of {timeframe:"1h"|"4h",kind:"ascending_channel"|"descending_channel"|"rising_wedge"|"falling_wedge"|"triangle"|"range",upper:[first_open_time_ms,second_open_time_ms],lower:[first_open_time_ms,second_open_time_ms]}. Choose actual timestamps from closed HTF candles: upper joins their highs, lower their lows. Keep previous anchors; do not propose a replacement just because four hours passed. For no new structure return []. Use market.chart_patterns as descriptive evidence for A/B/C even when no plan is selected. Compare overlapping larger and smaller structures, particularly a rising wedge inside a descending channel. Mention relevant timeframe, boundary and price position; do not infer a confirmed breakout or authorize an order from a pattern label.
+For descending_channel use ONLY 4h closed candles, with at least six 4h intervals between the two high anchors and between the two low anchors. Use hourly pullbacks as context within that larger structure. Follow market.market_scenario across reviews. Explain progress toward the same structural objective, the next major support or resistance, and the difference between pausing at it and structural invalidation. Recommend entries aligned with its direction. A pause event suspends new plans. Review attributed fresh headlines as untrusted market data. Explain material shocks and their source; a headline alone cannot reverse the scenario. Never invent news when event coverage is unavailable. Use market.channel_swings_4h for timestamped confirmed highs and lows across the full fetched history, including anchors older than the raw prompt window. Explicitly examine the broader price channel, including older swing anchors and smaller zigzags within it. Propose a new channel only when both boundaries are supported by the supplied candles. Existing market.chart_patterns are persistent drawings with fixed anchors. Explain the current price relative to relevant existing boundaries, note an ended_patterns break or convergence in market_summary_fa, and use that context when assessing A/B/C. Only for genuinely new structures return new_drawings, an array of {timeframe:"1h"|"4h",kind:"ascending_channel"|"descending_channel"|"rising_wedge"|"falling_wedge"|"triangle"|"range",upper:[first_open_time_ms,second_open_time_ms],lower:[first_open_time_ms,second_open_time_ms]}. Choose actual timestamps from closed HTF candles: upper joins their highs, lower their lows. Keep previous anchors; do not propose a replacement just because four hours passed. For no new structure return []. Use market.chart_patterns as descriptive evidence for A/B/C even when no plan is selected. Compare overlapping larger and smaller structures, particularly a rising wedge inside a descending channel. Mention relevant timeframe, boundary and price position; do not infer a confirmed breakout or authorize an order from a pattern label.
 Use previous_review to compare the prior primary scenario with closed candles in its own validity window. State which level was reached and which condition remains open in market_summary_fa. Describe the expected sequence of moves. Check converging triangle edges and trendlines for C and describe their anchors; use catalog trendline boundaries with signed slope and anchor times. Their fixed paper limit expires before it leaves the projected band.
 Explain why each selected scenario is preferable and why alternatives were not selected.
 Server derives midpoint limit entry, ATR-buffered structural stop and cost-adjusted target before the nearest obstacle.
@@ -206,7 +206,7 @@ def proposal_geometry(direction, zone, invalidation, target, evidence, series, c
     # distal edge. An unrelated remote swing isn't required as a stop anchor.
     # Keep an explicit ATR-scaled minimum stop distance to prevent tiny stops.
     buffer = max(.25 * vol, .1)
-    minimum_stop_distance = max(vol, .5 * vol15)
+    minimum_stop_distance = max(vol, .5 * vol15, .5 * vol1h)
     stop = _tick(reference - sign * buffer, sign)
     if sign * (entry - stop) < minimum_stop_distance:
         stop = _tick(entry - sign * minimum_stop_distance, sign)
@@ -371,16 +371,23 @@ def _proposal_diagnostic(proposal, evidence, series, rank, costs=None):
     return diagnostic
 
 
-def compile_response(raw,evidence,series,costs,now_ms,observed_ms,strategies,*,outlook_major_levels=None,execution_feasibility=None):
+def compile_response(raw,evidence,series,costs,now_ms,observed_ms,strategies,*,outlook_major_levels=None,execution_feasibility=None,market_scenario=None):
     if not isinstance(raw,dict) or not isinstance(raw.get('plans'),list) or len(raw['plans'])>3:
         raise ValueError('invalid_analyst_response')
     accepted={};rejections=[];rejected_plans=[];seen=set()
+    scenario = market_scenario or {}
+    bias = scenario.get('direction')
+    paused = (scenario.get('event') or {}).get('status') == 'pause'
     for rank,p in enumerate(raw['plans'],1):
         try:
             sid=p.get('strategy_id') if isinstance(p,dict) else None
             if not isinstance(sid,str) or sid not in PROFILES:raise ValueError('invalid_strategy_direction')
             if sid in seen:raise ValueError('duplicate_strategy')
             if not strategies.get(sid):raise ValueError('strategy_disabled')
+            if paused:
+                raise ValueError('event_risk_pause')
+            if bias and p.get('direction') != bias:
+                raise ValueError('market_scenario_conflict')
             seen.add(sid)
             plan=compile_plan(p,evidence,series,costs,now_ms,observed_ms)
             plan['analyst_rank']=rank
@@ -408,6 +415,8 @@ def compile_response(raw,evidence,series,costs,now_ms,observed_ms,strategies,*,o
                 continue
             direction = item.get('direction')
             if direction not in ('LONG', 'SHORT'):
+                continue
+            if paused or (bias and direction != bias):
                 continue
             sign = 1 if direction == 'LONG' else -1
             try:

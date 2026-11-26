@@ -195,8 +195,26 @@ def render_ict_chart_png(
                     if clean[0].time_ms <= stamp <= clean[-1].time_ms:
                         idx = df.index.get_indexer([pd.to_datetime(stamp,unit="ms",utc=True)],method="nearest")[0]
                         ax.scatter(idx,anchor,color=color,s=12)
+        if pattern["kind"].endswith("_channel"):
+            upper, lower = pattern["upper"], pattern["lower"]
+            start = max(upper["anchors"][0][0], lower["anchors"][0][0])
+            midpoints = []
+            for i, bar in enumerate(clean):
+                if start <= bar.time_ms <= pattern["as_of_ms"]:
+                    prices = [e["anchors"][0][1] + (bar.time_ms-e["anchors"][0][0])*e["slope"]
+                              for e in (upper, lower)]
+                    midpoints.append((i, sum(prices)/2))
+            if len(midpoints) >= 2:
+                ax.plot(*zip(*midpoints), color=color, linewidth=.8, linestyle="--")
         pattern_count += 1
-    if pattern_count:
+    scenario = overlays.get("market_scenario") or {}
+    direction = scenario.get("direction")
+    invalidation = scenario.get("level")
+    if direction in ("LONG", "SHORT") and invalidation:
+        bias = "bullish ↑" if direction == "LONG" else "bearish ↓"
+        ax.axhline(invalidation, color="#f472b6", linewidth=1, linestyle="-.",
+                   label=f"4H scenario {bias} | invalidation {_format_price(invalidation)}")
+    if pattern_count or (direction and invalidation):
         ax.legend(loc="upper left", fontsize=7, ncol=2)
 
     if trade_levels:
