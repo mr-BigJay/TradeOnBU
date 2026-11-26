@@ -189,11 +189,12 @@ async def _generate_chart_for_run(
     live: float,
     decision: str,
     analyzed_at: datetime,
+    hourly_chart=None,
 ) -> tuple[Path | None, dict[str, Any]]:
     try:
         chart_path = chart_path_for_run(run_id)
         interval = "1h" if "analyst_summary" in structured else "15m"
-        candles = _candles_from_payload(market_payload, interval)
+        candles = hourly_chart if interval == "1h" and hourly_chart else _candles_from_payload(market_payload, interval)
         overlays = _chart_overlays_from_ai(structured)
         trade_levels = _levels_for_chart(structured)
         try:
@@ -443,8 +444,9 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
         from app.services.market_data import MarketDataService
 
         market_svc = MarketDataService(settings)
+        hourly_chart = []
         market_payload, live, candles_by_interval = await build_raw_market_payload(
-            symbol, settings, market=market_svc
+            symbol, settings, market=market_svc, hourly_chart=hourly_chart
         )
         from app.services import verified_trade_plan as verified
         from app.services import multi_setup_analyst as analyst
@@ -794,6 +796,7 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
                 structured=draft.structured,
                 live=live,
                 decision=draft.decision or "NO_TRADE",
+                hourly_chart=hourly_chart,
                 analyzed_at=analyzed_at,
             )
             draft.structured = structured_with_art
