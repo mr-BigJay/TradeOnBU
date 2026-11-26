@@ -207,7 +207,14 @@ def render_ict_chart_png(
             if len(midpoints) >= 2:
                 ax.plot(*zip(*midpoints), color=color, linewidth=.8, linestyle="--")
         pattern_count += 1
-    if pattern_count:
+    scenario = overlays.get("market_scenario") or {}
+    direction = scenario.get("direction")
+    invalidation = scenario.get("level")
+    if direction in ("LONG", "SHORT") and invalidation:
+        bias = "bullish ↑" if direction == "LONG" else "bearish ↓"
+        ax.axhline(invalidation, color="#f472b6", linewidth=1, linestyle="-.",
+                   label=f"4H scenario {bias} | invalidation {_format_price(invalidation)}")
+    if pattern_count or (direction and invalidation):
         ax.legend(loc="upper left", fontsize=7, ncol=2)
 
     if trade_levels:

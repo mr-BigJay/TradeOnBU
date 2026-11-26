@@ -175,6 +175,7 @@ def _merge_artifacts(structured: dict[str, Any], artifacts: dict[str, Any]) -> d
 def _chart_overlays_from_ai(structured: dict[str, Any]) -> dict[str, Any]:
     raw = structured.get("chart_overlays")
     overlays = dict(raw) if isinstance(raw, dict) else {}
+    overlays["market_scenario"] = (structured.get("analyst_summary") or {}).get("market_scenario") or {}
     overlays["chart_patterns"] = (structured.get("analyst_summary") or {}).get("chart_patterns") or []
     return overlays
 
@@ -557,7 +558,14 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
             from app.services.analyst_outlook import review_previous
             prior_review = review_previous(previous, candles_by_interval["5m"], observed_ms)
             from app.services.pattern_memory import update_drawings
-            drawings = update_drawings(previous, [], candles_by_interval, observed_ms)
+            from app.services.chart_patterns import pattern_context
+            triangles = [
+                {"timeframe": p["timeframe"], "kind": "triangle",
+                 **{side: [t for t, _ in p[side]["anchors"]] for side in ("upper", "lower")}}
+                for p in pattern_context({tf: candles_by_interval.get(tf, []) for tf in ("1h","4h")}, observed_ms)
+                if p["kind"] == "triangle" and p["position"] not in ("above","below")
+            ]
+            drawings = update_drawings(previous, triangles, candles_by_interval, observed_ms)
             patterns = drawings["active"]
             from app.services.ict_structure import find_swings
             four_hour_bars = [bar for bar in candles_by_interval.get("4h", [])
@@ -652,7 +660,14 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
         structured = _extract_json(analysis.text)
         direct_proposal = structured.get("trade_now") if direct_mode else None
         if analyst_mode:
-            drawings = update_drawings(previous, structured.get("new_drawings"), candles_by_interval, observed_ms)
+            proposals = structured.get("new_drawings")
+            drawings = update_drawings(previous, (proposals[:6] if isinstance(proposals,list) else []),
+                                       candles_by_interval, observed_ms)
+            for triangle in patterns:
+                if triangle["kind"] == "triangle" and not any(
+                    p["kind"] == "triangle" and p["timeframe"] == triangle["timeframe"] for p in drawings["active"]
+                ):
+                    drawings["active"].append(triangle)
             if channel:
                 drawings["active"] = [channel] + [p for p in drawings["active"]
                     if not (p["timeframe"]=="4h" and p["kind"].endswith("_channel"))]
