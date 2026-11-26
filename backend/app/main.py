@@ -109,6 +109,10 @@ async def lifespan(app: FastAPI):
             coalesce=True,
         )
 
+        from app.services.hourly_reaction import tick as hourly_reaction_tick
+        scheduler.add_job(hourly_reaction_tick, "interval", seconds=60, id="hourly_ai_reaction",
+                          max_instances=1, coalesce=True)
+
         from app.services import structure_shadow, verified_trade_plan
         if not verified_trade_plan.enabled() and structure_shadow.enabled():
             scheduler.add_job(structure_shadow.tick, "interval", seconds=60, id="ict_structure_shadow",

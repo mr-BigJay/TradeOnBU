@@ -548,6 +548,9 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
                 analyst.INSTRUCTIONS + ai_direct_paper.DIRECT_INSTRUCTIONS
                 if direct_requested else analyst.INSTRUCTIONS
             )
+            from app.services import hourly_reaction, hourly_playbook
+            if hourly_reaction.enabled():
+                analyst_instructions += hourly_playbook.PLAN_PROMPT
             from app.services.analyst_feasibility import build_execution_feasibility
             feasibility = build_execution_feasibility(
                 evidence, candles_by_interval, costs, observed_ms, enabled_strategies)
@@ -598,7 +601,7 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
                 for swing in swings
             ]
             user_payload, analyst_payload_audit = build_analyst_payload(
-                market={**market_payload, "market_scenario":scenario, "channel_swings_4h": channel_swings, "previous_review": prior_review, "chart_patterns": patterns, "ended_patterns": drawings["ended"]},
+                market={**market_payload, "previous_hourly_watch": ((previous or {}).get("analyst_summary") or {}).get("hourly_watch", {}), "market_scenario":scenario, "channel_swings_4h": channel_swings, "previous_review": prior_review, "chart_patterns": patterns, "ended_patterns": drawings["ended"]},
                 evidence_catalog=evidence,
                 outlook_major_levels=outlook_major_levels,
                 market_intelligence=market_intelligence,
@@ -673,10 +676,13 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
             if channel:
                 drawings["active"] = [channel] + [p for p in drawings["active"]
                     if not (p["timeframe"]=="4h" and p["kind"].endswith("_channel"))]
+            hourly_watch = hourly_playbook.watch_plans(structured.get("hourly_watch"), candles_by_interval)
             structured=analyst.compile_response(structured,evidence,candles_by_interval,costs,
                 int(datetime.now(timezone.utc).timestamp()*1000),observed_ms,enabled_strategies,
                 outlook_major_levels=outlook_major_levels,
                 execution_feasibility=feasibility, market_scenario=scenario)
+            if hourly_reaction.enabled():
+                structured["analyst_summary"]["hourly_watch"] = hourly_watch
             structured["analyst_summary"]["market_scenario"] = scenario
             structured["analyst_summary"]["drawing_memory"] = drawings
             structured["analyst_summary"]["chart_patterns"] = drawings["active"]
