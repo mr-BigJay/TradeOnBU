@@ -278,4 +278,7 @@ def _scenario_lines(summary):
         lines.append("پوشش خبر و تقویم اقتصادی در این بررسی در دسترس نیست.")
     if event.get("news_available") is False and event.get("calendar_available"):
         lines.append("پوشش خبرهای جهان در این نوبت در دسترس نیست.")
+    for plan in (summary.get("hourly_watch") or {}).values():
+        lines.append(f"رصد ساعتی {plan['strategy']} · {plan['direction']} در "
+                     f"{_zone(plan['zone_low'],plan['zone_high'])} | {plan['expect_fa']}")
     return lines

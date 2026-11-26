@@ -189,6 +189,9 @@ async def maybe_auto_open_paper_position(
     from app.services import verified_trade_plan as verified
     vplan = (setup.structured_snapshot or {}).get('verified_trade_plan')
     from app.services.multi_setup_analyst import VERSION as ANALYST_VERSION
+    from app.services.hourly_reaction import enabled as hourly_enabled
+    if hourly_enabled() and vplan and vplan.get("version") == ANALYST_VERSION:
+        return {**meta, "skipped": True, "reason": "hourly_ai_owns_entry"}
     structural_preorder = bool(
         allow_structural_preorder
         and vplan and vplan.get("version") == ANALYST_VERSION

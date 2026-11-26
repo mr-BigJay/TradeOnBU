@@ -675,3 +675,17 @@ class StructureObservation(Base):
     state: Mapped[str] = mapped_column(String(32), index=True)
     evidence: Mapped[dict] = mapped_column(JSON)
     tracking: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class HourlyReaction(Base):
+    __tablename__ = "hourly_ai_reactions"
+
+    close_ms: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    status: Mapped[str] = mapped_column(String(32), default="reviewing")
+    run_id: Mapped[int | None] = mapped_column(Integer)
+    detail: Mapped[dict] = mapped_column(JSON, default=dict)
+    executed_plan: Mapped[str | None] = mapped_column(String(100), unique=True)
+    position_id: Mapped[str | None] = mapped_column(String(64))
+    notice: Mapped[str | None] = mapped_column(Text)
+    notify_after_ms: Mapped[int] = mapped_column(BigInteger, default=0)
+    telegram_id: Mapped[int | None] = mapped_column(BigInteger)
