@@ -107,6 +107,7 @@ def compact_analyst_report_fa(structured: dict, *, live: float = 0) -> str:
     for pattern in summary.get("chart_patterns") or []:
         lines.append(f"{NAMES[pattern['kind']]} ({pattern['timeframe']}) | {POSITIONS[pattern['position']]} | "
                      f"کف {_price(pattern['lower']['price'])}، سقف {_price(pattern['upper']['price'])}")
+    lines.extend(_scenario_lines(summary))
     prior = summary.get("previous_review")
     if prior:
         lines.append(f"پیگیری تحلیل قبل | {_zone(prior['level']['low'], prior['level']['high'])} | {prior['status_fa']}")
@@ -176,6 +177,7 @@ def telegram_analyst_brief(structured, *, symbol, live, analyzed_at):
 
     summary = structured["analyst_summary"]
     lines = [f"نماد {symbol} | زمان تهران {format_tehran(analyzed_at)}", f"قیمت زمان تحلیل {_price(live)}"]
+    lines.extend(_scenario_lines(summary))
     prior = summary.get("previous_review") or {}
     if prior.get("status_fa"):
         level = prior.get("level") or {}
@@ -225,7 +227,7 @@ def telegram_analyst_brief(structured, *, symbol, live, analyzed_at):
             reason = {"ict_reversal":"سناریو به جارو شدن سطح و بازپس‌گیری آن وابسته است.",
                       "trend_continuation":"ورود روی اصلاح به ناحیهٔ پیشنهادی در جهت روند بررسی می‌شود.",
                       "breakout_retest":"پس از تأیید شکست، برگشت به همان مرز برای ورود بررسی می‌شود."}[sid]
-        lines.append(f"{label} | {'سناریوی اصلی، ' if plan is primary else ''}{direction} مشروط. {reason}")
+        lines.append(f"{label} | {'پلن ورود منتخب، ' if plan is primary else ''}{direction} مشروط. {reason}")
     if primary:
         record = records.get(primary["strategy_id"]) or {}
         levels = record.get("chart_levels") or {}
@@ -254,3 +256,26 @@ def telegram_analyst_brief(structured, *, symbol, live, analyzed_at):
             area = forecasts[0].get("level") or {}
             lines.append(f"ناحیهٔ تحت نظر برای تحلیل بعدی: {_zone(area.get('low'),area.get('high'))}")
     return format_persian_report_for_telegram("\n".join(lines))
+
+
+def _scenario_lines(summary):
+    lines = []
+    scenario = summary.get("market_scenario") or {}
+    if scenario.get("broken"):
+        broken = scenario["broken"]
+        lines.append(f"ابطال سناریوی قبلی با بسته‌شدن کندل چهارساعته در {_price(broken['close'])} و عبور از {_price(broken['level'])} در {broken['time']}.")
+    if scenario.get("direction"):
+        label = "نزولی" if scenario["direction"] == "SHORT" else "صعودی"
+        state = "ادامه دارد" if scenario["status"] == "continued" else "ثبت شد"
+        side = "بالای" if label == "نزولی" else "زیر"
+        lines.append(f"سناریوی اصلی {label} {state}. ابطال با بسته‌شدن کندل چهارساعته {side} {_price(scenario['level'])}.")
+    elif scenario:
+        lines.append("جهت ساختاری پایدار هنوز مشخص نشده است.")
+    event = scenario.get("event") or {}
+    if event.get("status") == "pause":
+        lines.append(f"توقف پلن تازه به دلیل رویداد ثبت‌شده «{event['title']}» — {event['source']}")
+    elif event.get("status") == "unavailable":
+        lines.append("پوشش خبر و تقویم اقتصادی در این بررسی در دسترس نیست.")
+    if event.get("news_available") is False and event.get("calendar_available"):
+        lines.append("پوشش خبرهای جهان در این نوبت در دسترس نیست.")
+    return lines

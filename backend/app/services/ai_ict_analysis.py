@@ -562,12 +562,33 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
             from app.services.ict_structure import find_swings
             four_hour_bars = [bar for bar in candles_by_interval.get("4h", [])
                               if bar.time_ms + 14_400_000 <= observed_ms]
+            from app.services.market_scenario import broad_channel, review as review_scenario
+            swings = find_swings(four_hour_bars, left=3, right=3)
+            channel = next((p for p in patterns if p["timeframe"] == "4h"
+                            and p["kind"].endswith("_channel")), None)
+            if channel is None:
+                candidate = broad_channel(four_hour_bars, swings)
+                if candidate:
+                    cutoff = drawings["replacement_after"].get("4h:"+candidate["kind"], 0)
+                    if max(candidate[k]["anchors"][-1][0] for k in ("upper","lower")) > cutoff:
+                        channel = candidate
+                        patterns.append(channel)
+            scenario = review_scenario(previous, four_hour_bars, swings, channel, observed_ms)
+            from app.services.analyst_events import enrich
+            scenario["event"] = await enrich(scenario["event"], observed_ms)
+            if len(four_hour_bars) >= 16 and scenario["event"]["status"] != "pause":
+                from app.services.verified_trade_plan import atr
+                baseline = atr(four_hour_bars[:-1])
+                latest = four_hour_bars[-1]
+                if baseline and abs(latest.close-four_hour_bars[-2].close) >= 2.5*baseline:
+                    scenario["event"].update(status="pause", title="جهش قیمت در کندل بستهٔ چهارساعته",
+                                             source="Bitunix BTCUSDT 4h")
             channel_swings = [
                 {"time_ms": swing.time_ms, "kind": swing.kind, "price": swing.price}
-                for swing in find_swings(four_hour_bars, left=3, right=3)
+                for swing in swings
             ]
             user_payload, analyst_payload_audit = build_analyst_payload(
-                market={**market_payload, "channel_swings_4h": channel_swings, "previous_review": prior_review, "chart_patterns": patterns, "ended_patterns": drawings["ended"]},
+                market={**market_payload, "market_scenario":scenario, "channel_swings_4h": channel_swings, "previous_review": prior_review, "chart_patterns": patterns, "ended_patterns": drawings["ended"]},
                 evidence_catalog=evidence,
                 outlook_major_levels=outlook_major_levels,
                 market_intelligence=market_intelligence,
@@ -632,10 +653,14 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
         direct_proposal = structured.get("trade_now") if direct_mode else None
         if analyst_mode:
             drawings = update_drawings(previous, structured.get("new_drawings"), candles_by_interval, observed_ms)
+            if channel:
+                drawings["active"] = [channel] + [p for p in drawings["active"]
+                    if not (p["timeframe"]=="4h" and p["kind"].endswith("_channel"))]
             structured=analyst.compile_response(structured,evidence,candles_by_interval,costs,
                 int(datetime.now(timezone.utc).timestamp()*1000),observed_ms,enabled_strategies,
                 outlook_major_levels=outlook_major_levels,
-                execution_feasibility=feasibility)
+                execution_feasibility=feasibility, market_scenario=scenario)
+            structured["analyst_summary"]["market_scenario"] = scenario
             structured["analyst_summary"]["drawing_memory"] = drawings
             structured["analyst_summary"]["chart_patterns"] = drawings["active"]
             structured["analyst_summary"]["previous_review"] = prior_review
