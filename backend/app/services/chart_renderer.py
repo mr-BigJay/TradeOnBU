@@ -26,7 +26,7 @@ class ChartRenderError(Exception):
     pass
 
 
-def _sanitize_candles(candles: list[Candle]) -> list[Candle]:
+def _sanitize_candles(candles: list[Candle], limit: int = 120) -> list[Candle]:
     if not candles:
         raise ChartRenderError("no_candles")
     by_time: dict[int, Candle] = {}
@@ -41,7 +41,7 @@ def _sanitize_candles(candles: list[Candle]) -> list[Candle]:
     ordered = [by_time[t] for t in sorted(by_time.keys())]
     if len(ordered) < 10:
         raise ChartRenderError("insufficient_valid_candles")
-    return ordered[-120:]
+    return ordered[-limit:]
 
 
 def _candles_to_df(candles: list[Candle]) -> pd.DataFrame:
@@ -125,7 +125,7 @@ def render_ict_chart_png(
     analyzed_at: datetime,
 ) -> None:
     """Render candlestick PNG with ICT overlays and optional trade levels."""
-    clean = _sanitize_candles(candles)
+    clean = _sanitize_candles(candles, limit=150 if interval == "1h" else 120)
     df = _candles_to_df(clean)
     overlays = overlays or {}
     decision_u = (decision or "NO_TRADE").upper()

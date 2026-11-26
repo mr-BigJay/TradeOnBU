@@ -90,6 +90,7 @@ async def build_raw_market_payload(
     settings: Settings | None = None,
     *,
     market: MarketDataService | None = None,
+    hourly_chart: list[Candle] | None = None,
 ) -> tuple[dict[str, Any], float, dict[str, list[Candle]]]:
     settings = settings or get_effective_settings()
     market = market or MarketDataService(settings)
@@ -108,10 +109,14 @@ async def build_raw_market_payload(
         limit = limits[interval]
         try:
             requested = limit + 1 if interval == "4h" else limit
+            if interval == "1h" and hourly_chart is not None:
+                requested = max(limit, 125) + 1  # allow for the forming candle
             bundle = await market.fetch_kline_bundle(symbol, interval, requested)
         except Exception as exc:
             raise MarketContextError("market_fetch_failed", f"{interval}: {exc}") from exc
 
+        if interval == "1h" and hourly_chart is not None:
+            hourly_chart[:] = bundle.closed[-min(max(limit, 125), 150):]
         closed = bundle.closed[-limit:]
         candles_by_interval[interval] = closed
         complete = bundle.data_complete and len(closed) >= MIN_CANDLES
