@@ -217,6 +217,16 @@ def render_ict_chart_png(
     if pattern_count or (direction and invalidation):
         ax.legend(loc="upper left", fontsize=7, ncol=2)
 
+    watch = overlays.get("hourly_watch") or {}
+    for color, plan in zip(("#fbbf24", "#a78bfa", "#60a5fa"), watch.values()):
+        lo, hi = plan["zone_low"], plan["zone_high"]
+        label = f"{plan['strategy']} {plan['direction']} watch {_format_price(lo)}–{_format_price(hi)}"
+        ax.axhspan(lo, hi, color=color, alpha=.16, label=label)
+        midpoint = (lo + hi) / 2
+        ax.plot([last_x, last_x+5, last_x+10], [live_price, midpoint, plan["target"]],
+                linestyle=":", color=color, alpha=.8)
+    if watch:
+        ax.legend(loc="upper left", fontsize=7, ncol=2)
     if trade_levels:
         for key, color in level_colors.items():
             val = trade_levels.get(key)

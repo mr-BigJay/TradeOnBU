@@ -14,13 +14,13 @@ at overhead resistance C needs a real break and retest. After rejection, B may b
 higher low in the 50-62 percent retracement of the named upswing. If HL fails, watch A
 at the old low, or C short after its break and retest. Mirror for bearish legs. State the
 actual expected hourly candle reaction and prerequisites for each branch prospectively.
-These are watch zones for hourly AI market execution. No 5m/15m confirmation or resting order.
+Anchor stops beyond the observed structural swing with room for ordinary hourly volatility. Use the next meaningful structural destination. Never compress distances to manufacture RR. These are watch zones for hourly AI market execution. No 5m/15m confirmation or resting order.
 """
 READ_PROMPT = """Review the latest CLOSED hourly BTC candle against ONLY the supplied pre-existing
 plans, their expected reaction, previous review and paper outcomes. No new market analysis.
 YOU judge zone interaction (including wick and reclaim), strategy-specific reaction,
 branch prerequisites, structural stop, remaining room to target and net RR >=1.5 with costs.
-Use WAIT if no eligible plan or no reaction. Do not re-enter a consumed plan.
+Compare the stop distance to normal hourly ranges and place the stop beyond the structural swing. Keep the planned structural objective. If those levels leave insufficient room at market, WAIT. Use WAIT if no eligible plan or no reaction. Do not re-enter a consumed plan.
 Return JSON {action:"WAIT"|"ENTER",plan_key:string,reason_fa:string,stop_loss:number,
 take_profit:number}. ENTER means execute paper market immediately. Never invent fills."""
 
