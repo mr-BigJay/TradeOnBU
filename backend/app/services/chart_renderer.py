@@ -125,7 +125,7 @@ def render_ict_chart_png(
     analyzed_at: datetime,
 ) -> None:
     """Render candlestick PNG with ICT overlays and optional trade levels."""
-    clean = _sanitize_candles(candles, limit=150 if interval == "1h" else 120)
+    clean = _sanitize_candles(candles, limit=250 if interval == "1h" else 120)
     df = _candles_to_df(clean)
     overlays = overlays or {}
     decision_u = (decision or "NO_TRADE").upper()
@@ -161,7 +161,7 @@ def render_ict_chart_png(
         type="candle",
         style=style,
         volume=False,
-        figsize=(CHART_WIDTH, CHART_HEIGHT),
+        figsize=(16 if len(clean) > 150 else CHART_WIDTH, CHART_HEIGHT),
         returnfig=True,
         addplot=addplots if addplots else None,
         datetime_format="%m-%d %H:%M",

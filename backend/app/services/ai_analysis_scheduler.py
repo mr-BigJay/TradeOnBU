@@ -322,20 +322,27 @@ async def should_run_scheduled(session: AsyncSession) -> bool:
         close, ready = _analyst_slot(now)
         if now < ready:
             return False
-        if cfg.last_run_at and _ensure_utc(cfg.last_run_at) >= close:
-            return False
-        # Crash-safe: a run can be journaled before cfg.last_run_at is saved.
-        # Count all scheduled starts in this slot, including failed/in-flight
-        # runs. The live scheduler lock still serializes admission.
         from app.models import AiAnalysisRun
-        already_started = await session.scalar(
-            select(AiAnalysisRun.id)
-            .where(AiAnalysisRun.trigger == "scheduled")
-            .where(AiAnalysisRun.started_at >= close)
-            .where(AiAnalysisRun.started_at <= now)
-            .limit(1)
-        )
-        return already_started is None
+        runs = (await session.scalars(
+            select(AiAnalysisRun).where(AiAnalysisRun.started_at >= close,
+                                        AiAnalysisRun.started_at <= now).limit(2)
+        )).all()
+        if not runs:
+            return not cfg.last_run_at or _ensure_utc(cfg.last_run_at) < close
+        if len(runs) != 1:
+            return False
+        run = runs[0]
+        if run.trigger != "scheduled" or run.status != "failed" or not run.completed_at:
+            return False
+        if now < _ensure_utc(run.completed_at) + timedelta(minutes=2):
+            return False
+        review = (run.structured or {}).get("analyst_review") or {}
+        if not review:
+            return run.error_code in ("market_fetch_failed", "stale_live_price") or (
+                run.error_code == "analysis_error" and str(run.error_detail).startswith("invalid_or_stale_"))
+        from app.services.multi_setup_analyst import review_allowed
+        allowed, _ = await review_allowed(session, now)
+        return allowed and review.get("retryable") is True
     if cfg.next_run_at is None:
         return True
     from app.services.verified_trade_plan import enabled
