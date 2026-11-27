@@ -178,6 +178,7 @@ def _merge_artifacts(structured: dict[str, Any], artifacts: dict[str, Any]) -> d
 def _chart_overlays_from_ai(structured: dict[str, Any]) -> dict[str, Any]:
     raw = structured.get("chart_overlays")
     overlays = dict(raw) if isinstance(raw, dict) else {}
+    overlays["major_zones"] = (structured.get("analyst_summary") or {}).get("outlook_major_levels") or []
     overlays["hourly_watch"] = (structured.get("analyst_summary") or {}).get("hourly_watch") or {}
     overlays["market_scenario"] = (structured.get("analyst_summary") or {}).get("market_scenario") or {}
     overlays["chart_patterns"] = (structured.get("analyst_summary") or {}).get("chart_patterns") or []
@@ -579,7 +580,7 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
             from app.services.ict_structure import find_swings
             four_hour_bars = [bar for bar in candles_by_interval.get("4h", [])
                               if bar.time_ms + 14_400_000 <= observed_ms]
-            from app.services.market_scenario import broad_channel, review as review_scenario
+            from app.services.market_scenario import broad_channel, channel_triangle, review as review_scenario
             swings = find_swings(four_hour_bars, left=3, right=3)
             channel = next((p for p in patterns if p["timeframe"] == "4h"
                             and p["kind"].endswith("_channel")), None)
@@ -590,6 +591,11 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
                     if max(candidate[k]["anchors"][-1][0] for k in ("upper","lower")) > cutoff:
                         channel = candidate
                         patterns.append(channel)
+            if channel and not any(p["kind"]=="triangle" and p["timeframe"]=="4h" for p in patterns):
+                triangle = channel_triangle(channel, four_hour_bars, swings,
+                                            drawings["replacement_after"].get("4h:triangle",0))
+                if triangle:
+                    patterns.append(triangle)
             scenario = review_scenario(previous, four_hour_bars, swings, channel, observed_ms)
             from app.services.analyst_events import enrich
             scenario["event"] = await enrich(scenario["event"], observed_ms)

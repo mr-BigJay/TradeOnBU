@@ -161,7 +161,7 @@ def render_ict_chart_png(
         type="candle",
         style=style,
         volume=False,
-        figsize=(16 if len(clean) > 150 else CHART_WIDTH, CHART_HEIGHT),
+        figsize=(21 if len(clean) > 150 else CHART_WIDTH, CHART_HEIGHT),
         returnfig=True,
         addplot=addplots if addplots else None,
         datetime_format="%m-%d %H:%M",
@@ -177,6 +177,13 @@ def render_ict_chart_png(
         "take_profit": "#4ade80",
     }
     last_x = len(df) - 1
+
+    zones = overlays.get("major_zones") or []
+    for role, color in (("support","#34d399"), ("resistance","#fb7185")):
+        for zone in [z for z in zones if z.get("role")==role][:2]:
+            lo, hi = zone["low"], zone["high"]
+            ax.axhspan(lo, hi, color=color, alpha=.16, zorder=0,
+                       label=f"{zone['timeframe']} {role} {_format_price(lo)}–{_format_price(hi)}")
 
     pattern_count = 0
     colors = ("#22d3ee", "#fb923c", "#c084fc", "#a3e635", "#f472b6", "#60a5fa", "#fde047", "#34d399")
@@ -214,7 +221,7 @@ def render_ict_chart_png(
         bias = "bullish ↑" if direction == "LONG" else "bearish ↓"
         ax.axhline(invalidation, color="#f472b6", linewidth=1, linestyle="-.",
                    label=f"4H scenario {bias} | invalidation {_format_price(invalidation)}")
-    if pattern_count or (direction and invalidation):
+    if zones or pattern_count or (direction and invalidation):
         ax.legend(loc="upper left", fontsize=7, ncol=2)
 
     watch = overlays.get("hourly_watch") or {}
