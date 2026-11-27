@@ -45,7 +45,13 @@ def broad_channel(bars, swings):
                 others = [p for p in swings if p.kind != kind and p.index >= a.index]
                 if len(others) < 2:
                     continue
-                width = max(sign*(line(p.time_ms)-p.price) for p in others)
+                # A lone wick can overshoot the opposite boundary. Fit to the
+                # outermost repeated reaction; the close-containment check below
+                # still rejects channels through which price actually broke.
+                distances = sorted((sign*(line(p.time_ms)-p.price) for p in others), reverse=True)
+                width = next((x for x,y in zip(distances, distances[1:]) if x-y <= tolerance), None)
+                if width is None:
+                    continue
                 touches = [p for p in others if abs(sign*(line(p.time_ms)-p.price)-width) <= tolerance]
                 if width <= 2*tolerance or touches[-1].index-touches[0].index < 6:
                     continue
@@ -63,6 +69,37 @@ def broad_channel(bars, swings):
                         "timeframe":"4h", "formed_ms":stamp, "as_of_ms":stamp, "position":"inside"}
                 score = span,len(touches)
     return best
+
+
+def channel_triangle(channel, bars, swings, cutoff):
+    """Use the parent channel edge and the latest two opposing converging pivots."""
+    descending = channel["kind"] == "descending_channel"
+    fixed, moving = ("upper","lower") if descending else ("lower","upper")
+    pivots = [p for p in swings if p.kind == ("LOW" if descending else "HIGH")]
+    if len(pivots) < 2:
+        return None
+    a,b = pivots[-2:]
+    anchor, base = channel[fixed]["anchors"][0]
+    if a.time_ms < anchor or b.time_ms <= cutoff or b.index-a.index < 3:
+        return None
+    slope = (b.price-a.price)/(b.time_ms-a.time_ms)
+    if (slope if descending else -slope) <= 0:
+        return None
+    stamp = bars[-1].time_ms+STEP
+    edges = {fixed:channel[fixed], moving:{"anchors":[[a.time_ms,a.price],[b.time_ms,b.price]],
+             "slope":slope,"price":a.price+slope*(stamp-a.time_ms)}}
+    tolerance = .2*atr(bars)
+    def at(side, t):
+        edge = edges[side]
+        origin, price = edge["anchors"][0]
+        return price + edge["slope"]*(t-origin)
+    if at("upper",stamp)-at("lower",stamp) <= 2*tolerance:
+        return None
+    if any(not at("lower",bar.time_ms+STEP)-tolerance <= bar.close <= at("upper",bar.time_ms+STEP)+tolerance
+           for bar in bars[a.index:]):
+        return None
+    return dict(kind="triangle",timeframe="4h",formed_ms=stamp,as_of_ms=stamp,
+                position="inside", **edges)
 
 
 def review(previous, bars, swings, channel, now_ms):
