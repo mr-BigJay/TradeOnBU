@@ -59,6 +59,7 @@ def update_drawings(previous, proposals, series, now_ms):
             stamp = bar.time_ms+STEPS[tf]
             if stamp<=pattern["as_of_ms"]:
                 continue
+            pattern.pop("break_status", None)  # Superseded by a closed source candle.
             pos = _position(pattern,bar,STEPS[tf],tolerance[tf])
             pattern.update(position=pos,as_of_ms=stamp)
             for side in ("upper","lower"):

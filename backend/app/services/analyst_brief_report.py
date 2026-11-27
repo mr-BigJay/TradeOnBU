@@ -205,6 +205,14 @@ def telegram_analyst_brief(structured, *, symbol, live, analyzed_at):
     if "channel_proposals" in memory and not any(p["kind"].endswith("_channel") for p in memory["active"]):
         lines.append("کانال پیشنهادی با کندل‌ها تأیید نشد." if memory["channel_proposals"]
                      else "در این نوبت تحلیلگر کانال تازه‌ای پیشنهاد نکرد و کانال فعالی ثبت نشده است.")
+    primary_channel = next((p for p in memory.get("active", []) if p["timeframe"] == "4h"
+                            and p["kind"].endswith("_channel")), None)
+    if primary_channel:
+        start = min(primary_channel[side]["anchors"][0][0] for side in ("upper","lower"))
+        days = (primary_channel["as_of_ms"] - start) / 86_400_000
+        lines.append(f"کانال اصلی چهارساعته از نخستین نقطهٔ مبنا حدود {days:.1f} روز امتداد دارد.")
+        if primary_channel.get("break_status"):
+            lines.append("قیمت در بسته‌شدن ساعتی از کانال عبور کرده و در انتظار تأیید چهارساعته است.")
     for ended in (summary.get("drawing_memory") or {}).get("ended", [])[:2]:
         event = {"above":"کندل بالای سقف بسته شد", "below":"کندل زیر کف بسته شد",
                  "converged":"دو مرز به هم رسیدند"}[ended["position"]]
