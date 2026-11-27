@@ -101,3 +101,21 @@ def test_failed_4h_scheduled_run_does_not_retry_15min(monkeypatch):
         scheduler.record_run_outcome(cfg, "failed", "transient_test", trigger="scheduled")
     assert cfg.auto_retry_pending is False
     assert cfg.next_run_at == datetime(2026, 11, 19, 12, 5, tzinfo=timezone.utc)
+
+
+@pytest.mark.asyncio
+async def test_transient_market_fetch_gets_one_retry(session, monkeypatch):
+    monkeypatch.setenv("MULTI_SETUP_ANALYST_ENABLED", "1")
+    clock = datetime(2026,11,19,8,10,tzinfo=timezone.utc)
+    monkeypatch.setattr(scheduler, "_utc_now", lambda: clock)
+    monkeypatch.setattr(scheduler, "scheduling_allowed", AsyncMock(return_value=(True,None)))
+    session.add(AiAnalysisSettings(id=1,enabled=True,unattended_consent=True,last_run_at=clock))
+    def failed():
+        return AiAnalysisRun(trigger="scheduled",status="failed",error_code="market_fetch_failed",
+                             started_at=clock-timedelta(minutes=4),completed_at=clock-timedelta(minutes=3))
+    session.add(failed())
+    await session.commit()
+    assert await scheduler.should_run_scheduled(session)
+    session.add(failed())
+    await session.commit()
+    assert not await scheduler.should_run_scheduled(session)
