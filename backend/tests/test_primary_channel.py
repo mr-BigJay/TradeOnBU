@@ -43,3 +43,22 @@ def test_primary_channel_survives_hourly_exit_then_requires_new_anchors():
     replacement = broad_channel(bars + new_bars, swings + new_swings, since=cutoff)
     assert replacement["kind"] == "ascending_channel"
     assert all(replacement[s]["anchors"][0][0] >= cutoff for s in original)
+
+
+def test_channel_allows_isolated_formation_excursion_but_rejects_later_break():
+    def candle(i, offset):
+        price = 300 - i / 2 + offset
+        return Candle(price, price + 1, price - 1, price, i * STEP)
+
+    bars = [candle(i, -10) for i in range(48)]
+    swings = [SimpleNamespace(index=i, time_ms=i*STEP, kind=kind,
+                              price=300-i/2-(20 if kind == "LOW" else 0))
+              for i, kind in [(1,"HIGH"), (8,"LOW"), (20,"LOW"), (32,"HIGH")]]
+    bars[12] = candle(12, 6)
+    assert broad_channel(bars, swings)["kind"] == "descending_channel"
+    bars[37] = candle(37, 6)
+    assert broad_channel(bars, swings) is None
+    bars[37] = candle(37, -10)
+    for i in range(12, 20):
+        bars[i] = candle(i, 6)
+    assert broad_channel(bars, swings) is None

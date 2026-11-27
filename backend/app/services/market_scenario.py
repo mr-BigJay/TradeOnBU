@@ -60,8 +60,16 @@ def broad_channel(bars, swings, *, since=0, daily="unclear"):
                     opposite_span = touches[-1].index - touches[0].index
                     if opposite_span < 6:
                         continue
-                    if any(not -tolerance <= sign*(line(c.time_ms+STEP)-c.close) <= width+tolerance
-                           for c in bars[a.index:]):
+                    # Earlier closes describe the fit. Only after both edges
+                    # have two separated anchors can a close invalidate it.
+                    second_touch = next(p for p in touches if p.index >= touches[0].index + 6)
+                    established = max(b.index, second_touch.index)
+                    def outside(c):
+                        return not -tolerance <= sign*(line(c.time_ms+STEP)-c.close) <= width+tolerance
+                    formation = bars[a.index:established]
+                    if sum(outside(c) for c in formation) * 10 > len(formation):
+                        continue
+                    if any(outside(c) for c in bars[established:]):
                         continue
                     break
                 else:
