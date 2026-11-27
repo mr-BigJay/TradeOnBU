@@ -78,7 +78,19 @@ def channel_triangle(channel, bars, swings, cutoff):
     pivots = [p for p in swings if p.kind == ("LOW" if descending else "HIGH")]
     if len(pivots) < 2:
         return None
-    a,b = pivots[-2:]
+    # Major rising lows can remain valid through several smaller local pivots.
+    # Prefer the widest supported line among recent confirmed reactions.
+    recent = pivots[-8:]
+    pairs = sorted(((a, b) for i, a in enumerate(recent) for b in recent[i+1:]),
+                   key=lambda pair: pair[1].index - pair[0].index, reverse=True)
+    for a, b in pairs:
+        triangle = _fit_compression(channel, bars, cutoff, descending, fixed, moving, a, b)
+        if triangle:
+            return triangle
+    return None
+
+
+def _fit_compression(channel, bars, cutoff, descending, fixed, moving, a, b):
     anchor, base = channel[fixed]["anchors"][0]
     if a.time_ms < anchor or b.time_ms <= cutoff or b.index-a.index < 3:
         return None
@@ -131,3 +143,50 @@ def review(previous, bars, swings, channel, now_ms):
             "status":"new" if active else "range",
             "broken": {"level":level,"close":breached.close,"time":datetime.fromtimestamp(
                 (breached.time_ms+STEP)/1000,timezone.utc).strftime("%Y-%m-%d %H:%M UTC")} if breached else None}
+
+
+def hourly_break_watch(channel, hourly, now_ms):
+    """Compare only hourly closes after the most recent closed four-hour bar."""
+    channel.pop("break_status", None)
+    for bar in reversed(hourly):
+        stamp = bar.time_ms + STEP // 4
+        if stamp > now_ms:
+            continue
+        if stamp <= channel["as_of_ms"]:
+            break
+        for side, sign in (("upper", 1), ("lower", -1)):
+            edge = channel[side]
+            t, price = edge["anchors"][0]
+            if sign * (bar.close - price - (stamp-t)*edge["slope"]) > 0:
+                channel["break_status"] = "1h outside " + side + ", awaiting 4h close"
+        break
+
+
+def recent_channel_breaks(previous, drawings, bars, swings):
+    """Keep recent closed-4h breaks visible, including the initial cold start."""
+    if not bars:
+        return []
+    latest = bars[-1]
+    stamp = latest.time_ms + STEP
+    old = (previous or {}).get("analyst_summary") or {}
+    retained = [p for p in old.get("recent_broken_drawings", [])
+                if stamp - p["as_of_ms"] <= 6 * STEP]
+    ended = list(drawings["ended"])
+    if not any(p["kind"].endswith("_channel") for p in ended + drawings["active"] + retained):
+        # Reconstruct only from swings confirmed before the breakout candle.
+        prior = broad_channel(bars[:-1], [p for p in swings if p.index + 3 < len(bars)-1]) if len(bars)>30 else None
+        if prior:
+            from app.services.pattern_memory import _position
+            pos = _position(prior, latest, STEP, .2 * atr(bars))
+            if pos in ("above", "below"):
+                ended.append(dict(prior, position=pos, as_of_ms=stamp))
+                triangle = channel_triangle(prior, bars[:-1],
+                    [p for p in swings if p.index + 3 < len(bars)-1],
+                    drawings["replacement_after"].get("4h:triangle", 0))
+                if triangle and _position(triangle, latest, STEP, .2 * atr(bars)) == pos:
+                    ended.append(dict(triangle, position=pos, as_of_ms=stamp))
+    for item in ended:
+        if item["timeframe"] == "4h" and item["position"] in ("above", "below") and stamp-item["as_of_ms"] <= 6*STEP:
+            retained = [p for p in retained if p["kind"] != item["kind"]]
+            retained.append(dict(item, break_status="4h close " + item["position"]))
+    return retained

@@ -181,7 +181,8 @@ def _chart_overlays_from_ai(structured: dict[str, Any]) -> dict[str, Any]:
     overlays["major_zones"] = (structured.get("analyst_summary") or {}).get("outlook_major_levels") or []
     overlays["hourly_watch"] = (structured.get("analyst_summary") or {}).get("hourly_watch") or {}
     overlays["market_scenario"] = (structured.get("analyst_summary") or {}).get("market_scenario") or {}
-    overlays["chart_patterns"] = (structured.get("analyst_summary") or {}).get("chart_patterns") or []
+    summary = structured.get("analyst_summary") or {}
+    overlays["chart_patterns"] = list(summary.get("chart_patterns") or []) + list(summary.get("recent_broken_drawings") or [])
     return overlays
 
 
@@ -596,6 +597,11 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
                                             drawings["replacement_after"].get("4h:triangle",0))
                 if triangle:
                     patterns.append(triangle)
+            from app.services.market_scenario import recent_channel_breaks, hourly_break_watch
+            broken_drawings = recent_channel_breaks(previous, drawings, four_hour_bars, swings)
+            for item in patterns:
+                if item["timeframe"] == "4h" and item["kind"].endswith("_channel"):
+                    hourly_break_watch(item, candles_by_interval.get("1h", []), observed_ms)
             scenario = review_scenario(previous, four_hour_bars, swings, channel, observed_ms)
             from app.services.analyst_events import enrich
             scenario["event"] = await enrich(scenario["event"], observed_ms)
@@ -611,7 +617,7 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
                 for swing in swings
             ]
             user_payload, analyst_payload_audit = build_analyst_payload(
-                market={**market_payload, "previous_hourly_watch": ((previous or {}).get("analyst_summary") or {}).get("hourly_watch", {}), "market_scenario":scenario, "channel_swings_4h": channel_swings, "previous_review": prior_review, "chart_patterns": patterns, "ended_patterns": drawings["ended"]},
+                market={**market_payload, "previous_hourly_watch": ((previous or {}).get("analyst_summary") or {}).get("hourly_watch", {}), "market_scenario":scenario, "channel_swings_4h": channel_swings, "previous_review": prior_review, "chart_patterns": patterns, "ended_patterns": drawings["ended"], "recent_broken_drawings": broken_drawings},
                 evidence_catalog=evidence,
                 outlook_major_levels=outlook_major_levels,
                 market_intelligence=market_intelligence,
@@ -694,6 +700,7 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
             if hourly_reaction.enabled():
                 structured["analyst_summary"]["hourly_watch"] = hourly_watch
             structured["analyst_summary"]["market_scenario"] = scenario
+            structured["analyst_summary"]["recent_broken_drawings"] = broken_drawings
             structured["analyst_summary"]["drawing_memory"] = drawings
             structured["analyst_summary"]["chart_patterns"] = drawings["active"]
             structured["analyst_summary"]["previous_review"] = prior_review
