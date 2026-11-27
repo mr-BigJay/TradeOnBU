@@ -95,7 +95,9 @@ def format_candle_axis_tick(index: pd.DatetimeIndex, x: float, _pos: float) -> s
     if len(index) == 0:
         return ""
     ix = int(round(x))
-    ix = max(0, min(ix, len(index) - 1))
+    if ix >= len(index):
+        return ""
+    ix = max(0, ix)
     ts = index[ix]
     if hasattr(ts, "to_pydatetime"):
         ts = ts.to_pydatetime()
@@ -125,7 +127,7 @@ def render_ict_chart_png(
     analyzed_at: datetime,
 ) -> None:
     """Render candlestick PNG with ICT overlays and optional trade levels."""
-    clean = _sanitize_candles(candles, limit=250 if interval == "1h" else 120)
+    clean = _sanitize_candles(candles, limit=320 if interval == "1h" else 120)
     df = _candles_to_df(clean)
     overlays = overlays or {}
     decision_u = (decision or "NO_TRADE").upper()
@@ -197,6 +199,8 @@ def render_ict_chart_png(
             if len(points) >= 2:
                 xs, ys = zip(*points)
                 label = f"{pattern['timeframe']} {pattern['kind'].replace('_',' ')}" if side == "upper" else None
+                if label and pattern.get("break_status"):
+                    label += " · " + pattern["break_status"]
                 ax.plot(xs, ys, color=color, linewidth=1.1, label=label)
                 for stamp, anchor in edge["anchors"]:
                     if clean[0].time_ms <= stamp <= clean[-1].time_ms:
@@ -302,6 +306,8 @@ def render_ict_chart_png(
                     edge = hi if sign == 1 else lo
                     path.insert(1, edge + sign * (hi-lo)*.5)
                     label = "Scenario: break → retest → TP"
+            if interval == "1h":
+                step = min(step, 48 // (len(path) - 1))
             positions = [last_x + i * step for i in range(len(path))]
             ax.plot(positions, path, "--o", color="#e9d5ff", linewidth=1.5, markersize=4, label=label)
             ax.set_xlim(ax.get_xlim()[0], positions[-1] + 2)
@@ -380,6 +386,8 @@ def render_ict_chart_png(
     subtitle = f"{structure_line} · Live {_format_price(live_price)} · {ts_label} · PAPER ONLY"
     fig.suptitle(title, color="#f1f5f9", fontsize=12, fontweight="bold", y=0.98)
     ax.set_title(subtitle, color="#94a3b8", fontsize=9, pad=8)
+    if interval == "1h":
+        ax.set_xlim(-0.5, len(df) - 1 + 50.5)
     apply_candle_time_axis(ax, df.index)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)

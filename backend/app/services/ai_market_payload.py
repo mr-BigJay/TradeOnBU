@@ -110,13 +110,13 @@ async def build_raw_market_payload(
         try:
             requested = limit + 1 if interval == "4h" else limit
             if interval == "1h" and hourly_chart is not None:
-                requested = max(limit, 250) + 1  # allow for the forming candle
+                requested = max(limit, 320) + 1  # allow for the forming candle
             bundle = await market.fetch_kline_bundle(symbol, interval, requested)
         except Exception as exc:
             raise MarketContextError("market_fetch_failed", f"{interval}: {exc}") from exc
 
         if interval == "1h" and hourly_chart is not None:
-            hourly_chart[:] = bundle.closed[-250:]
+            hourly_chart[:] = bundle.closed[-320:]
         closed = bundle.closed[-limit:]
         candles_by_interval[interval] = closed
         complete = bundle.data_complete and len(closed) >= MIN_CANDLES
