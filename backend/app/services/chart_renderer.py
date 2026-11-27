@@ -163,7 +163,7 @@ def render_ict_chart_png(
         type="candle",
         style=style,
         volume=False,
-        figsize=(21 if len(clean) > 150 else CHART_WIDTH, CHART_HEIGHT),
+        figsize=(16, 9) if interval == "1h" else (CHART_WIDTH, CHART_HEIGHT),
         returnfig=True,
         addplot=addplots if addplots else None,
         datetime_format="%m-%d %H:%M",
@@ -387,10 +387,16 @@ def render_ict_chart_png(
     fig.suptitle(title, color="#f1f5f9", fontsize=12, fontweight="bold", y=0.98)
     ax.set_title(subtitle, color="#94a3b8", fontsize=9, pad=8)
     if interval == "1h":
+        # Keep the 320 + 50 time window independent of the PNG aspect ratio.
+        for chart_axis in axes:
+            chart_axis.set_position([0.07, 0.08, 0.91, 0.82])
         ax.set_xlim(-0.5, len(df) - 1 + 50.5)
+        bottom, top = ax.get_ylim()
+        margin = (top - bottom) * 0.08
+        ax.set_ylim(bottom - margin, top + margin)
     apply_candle_time_axis(ax, df.index)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path, dpi=CHART_DPI, facecolor=fig.get_facecolor(), bbox_inches="tight")
+    fig.savefig(output_path, dpi=CHART_DPI, facecolor=fig.get_facecolor(), bbox_inches=None if interval == "1h" else "tight")
     plt.close(fig)
     logger.info("Chart saved run chart %s", output_path.name)
