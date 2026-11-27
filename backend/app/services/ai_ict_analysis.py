@@ -131,6 +131,9 @@ def _candles_from_payload(market: dict[str, Any], interval: str = "15m") -> list
 
 
 def _levels_for_chart(structured: dict[str, Any]) -> dict[str, Any] | None:
+    summary = structured.get("analyst_summary") or {}
+    if "hourly_watch" in summary:
+        return None  # Hourly fills are reported separately with their actual execution prices.
     decision = str(structured.get("decision", "NO_TRADE")).upper()
     if decision not in ("LONG", "SHORT"):
         plan = structured.get("verified_trade_plan") or {}
@@ -175,6 +178,7 @@ def _merge_artifacts(structured: dict[str, Any], artifacts: dict[str, Any]) -> d
 def _chart_overlays_from_ai(structured: dict[str, Any]) -> dict[str, Any]:
     raw = structured.get("chart_overlays")
     overlays = dict(raw) if isinstance(raw, dict) else {}
+    overlays["hourly_watch"] = (structured.get("analyst_summary") or {}).get("hourly_watch") or {}
     overlays["market_scenario"] = (structured.get("analyst_summary") or {}).get("market_scenario") or {}
     overlays["chart_patterns"] = (structured.get("analyst_summary") or {}).get("chart_patterns") or []
     return overlays

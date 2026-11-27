@@ -48,3 +48,14 @@ def test_skipped_idea_still_renders_pattern_edges_and_analytical_path(tmp_path, 
                          trade_levels=levels,analyzed_at=datetime.now(timezone.utc))
     assert path.stat().st_size>1000
     assert "1h rising wedge" in labels and any("Possible path" in (x or "") for x in labels)
+
+
+def test_hourly_watch_chart_uses_only_current_watch_zones():
+    from app.services.ai_ict_analysis import _chart_overlays_from_ai, _levels_for_chart
+    plan = dict(strategy="B",direction="SHORT",zone_low=110,zone_high=115,target=100)
+    data = {"decision":"NO_TRADE","verified_trade_plan":{"entry":111,"stop":112,"target":109},
+            "analyst_summary":{"hourly_watch":{"B:SHORT:1":plan}}}
+    assert _levels_for_chart(data) is None
+    assert _chart_overlays_from_ai(data)["hourly_watch"]["B:SHORT:1"] == plan
+    data["analyst_summary"]["hourly_watch"] = {}
+    assert _levels_for_chart(data) is None

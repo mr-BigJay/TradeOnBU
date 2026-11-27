@@ -228,7 +228,7 @@ def telegram_analyst_brief(structured, *, symbol, live, analyzed_at):
                       "trend_continuation":"ورود روی اصلاح به ناحیهٔ پیشنهادی در جهت روند بررسی می‌شود.",
                       "breakout_retest":"پس از تأیید شکست، برگشت به همان مرز برای ورود بررسی می‌شود."}[sid]
         lines.append(f"{label} | {'پلن ورود منتخب، ' if plan is primary else ''}{direction} مشروط. {reason}")
-    if primary:
+    if primary and "hourly_watch" not in summary:
         record = records.get(primary["strategy_id"]) or {}
         levels = record.get("chart_levels") or {}
         entry = levels.get("entry", primary.get("entry_price"))
