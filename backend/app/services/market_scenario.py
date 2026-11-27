@@ -49,10 +49,10 @@ def broad_channel(bars, swings, *, since=0, daily="unclear"):
                 others = [p for p in swings if p.kind != kind and p.index >= a.index]
                 if len(others) < 2:
                     continue
-                # A lone wick can overshoot the opposite boundary. Fit to the
-                # outermost repeated reaction; the close-containment check below
-                # still rejects channels through which price actually broke.
-                distances = sorted((sign*(line(p.time_ms)-p.price) for p in others), reverse=True)
+                primary_touches = [p for p in points if p.index >= a.index
+                                   and abs(line(p.time_ms) - p.price) <= tolerance]
+                # Compare every supported parallel boundary, including inner ones.
+                distances = sorted({sign*(line(p.time_ms)-p.price) for p in others}, reverse=True)
                 for width in distances:
                     if width <= 2*tolerance:
                         break
@@ -71,23 +71,25 @@ def broad_channel(bars, swings, *, since=0, daily="unclear"):
                         continue
                     if any(outside(c) for c in bars[established:]):
                         continue
-                    break
-                else:
-                    continue
-                if width <= 2*tolerance:
-                    continue
-                rank = (min(span, opposite_span), span, daily == ("bearish" if sign == 1 else "bullish"), len(touches))
-                if rank <= score:
-                    continue
-                def edge(first, last, offset):
-                    return {"anchors": [[p.time_ms,line(p.time_ms)+offset] for p in (first,last)],
-                            "slope": slope,"price":line(bars[-1].time_ms+STEP)+offset}
-                opposite = "lower" if side == "upper" else "upper"
-                stamp = bars[-1].time_ms+STEP
-                best = {side: edge(a,b,0), opposite: edge(touches[0],touches[-1],-sign*width),
-                        "kind": "descending_channel" if sign == 1 else "ascending_channel",
-                        "timeframe":"4h", "formed_ms":stamp, "as_of_ms":stamp, "position":"inside"}
-                score = rank
+                    # Discount long spans whose evidence on either edge has gone stale.
+                    # Use the most recent confirmed pivot on each side, including
+                    # reactions occurring after the two slope-defining pivots.
+                    coverage = min(span, opposite_span)
+                    age = len(bars) - 1 - min(primary_touches[-1].index, touches[-1].index)
+                    supported_span = coverage * coverage / (coverage + 2 * age)
+                    rank = (supported_span, coverage, span,
+                            daily == ("bearish" if sign == 1 else "bullish"), len(touches))
+                    if rank <= score:
+                        continue
+                    def edge(first, last, offset):
+                        return {"anchors": [[p.time_ms,line(p.time_ms)+offset] for p in (first,last)],
+                                "slope": slope,"price":line(bars[-1].time_ms+STEP)+offset}
+                    opposite = "lower" if side == "upper" else "upper"
+                    stamp = bars[-1].time_ms+STEP
+                    best = {side: edge(a,b,0), opposite: edge(touches[0],touches[-1],-sign*width),
+                            "kind": "descending_channel" if sign == 1 else "ascending_channel",
+                            "timeframe":"4h", "formed_ms":stamp, "as_of_ms":stamp, "position":"inside"}
+                    score = rank
     return best
 
 

@@ -62,3 +62,19 @@ def test_channel_allows_isolated_formation_excursion_but_rejects_later_break():
     for i in range(12, 20):
         bars[i] = candle(i, 6)
     assert broad_channel(bars, swings) is None
+
+
+def test_recent_reactions_distinguish_nested_descending_channels():
+    # Both roofs contain every close. Only the inner roof is tested again
+    # near the end, while the outer roof spans more bars between anchors.
+    bars = [Candle(290-i, 291-i, 289-i, 290-i, i*STEP) for i in range(140)]
+    swings = []
+    for index, level, kind in [(1,320,"HIGH"), (6,280,"LOW"), (50,300,"HIGH"),
+                              (51,280,"LOW"), (85,320,"HIGH"), (99,300,"HIGH"),
+                              (115,280,"LOW"), (132,300,"HIGH"), (134,280,"LOW")]:
+        swings.append(SimpleNamespace(index=index, kind=kind, time_ms=index*STEP,
+                                      price=level-index))
+    channel = broad_channel(bars, swings)
+    assert channel["kind"] == "descending_channel"
+    assert channel["upper"]["price"] == 300-len(bars)
+    assert channel["lower"]["price"] == 280-len(bars)
