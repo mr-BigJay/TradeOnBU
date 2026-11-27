@@ -3,7 +3,6 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from app.services.daily_outlook_data import aggregate_complete
 from app.services.verified_trade_plan import atr, trend
 
 STEP = 14_400_000
@@ -26,14 +25,19 @@ def event_risk(now_ms, path=Path("/app/data/market_events.json")):
         return {"status": "unavailable"}
 
 
-def broad_channel(bars, swings):
+def channel_cutoff(drawings):
+    return max((stamp for key, stamp in drawings["replacement_after"].items()
+                if key in ("4h:ascending_channel", "4h:descending_channel")), default=0)
+
+
+def broad_channel(bars, swings, *, since=0, daily="unclear"):
     """Fit parallel boundaries using separated, confirmed reactions on both sides."""
     tolerance = atr(bars) * .5
     if not tolerance:
         return None
-    best, score = None, (0, 0)
+    best, score = None, ()
     for side, kind, sign in (("upper", "HIGH", 1), ("lower", "LOW", -1)):
-        points = [p for p in swings if p.kind == kind]
+        points = [p for p in swings if p.kind == kind and p.time_ms >= since]
         for i, a in enumerate(points):
             for b in points[i+1:]:
                 span = b.index - a.index
@@ -49,15 +53,23 @@ def broad_channel(bars, swings):
                 # outermost repeated reaction; the close-containment check below
                 # still rejects channels through which price actually broke.
                 distances = sorted((sign*(line(p.time_ms)-p.price) for p in others), reverse=True)
-                width = next((x for x,y in zip(distances, distances[1:]) if x-y <= tolerance), None)
-                if width is None:
+                for width in distances:
+                    if width <= 2*tolerance:
+                        break
+                    touches = [p for p in others if abs(sign*(line(p.time_ms)-p.price)-width) <= tolerance]
+                    opposite_span = touches[-1].index - touches[0].index
+                    if opposite_span < 6:
+                        continue
+                    if any(not -tolerance <= sign*(line(c.time_ms+STEP)-c.close) <= width+tolerance
+                           for c in bars[a.index:]):
+                        continue
+                    break
+                else:
                     continue
-                touches = [p for p in others if abs(sign*(line(p.time_ms)-p.price)-width) <= tolerance]
-                if width <= 2*tolerance or touches[-1].index-touches[0].index < 6:
+                if width <= 2*tolerance:
                     continue
-                if (span, len(touches)) <= score:
-                    continue
-                if any(not -tolerance <= sign*(line(c.time_ms)-c.close) <= width+tolerance for c in bars[a.index:]):
+                rank = (min(span, opposite_span), span, daily == ("bearish" if sign == 1 else "bullish"), len(touches))
+                if rank <= score:
                     continue
                 def edge(first, last, offset):
                     return {"anchors": [[p.time_ms,line(p.time_ms)+offset] for p in (first,last)],
@@ -67,7 +79,7 @@ def broad_channel(bars, swings):
                 best = {side: edge(a,b,0), opposite: edge(touches[0],touches[-1],-sign*width),
                         "kind": "descending_channel" if sign == 1 else "ascending_channel",
                         "timeframe":"4h", "formed_ms":stamp, "as_of_ms":stamp, "position":"inside"}
-                score = span,len(touches)
+                score = rank
     return best
 
 
@@ -115,6 +127,7 @@ def _fit_compression(channel, bars, cutoff, descending, fixed, moving, a, b):
 
 
 def review(previous, bars, swings, channel, now_ms):
+    from app.services.daily_outlook_data import aggregate_complete
     daily = trend(aggregate_complete(bars, days=1, now_ms=now_ms))
     old = (previous or {}).get("analyst_summary", {}).get("market_scenario") or {}
     direction = old.get("direction")
@@ -174,7 +187,7 @@ def recent_channel_breaks(previous, drawings, bars, swings):
     ended = list(drawings["ended"])
     if not any(p["kind"].endswith("_channel") for p in ended + drawings["active"] + retained):
         # Reconstruct only from swings confirmed before the breakout candle.
-        prior = broad_channel(bars[:-1], [p for p in swings if p.index + 3 < len(bars)-1]) if len(bars)>30 else None
+        prior = broad_channel(bars[:-1], [p for p in swings if p.index + 3 < len(bars)-1], since=channel_cutoff(drawings)) if len(bars)>30 else None
         if prior:
             from app.services.pattern_memory import _position
             pos = _position(prior, latest, STEP, .2 * atr(bars))

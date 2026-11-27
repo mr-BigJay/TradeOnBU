@@ -581,12 +581,15 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
             from app.services.ict_structure import find_swings
             four_hour_bars = [bar for bar in candles_by_interval.get("4h", [])
                               if bar.time_ms + 14_400_000 <= observed_ms]
-            from app.services.market_scenario import broad_channel, channel_triangle, review as review_scenario
+            from app.services.market_scenario import broad_channel, channel_cutoff, channel_triangle, review as review_scenario
             swings = find_swings(four_hour_bars, left=3, right=3)
             channel = next((p for p in patterns if p["timeframe"] == "4h"
                             and p["kind"].endswith("_channel")), None)
             if channel is None:
-                candidate = broad_channel(four_hour_bars, swings)
+                from app.services.daily_outlook_data import aggregate_complete
+                from app.services.verified_trade_plan import trend
+                daily = trend(aggregate_complete(four_hour_bars, days=1, now_ms=observed_ms))
+                candidate = broad_channel(four_hour_bars, swings, since=channel_cutoff(drawings), daily=daily)
                 if candidate:
                     cutoff = drawings["replacement_after"].get("4h:"+candidate["kind"], 0)
                     if max(candidate[k]["anchors"][-1][0] for k in ("upper","lower")) > cutoff:
@@ -689,9 +692,21 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
                     p["kind"] == "triangle" and p["timeframe"] == triangle["timeframe"] for p in drawings["active"]
                 ):
                     drawings["active"].append(triangle)
-            if channel:
-                drawings["active"] = [channel] + [p for p in drawings["active"]
-                    if not (p["timeframe"]=="4h" and p["kind"].endswith("_channel"))]
+            # Use exactly one primary channel. A new AI drawing must be based
+            # on the market structure formed since the last confirmed break.
+            cutoff = max([channel_cutoff(drawings)] + [p["as_of_ms"] for p in broken_drawings
+                         if p["kind"].endswith("_channel")])
+            if cutoff:
+                drawings["replacement_after"]["4h:descending_channel"] = cutoff
+                drawings["replacement_after"]["4h:ascending_channel"] = cutoff
+            candidates = [p for p in drawings["active"]
+                          if p["timeframe"] == "4h" and p["kind"].endswith("_channel")]
+            if channel is None:
+                channel = next((p for p in candidates if min(p[k]["anchors"][0][0] for k in ("upper","lower")) >= cutoff
+                                and max(p[k]["anchors"][1][0]-p[k]["anchors"][0][0] for k in ("upper","lower"))
+                                >= 24*14_400_000), None)
+            drawings["active"] = ([channel] if channel else []) + [
+                p for p in drawings["active"] if not (p["timeframe"]=="4h" and p["kind"].endswith("_channel"))]
             hourly_watch = hourly_playbook.watch_plans(structured.get("hourly_watch"), candles_by_interval)
             structured=analyst.compile_response(structured,evidence,candles_by_interval,costs,
                 int(datetime.now(timezone.utc).timestamp()*1000),observed_ms,enabled_strategies,
