@@ -32,6 +32,10 @@ logger = logging.getLogger(__name__)
 class PositionServiceError(Exception):
     pass
 
+class EntryRewardRiskError(PositionServiceError):
+    """The executable paper order falls below the minimum net reward/risk."""
+
+
 
 async def _log_event(
     session: AsyncSession,
@@ -175,7 +179,7 @@ class SimPositionService:
 
         # Defense in depth: AI orders must satisfy the hard net R:R floor
         # AFTER the execution TP cap and with actual paper fee settings.
-        if req.ai_setup_id:
+        if req.ai_setup_id or (req.order_extra or {}).get("hourly_plan"):
             from app.domain.paper_execution_policy import HARD_MIN_AUTO_PAPER_NET_RR
             from app.services.execution_model_sim import auto_paper_rr_from_settings
 
@@ -186,7 +190,7 @@ class SimPositionService:
                 order_type=order_type,
             )
             if not rr.acceptable:
-                raise PositionServiceError(
+                raise EntryRewardRiskError(
                     f"execution_net_rr_below_min: {rr.net_rr:.3f} < {HARD_MIN_AUTO_PAPER_NET_RR:.2f}"
                 )
 
@@ -312,7 +316,7 @@ class SimPositionService:
             )
             return False
 
-        if (pos.extra or {}).get("auto_paper"):
+        if (pos.extra or {}).get("auto_paper") or (pos.extra or {}).get("hourly_plan"):
             from app.domain.paper_execution_policy import HARD_MIN_AUTO_PAPER_NET_RR
             from app.services.execution_model_sim import auto_paper_rr_from_settings
 

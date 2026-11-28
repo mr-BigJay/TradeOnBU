@@ -15,7 +15,7 @@ higher low in the 50-62 percent retracement of the named upswing. If HL fails, w
 at the old low, or C short after its break and retest. Mirror for bearish legs. State the
 actual expected hourly candle reaction and prerequisites for each branch prospectively.
 First address the closest relevant active channel or triangle boundary in market.chart_patterns.
-Compare it with the nearest horizontal zone. Explain in Persian which is encountered first and why.
+Use horizontal_zones (original role, break_ms, retest_ms and state) to follow a broken horizontal level across reviews. Describe the relevant break and later retest in Persian. Compare it with the nearest horizontal zone. Explain in Persian which is encountered first and why.
 For A consider an hourly sweep and reclaim at that edge; for C consider a closed break followed
 by a later retest of the same moving edge; for B identify the first opposing boundary before target.
 These are alternatives conditional on price behavior. Do not force an entry or every branch.
@@ -28,7 +28,7 @@ READ_PROMPT = """Review the latest CLOSED hourly BTC candle against ONLY the sup
 plans, their expected reaction, previous review and paper outcomes. No new market analysis.
 YOU judge zone interaction (including wick and reclaim), strategy-specific reaction,
 branch prerequisites, structural stop, remaining room to target and net RR >=1.5 with costs.
-Use pattern_edges_at_close for the hourly value of any named moving boundary, and major_zones
+Use horizontal_zones to distinguish intact, broken and subsequently retested horizontal levels. A zone state is evidence; you still judge the expected reaction. Use pattern_edges_at_close for the hourly value of any named moving boundary, and major_zones
 for horizontal obstacles. Apply the moving boundary only to plans explicitly tied to it.
 For C distinguish the close outside from a later retest; for B assess obstacles before target.
 Ignore converged geometry. If a required moving edge is unavailable, WAIT on that branch.
