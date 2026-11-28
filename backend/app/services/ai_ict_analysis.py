@@ -620,6 +620,16 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
                 for swing in swings
             ]
             from app.services.horizontal_zone_memory import snapshot
+            from app.services.long_term_context import load_context
+            long_term = await load_context(market_svc, symbol, observed_ms, previous)
+            market_payload["long_term_context"] = long_term
+            analyst_instructions += (
+                "\nRead the closed monthly and weekly OHLC in market.long_term_context. "
+                "In market_summary_fa briefly state the monthly and weekly directions with price evidence, "
+                "and whether the four-hour scenario aligns or is corrective. These frames give context, "
+                "not a new entry veto or an independent reason to replace an active scenario. "
+                "If unavailable say so; do not infer missing history."
+            )
             horizontal_zones = snapshot(previous, outlook_major_levels, candles_by_interval.get("1h", []), observed_ms)
             user_payload, analyst_payload_audit = build_analyst_payload(
                 market={**market_payload, "horizontal_zones": horizontal_zones, "previous_hourly_watch": ((previous or {}).get("analyst_summary") or {}).get("hourly_watch", {}), "market_scenario":scenario, "channel_swings_4h": channel_swings, "previous_review": prior_review, "chart_patterns": patterns, "ended_patterns": drawings["ended"], "recent_broken_drawings": broken_drawings},
@@ -716,6 +726,7 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
                 execution_feasibility=feasibility, market_scenario=scenario)
             if hourly_reaction.enabled():
                 structured["analyst_summary"]["hourly_watch"] = hourly_watch
+            structured["analyst_summary"]["long_term_context"] = long_term
             structured["analyst_summary"]["horizontal_zones"] = horizontal_zones
             structured["analyst_summary"]["market_scenario"] = scenario
             structured["analyst_summary"]["recent_broken_drawings"] = broken_drawings
