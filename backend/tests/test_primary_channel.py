@@ -78,3 +78,27 @@ def test_recent_reactions_distinguish_nested_descending_channels():
     assert channel["kind"] == "descending_channel"
     assert channel["upper"]["price"] == 300-len(bars)
     assert channel["lower"]["price"] == 280-len(bars)
+
+
+def test_formation_penalty_distinguishes_depth_and_persistence():
+    from app.services.market_scenario import _formation_penalty
+
+    assert _formation_penalty([0, 0], 4) == 0
+    isolated = _formation_penalty([-2, 0, -2], 4)
+    assert isolated == _formation_penalty([-4, 0, -4], 8)
+    assert _formation_penalty([-2, -2, 0], 4) > isolated
+    assert _formation_penalty([-2, 2, 0], 4) == isolated
+    assert _formation_penalty([-5, 0, 0], 4) > isolated
+
+
+def test_deep_close_favors_outer_channel_but_wick_keeps_inner_channel():
+    bars = [Candle(290-i, 291-i, 289-i, 290-i, i*STEP) for i in range(140)]
+    swings = [SimpleNamespace(index=i, kind=k, time_ms=i*STEP, price=p-i)
+              for i,p,k in [(1,320,"HIGH"), (6,280,"LOW"), (50,300,"HIGH"),
+                            (51,280,"LOW"), (85,320,"HIGH"), (99,300,"HIGH"),
+                            (115,280,"LOW"), (132,300,"HIGH"), (134,280,"LOW")]]
+    i = 65
+    bars[i] = Candle(290-i, 315-i, 289-i, 290-i, i*STEP)
+    assert broad_channel(bars, swings)["upper"]["price"] == 300-len(bars)
+    bars[i] = Candle(290-i, 315-i, 289-i, 314-i, i*STEP)
+    assert broad_channel(bars, swings)["upper"]["price"] == 320-len(bars)
