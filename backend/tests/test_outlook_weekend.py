@@ -14,8 +14,8 @@ from tests.test_daily_outlook import report
     ("2026-11-13T20:29:59+00:00", True),
     ("2026-11-13T20:30:00+00:00", False),
     ("2026-11-14T09:00:00+03:30", False),
-    ("2026-11-15T20:29:59+00:00", False),
-    ("2026-11-15T20:30:00+00:00", True),
+    ("2026-11-14T20:29:59+00:00", False),
+    ("2026-11-14T20:30:00+00:00", True),
 ])
 def test_tehran_boundaries(stamp, allowed):
     assert proposals_allowed({"as_of": stamp}) is allowed
@@ -24,7 +24,7 @@ def test_tehran_boundaries(stamp, allowed):
 @pytest.mark.parametrize("submitted", [None, {"action": "short", "entry_price": 65000}, "invalid"])
 def test_weekend_keeps_analysis_but_suppresses_any_entry(submitted):
     ctx, data = market(), report()
-    ctx.update(as_of="2026-11-15T08:00:00+00:00", new_position_proposals_allowed=True)
+    ctx.update(as_of="2026-11-14T08:00:00+00:00", new_position_proposals_allowed=True)
     data["swing_plan"] = submitted
     parsed = parse_outlook(json.dumps(data), ctx)
     assert parsed["summary_fa"] == data["summary_fa"]
@@ -36,12 +36,13 @@ def test_weekend_keeps_analysis_but_suppresses_any_entry(submitted):
     assert "entry_price" not in plan and "rejected_proposal" not in plan
     row = SimpleNamespace(report=parsed, context=ctx, symbol="BTCUSDT", id=1, slot_close_ms=0)
     message = format_outlook_message(row, datetime.now(timezone.utc), "")
-    assert "شنبه و یکشنبه" in message
+    assert "شنبه به وقت تهران" in message
     assert "برنامهٔ ورود مشروط: شورت" not in message
 
 
 def test_weekday_plan_still_valid_and_prompt_contains_analysis_only_override():
     ctx, data = market(), report()
+    ctx["as_of"] = "2026-11-15T08:00:00+00:00"  # Sunday
     data["swing_plan"] = proposal().model_dump()
     assert parse_outlook(json.dumps(data), ctx)["swing_plan"]["action"] == "long"
     assert "WEEKEND OVERRIDE" in INDEPENDENT_INSTRUCTIONS

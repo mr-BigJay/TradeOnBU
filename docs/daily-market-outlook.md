@@ -210,7 +210,7 @@ shared-lock and one-report-per-day guards still apply. Intraday analysis and
 paper entry calendar checks are unchanged.
 
 Daily input contains new_position_proposals_allowed, calculated from the
-snapshot as_of timestamp in Tehran. Weekend instructions request trend,
+snapshot as_of timestamp in Tehran. Saturday instructions request trend,
 scenarios and target zones only, with no new/deferred position recommendation.
 The independent parser also replaces any supplied swing proposal with a
 calendar-specific wait before validation, so an unsolicited or malformed entry

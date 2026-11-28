@@ -849,8 +849,8 @@ def test_weekend_policy_is_tehran_local_and_blocks_only_new_entries():
     from app.domain.trading_calendar import new_entries_allowed
     assert new_entries_allowed(datetime(2026,11,13,20,29,tzinfo=timezone.utc))
     assert not new_entries_allowed(datetime(2026,11,13,20,30,tzinfo=timezone.utc))
-    assert not new_entries_allowed(datetime(2026,11,15,20,29,tzinfo=timezone.utc))
-    assert new_entries_allowed(datetime(2026,11,15,20,30,tzinfo=timezone.utc))
+    assert not new_entries_allowed(datetime(2026,11,14,20,29,tzinfo=timezone.utc))
+    assert new_entries_allowed(datetime(2026,11,14,20,30,tzinfo=timezone.utc))
 
 
 @pytest.mark.asyncio

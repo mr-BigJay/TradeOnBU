@@ -424,7 +424,7 @@ WEEKEND OVERRIDE: When market.new_position_proposals_allowed is false, produce
 the full trend/continuation/reversal analysis, scenarios, watch levels and target
 zones, but NO new position recommendation anywhere in the report. Return
 swing_plan.action=wait with null entry/stop IDs, empty targets, execution=null,
-first_obstacle=null and explain that Saturday/Sunday Tehran are analysis-only.
+first_obstacle=null and explain that Saturday in Tehran is analysis-only.
 Do not propose a deferred Monday trade or put entry/stop/TP instructions into
 summary, scenario prose, or previous_plan_review.late_entry_fa. Prior reports may
 be reviewed retrospectively; do not advise opening, closing or changing positions.
