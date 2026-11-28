@@ -619,8 +619,10 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
                 {"time_ms": swing.time_ms, "kind": swing.kind, "price": swing.price}
                 for swing in swings
             ]
+            from app.services.horizontal_zone_memory import snapshot
+            horizontal_zones = snapshot(previous, outlook_major_levels, candles_by_interval.get("1h", []), observed_ms)
             user_payload, analyst_payload_audit = build_analyst_payload(
-                market={**market_payload, "previous_hourly_watch": ((previous or {}).get("analyst_summary") or {}).get("hourly_watch", {}), "market_scenario":scenario, "channel_swings_4h": channel_swings, "previous_review": prior_review, "chart_patterns": patterns, "ended_patterns": drawings["ended"], "recent_broken_drawings": broken_drawings},
+                market={**market_payload, "horizontal_zones": horizontal_zones, "previous_hourly_watch": ((previous or {}).get("analyst_summary") or {}).get("hourly_watch", {}), "market_scenario":scenario, "channel_swings_4h": channel_swings, "previous_review": prior_review, "chart_patterns": patterns, "ended_patterns": drawings["ended"], "recent_broken_drawings": broken_drawings},
                 evidence_catalog=evidence,
                 outlook_major_levels=outlook_major_levels,
                 market_intelligence=market_intelligence,
@@ -714,6 +716,7 @@ async def _execute_inference(*, run_id: int, trigger: str, model_override: str |
                 execution_feasibility=feasibility, market_scenario=scenario)
             if hourly_reaction.enabled():
                 structured["analyst_summary"]["hourly_watch"] = hourly_watch
+            structured["analyst_summary"]["horizontal_zones"] = horizontal_zones
             structured["analyst_summary"]["market_scenario"] = scenario
             structured["analyst_summary"]["recent_broken_drawings"] = broken_drawings
             structured["analyst_summary"]["drawing_memory"] = drawings

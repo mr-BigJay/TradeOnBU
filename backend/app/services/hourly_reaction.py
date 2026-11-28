@@ -1,4 +1,6 @@
 """Review the existing BTC playbook at each UTC hourly close. Paper execution only."""
+import asyncio
+import httpx
 import json
 import math
 import os
@@ -17,13 +19,15 @@ from app.services.ai_analysis_scheduler import scheduling_allowed
 from app.services.ai_market_payload import serialize_candle
 from app.services.market_data import MarketDataService
 from app.services.position.execution_adapters import OrderRequest
-from app.services.position.position_service import SimPositionService
+from app.services.position.position_service import EntryRewardRiskError, SimPositionService
 from app.services.position.settings_service import get_or_create_settings
 from app.services.runtime_settings import get_runtime_settings
 from app.services.telegram_message_format import format_persian_report_for_telegram
 from app.services.telegram_notifier import TelegramNotifier
 
-from app.services.hourly_playbook import LABELS, STRATEGIES, READ_PROMPT
+from app.services.horizontal_zone_memory import advance
+from app.services.siwc.responses_client import OpenAIResponsesError
+from app.services.hourly_playbook import LABELS, STRATEGIES, READ_PROMPT, pattern_edges_at_close
 
 HOUR = 3_600_000
 
@@ -51,6 +55,23 @@ async def ask(session, payload):
         user_input=json.dumps(payload, ensure_ascii=False), reasoning_effort=effort,
         timeout=settings.ai_response_timeout_seconds, max_output_tokens=2500)
     return _extract_json(response.text)
+
+
+async def ask_with_retry(session, payload, slot):
+    # Retry inference only. The unique slot has already been claimed and order
+    # creation starts only after this function returns a decision.
+    try:
+        return await ask(session, payload)
+    except (httpx.TransportError, TimeoutError, OpenAIResponsesError) as exc:
+        if isinstance(exc, OpenAIResponsesError) and not (
+            exc.http_status in (408, 429, 500, 502, 503, 504)
+            or exc.code in ("incomplete", "server_error", "rate_limit_exceeded")
+        ):
+            raise
+        await asyncio.sleep(2)
+        if datetime.now(timezone.utc).timestamp()*1000 >= slot + HOUR:
+            raise
+        return await ask(session, payload)
 
 
 async def notify_pending(now_ms):
@@ -104,9 +125,16 @@ async def review_close(slot, bars):
                        scenario=summary.get("market_scenario"), watch=plans, outcomes=outcomes, recent_positions=history,
                        previous_review=previous.detail if previous else None,
                        fees=dict(taker=paper.taker_fee_rate,slippage_bps=paper.slippage_bps))
+        patterns = summary.get("chart_patterns") or []
+        payload["pattern_edges_at_close"] = [
+            {"close_ms": b.time_ms + HOUR, "edges": pattern_edges_at_close(patterns, b.time_ms + HOUR)}
+            for b in bars
+        ]
+        payload["major_zones"] = summary.get("outlook_major_levels") or []
         run_id = run.id if run else None
         stop_entries = (summary.get("market_scenario",{}).get("event") or {}).get("status") == "pause"
-        decision = await ask(session,payload)
+        payload["horizontal_zones"] = advance(summary.get("horizontal_zones") or {}, bars, slot)
+        decision = await ask_with_retry(session, payload, slot)
     async with SessionLocal() as session:
         row = await session.get(HourlyReaction,slot)
         row.run_id = run_id
@@ -154,7 +182,14 @@ async def review_close(slot, bars):
                     return
                 order = OrderRequest("BTCUSDT",plan["direction"],risk["margin"],risk["leverage"],
                     "market",None,stop,target,order_extra={"hourly_plan":key,"hour_close_ms":slot})
-                result = await service.create_order(session,order,commit=False)
+                try:
+                    result = await service.create_order(session, order, commit=False)
+                except EntryRewardRiskError as exc:
+                    row.executed_plan = None
+                    row.status = "net_rr_below_min"
+                    row.detail = {**decision, "execution_reason": str(exc)}
+                    await session.commit()
+                    return
                 if result.success and result.payload.get("status")=="open":
                     pos = await service.get_position_by_public_id(session,result.position_id)
                     row.status,row.position_id = "opened",pos.public_id

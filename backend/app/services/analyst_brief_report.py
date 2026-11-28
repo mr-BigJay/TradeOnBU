@@ -223,7 +223,8 @@ def telegram_analyst_brief(structured, *, symbol, live, analyzed_at):
     plans = _plans(structured)
     primary = plans.get(structured.get("strategy_id"))
     records = (structured.get("_artifacts") or {}).get("strategy_persistence") or {}
-    for sid, label in _LABELS.items():
+    legacy_labels = {} if "hourly_watch" in summary else _LABELS
+    for sid, label in legacy_labels.items():
         label = f"استراتژی {label}"
         plan = plans.get(sid)
         if not plan:
@@ -286,7 +287,18 @@ def _scenario_lines(summary):
         lines.append("پوشش خبر و تقویم اقتصادی در این بررسی در دسترس نیست.")
     if event.get("news_available") is False and event.get("calendar_available"):
         lines.append("پوشش خبرهای جهان در این نوبت در دسترس نیست.")
-    for plan in (summary.get("hourly_watch") or {}).values():
+    watches = summary.get("hourly_watch") or {}
+    if "hourly_watch" in summary:
+        lines.append(f"تعداد سناریوهای تحت رصد ساعتی: {len(watches)}")
+    for plan in watches.values():
         lines.append(f"رصد ساعتی {plan['strategy']} · {plan['direction']} در "
                      f"{_zone(plan['zone_low'],plan['zone_high'])} | {plan['expect_fa']}")
+        stop, target = plan.get("stop_reference"), plan.get("target")
+        if stop and target:
+            mid = (plan["zone_low"] + plan["zone_high"]) / 2
+            sign = 1 if plan["direction"] == "LONG" else -1
+            risk, reward = sign*(mid-stop), sign*(target-mid)
+            if risk > 0 and reward > 0 and reward/risk < 1.5:
+                lines.append(f"از وسط ناحیه، بازده به ریسک پیش از هزینه {reward/risk:.2f} است؛ "
+                             "در این قیمت فقط تحت نظر است.")
     return lines
