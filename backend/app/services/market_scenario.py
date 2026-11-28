@@ -30,9 +30,26 @@ def channel_cutoff(drawings):
                 if key in ("4h:ascending_channel", "4h:descending_channel")), default=0)
 
 
+def _formation_penalty(exits, volatility):
+    """Measure worst overshoot in ATR and extra consecutive closes on the same side."""
+    previous = 0.
+    run = longest = 0
+    deepest = 0.
+    for depth in exits:
+        deepest = max(deepest, abs(depth))
+        if depth:
+            run = run + 1 if previous * depth > 0 else 1
+            longest = max(longest, run)
+        else:
+            run = 0
+        previous = depth
+    return deepest / volatility + max(0, longest - 1)
+
+
 def broad_channel(bars, swings, *, since=0, daily="unclear"):
     """Fit parallel boundaries using separated, confirmed reactions on both sides."""
-    tolerance = atr(bars) * .5
+    volatility = atr(bars)
+    tolerance = volatility * .5
     if not tolerance:
         return None
     best, score = None, ()
@@ -64,20 +81,26 @@ def broad_channel(bars, swings, *, since=0, daily="unclear"):
                     # have two separated anchors can a close invalidate it.
                     second_touch = next(p for p in touches if p.index >= touches[0].index + 6)
                     established = max(b.index, second_touch.index)
-                    def outside(c):
-                        return not -tolerance <= sign*(line(c.time_ms+STEP)-c.close) <= width+tolerance
+                    def signed_exit(c):
+                        distance = sign * (line(c.time_ms + STEP) - c.close)
+                        if distance < -tolerance:
+                            return distance + tolerance
+                        return max(0., distance - width - tolerance)
+
                     formation = bars[a.index:established]
-                    if sum(outside(c) for c in formation) * 10 > len(formation):
+                    if any(signed_exit(c) for c in bars[established:]):
                         continue
-                    if any(outside(c) for c in bars[established:]):
+                    exits = [signed_exit(c) for c in formation]
+                    if sum(bool(depth) for depth in exits) * 10 > len(formation):
                         continue
+                    fit_penalty = _formation_penalty(exits, volatility)
                     # Discount long spans whose evidence on either edge has gone stale.
                     # Use the most recent confirmed pivot on each side, including
                     # reactions occurring after the two slope-defining pivots.
                     coverage = min(span, opposite_span)
                     age = len(bars) - 1 - min(primary_touches[-1].index, touches[-1].index)
                     supported_span = coverage * coverage / (coverage + 2 * age)
-                    rank = (supported_span, coverage, span,
+                    rank = (supported_span / (1 + fit_penalty), coverage, span,
                             daily == ("bearish" if sign == 1 else "bullish"), len(touches))
                     if rank <= score:
                         continue
