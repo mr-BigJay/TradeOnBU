@@ -23,7 +23,7 @@ from app.services.runtime_settings import get_runtime_settings
 from app.services.telegram_message_format import format_persian_report_for_telegram
 from app.services.telegram_notifier import TelegramNotifier
 
-from app.services.hourly_playbook import LABELS, STRATEGIES, READ_PROMPT
+from app.services.hourly_playbook import LABELS, STRATEGIES, READ_PROMPT, pattern_edges_at_close
 
 HOUR = 3_600_000
 
@@ -104,6 +104,12 @@ async def review_close(slot, bars):
                        scenario=summary.get("market_scenario"), watch=plans, outcomes=outcomes, recent_positions=history,
                        previous_review=previous.detail if previous else None,
                        fees=dict(taker=paper.taker_fee_rate,slippage_bps=paper.slippage_bps))
+        patterns = summary.get("chart_patterns") or []
+        payload["pattern_edges_at_close"] = [
+            {"close_ms": b.time_ms + HOUR, "edges": pattern_edges_at_close(patterns, b.time_ms + HOUR)}
+            for b in bars
+        ]
+        payload["major_zones"] = summary.get("outlook_major_levels") or []
         run_id = run.id if run else None
         stop_entries = (summary.get("market_scenario",{}).get("event") or {}).get("status") == "pause"
         decision = await ask(session,payload)

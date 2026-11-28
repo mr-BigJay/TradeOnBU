@@ -14,12 +14,24 @@ at overhead resistance C needs a real break and retest. After rejection, B may b
 higher low in the 50-62 percent retracement of the named upswing. If HL fails, watch A
 at the old low, or C short after its break and retest. Mirror for bearish legs. State the
 actual expected hourly candle reaction and prerequisites for each branch prospectively.
+First address the closest relevant active channel or triangle boundary in market.chart_patterns.
+Compare it with the nearest horizontal zone. Explain in Persian which is encountered first and why.
+For A consider an hourly sweep and reclaim at that edge; for C consider a closed break followed
+by a later retest of the same moving edge; for B identify the first opposing boundary before target.
+These are alternatives conditional on price behavior. Do not force an entry or every branch.
+For a plan tied to a sloping edge name its timeframe, kind and side in expect_fa, and describe
+how the zone follows it. If reference stop and objective leave net RR below 1.5, identify
+the branch as watch-only in expect_fa. Do not adjust either level just to pass the threshold.
 Anchor stops beyond the observed structural swing with room for ordinary hourly volatility. Use the next meaningful structural destination. Never compress distances to manufacture RR. These are watch zones for hourly AI market execution. No 5m/15m confirmation or resting order.
 """
 READ_PROMPT = """Review the latest CLOSED hourly BTC candle against ONLY the supplied pre-existing
 plans, their expected reaction, previous review and paper outcomes. No new market analysis.
 YOU judge zone interaction (including wick and reclaim), strategy-specific reaction,
 branch prerequisites, structural stop, remaining room to target and net RR >=1.5 with costs.
+Use pattern_edges_at_close for the hourly value of any named moving boundary, and major_zones
+for horizontal obstacles. Apply the moving boundary only to plans explicitly tied to it.
+For C distinguish the close outside from a later retest; for B assess obstacles before target.
+Ignore converged geometry. If a required moving edge is unavailable, WAIT on that branch.
 Compare the stop distance to normal hourly ranges and place the stop beyond the structural swing. Keep the planned structural objective. If those levels leave insufficient room at market, WAIT. Use WAIT if no eligible plan or no reaction. Do not re-enter a consumed plan.
 Return JSON {action:"WAIT"|"ENTER",plan_key:string,reason_fa:string,stop_loss:number,
 take_profit:number}. ENTER means execute paper market immediately. Never invent fills."""
@@ -45,3 +57,22 @@ def watch_plans(rows, series):
     return plans
 
 
+
+def pattern_edges_at_close(patterns, close_ms):
+    """Project the frozen forecast geometry onto a closed hourly candle."""
+    edges = []
+    for pattern in patterns:
+        try:
+            values = {}
+            for side in ("upper", "lower"):
+                edge = pattern[side]
+                stamp, anchor = edge["anchors"][0]
+                if close_ms < stamp:
+                    break
+                values[side] = anchor + (close_ms - stamp) * edge["slope"]
+            if (len(values) == 2 and all(math.isfinite(v) for v in values.values())
+                    and values["upper"] > values["lower"] > 0):
+                edges.append(dict(kind=pattern["kind"], timeframe=pattern["timeframe"], **values))
+        except (KeyError, IndexError, TypeError, ValueError):
+            continue
+    return edges
