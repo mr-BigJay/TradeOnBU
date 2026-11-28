@@ -8,11 +8,11 @@ TEHRAN = ZoneInfo("Asia/Tehran")
 
 
 def new_entries_allowed(at: datetime) -> bool:
-    """Monday-Friday in Tehran local time; Saturday/Sunday start no new entries.
+    """Allow new entries Sunday through Friday in Tehran local time.
 
     This is not an exchange closure: BTC trades 24/7. Only our policy blocks
     *new* entries; open SL/TP management remains active.
     """
     if at.tzinfo is None:
         at = at.replace(tzinfo=timezone.utc)
-    return at.astimezone(TEHRAN).weekday() < 5
+    return at.astimezone(TEHRAN).weekday() != 5  # Saturday

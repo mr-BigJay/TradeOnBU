@@ -13,7 +13,7 @@ def proposals_allowed(context):
 def weekend_plan():
     return {
         "action": "wait",
-        "rationale_fa": "شنبه و یکشنبه به وقت تهران فقط تحلیل بازار ارائه می‌شود؛ پیشنهاد پوزیشن جدید غیرفعال است.",
+        "rationale_fa": "شنبه به وقت تهران فقط تحلیل بازار ارائه می‌شود؛ پیشنهاد پوزیشن جدید غیرفعال است.",
         "trigger_fa": "در روزهای مجاز، برنامهٔ ورود با دادهٔ تازه دوباره ارزیابی می‌شود.",
         "entry_level_id": None, "stop_level_id": None, "target_level_ids": [],
         "execution": None, "first_obstacle": None,
