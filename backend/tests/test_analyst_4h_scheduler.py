@@ -30,12 +30,11 @@ def test_four_hour_boundaries_and_close_grace(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("day", [19, 28, 29])
 async def test_at_most_one_scheduled_start_per_closed_4h_slot(
-    session, monkeypatch
+    session, monkeypatch, day
 ):
-    from app.domain import trading_calendar
     monkeypatch.setenv("MULTI_SETUP_ANALYST_ENABLED", "1")
-    monkeypatch.setattr(trading_calendar, "new_entries_allowed", lambda _: True)
     monkeypatch.setattr(
         scheduler, "scheduling_allowed", AsyncMock(return_value=(True, None))
     )
@@ -45,16 +44,16 @@ async def test_at_most_one_scheduled_start_per_closed_4h_slot(
         unattended_consent=True,
         interval_minutes=60,
         # Old hourly next_run_at must not prevent the 4H migration.
-        next_run_at=datetime(2026, 11, 19, 9, 1, tzinfo=timezone.utc),
+        next_run_at=datetime(2026, 11, day, 9, 1, tzinfo=timezone.utc),
     )
     session.add(cfg)
     await session.commit()
 
-    clock = [datetime(2026, 11, 19, 8, 4, tzinfo=timezone.utc)]
+    clock = [datetime(2026, 11, day, 8, 4, tzinfo=timezone.utc)]
     monkeypatch.setattr(scheduler, "_utc_now", lambda: clock[0])
     assert not await scheduler.should_run_scheduled(session)
 
-    clock[0] = datetime(2026, 11, 19, 8, 5, tzinfo=timezone.utc)
+    clock[0] = datetime(2026, 11, day, 8, 5, tzinfo=timezone.utc)
     assert await scheduler.should_run_scheduled(session)
 
     # Simulate a crashed worker: analysis record exists, cfg.last_run_at not set.
@@ -65,13 +64,13 @@ async def test_at_most_one_scheduled_start_per_closed_4h_slot(
     session.add(run)
     await session.commit()
 
-    clock[0] = datetime(2026, 11, 19, 9, 30, tzinfo=timezone.utc)
+    clock[0] = datetime(2026, 11, day, 9, 30, tzinfo=timezone.utc)
     assert not await scheduler.should_run_scheduled(session)
 
-    clock[0] = datetime(2026, 11, 19, 12, 4, tzinfo=timezone.utc)
+    clock[0] = datetime(2026, 11, day, 12, 4, tzinfo=timezone.utc)
     assert not await scheduler.should_run_scheduled(session)
 
-    clock[0] = datetime(2026, 11, 19, 12, 5, tzinfo=timezone.utc)
+    clock[0] = datetime(2026, 11, day, 12, 5, tzinfo=timezone.utc)
     assert await scheduler.should_run_scheduled(session)
 
 
