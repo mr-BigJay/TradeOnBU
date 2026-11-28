@@ -121,7 +121,9 @@ async def review_close(slot, bars):
             plan = plans[key]
             paper = await get_or_create_settings(session)
             runtime = await get_runtime_settings(session)
-            if stop_entries:
+            if not new_entries_allowed(boundary) or not new_entries_allowed(datetime.now(timezone.utc)):
+                row.status = "weekend_new_entries_disabled"
+            elif stop_entries:
                 row.status = "scenario_paused"
             elif not (await strategy_settings(session)).get(STRATEGIES[plan["strategy"]]) or not paper.auto_open_paper_positions or not paper.initial_balance_set or runtime.paper_trading_paused or runtime.paper_entry_dry_run:
                 row.status = "paper_disabled"
@@ -142,6 +144,12 @@ async def review_close(slot, bars):
                     row.executed_plan = None
                     row.status = "wallet_limit"
                     row.detail = {**decision,"execution_reason":reason}
+                    await session.commit()
+                    return
+                # Market and risk lookups may straddle midnight in Tehran.
+                if not new_entries_allowed(datetime.now(timezone.utc)):
+                    row.executed_plan = None
+                    row.status = "weekend_new_entries_disabled"
                     await session.commit()
                     return
                 order = OrderRequest("BTCUSDT",plan["direction"],risk["margin"],risk["leverage"],
@@ -168,8 +176,6 @@ async def tick():
     now = datetime.now(timezone.utc)
     now_ms = int(now.timestamp()*1000)
     await notify_pending(now_ms)
-    if not new_entries_allowed(now):
-        return
     slot = now_ms//HOUR*HOUR
     async with SessionLocal() as session:
         if await session.get(HourlyReaction,slot) or not (await scheduling_allowed(session))[0]:

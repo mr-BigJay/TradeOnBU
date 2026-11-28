@@ -854,15 +854,13 @@ def test_weekend_policy_is_tehran_local_and_blocks_only_new_entries():
 
 
 @pytest.mark.asyncio
-async def test_tehran_weekend_suppresses_scheduled_analyst_and_new_paper_order(session,monkeypatch):
+async def test_tehran_weekend_blocks_new_paper_order_and_allows_daily_report(session,monkeypatch):
     from app.domain import trading_calendar
-    from app.services.ai_analysis_scheduler import should_run_scheduled
     from app.services import daily_outlook
     from app.services.paper_auto_trading import maybe_auto_open_paper_position
     monkeypatch.setenv("MULTI_SETUP_ANALYST_ENABLED","1")
     monkeypatch.setattr(trading_calendar, "new_entries_allowed", lambda _now: False)
-    # Intraday inference/entries stay blocked; daily analysis can still reserve a report.
-    assert await should_run_scheduled(session) is False
+    monkeypatch.setenv("HOURLY_AI_REACTION_ENABLED","0")  # Exercise the older auto-open path.
     reserve=AsyncMock(return_value=(None, None, "not_due"))
     monkeypatch.setattr(daily_outlook,"reserve_run",reserve)
     await daily_outlook.daily_outlook_tick()
